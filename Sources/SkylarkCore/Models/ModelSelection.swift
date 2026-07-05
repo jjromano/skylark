@@ -4,13 +4,17 @@ import Foundation
 public enum STTChoice: Sendable, Equatable {
     /// Local Parakeet (default, fully offline).
     case localParakeet
+    /// Local WhisperKit large-v3-turbo (offline fallback engine, phase-4).
+    case localWhisper
     /// Cloud STT via OpenRouter, identified by registry slug.
     case cloud(slug: String)
 
-    /// UserDefaults serialization ("local" | "cloud:<slug>"); non-secret.
+    /// UserDefaults serialization ("local" | "localWhisper" | "cloud:<slug>");
+    /// non-secret.
     var serialized: String {
         switch self {
         case .localParakeet: return "local"
+        case .localWhisper: return "localWhisper"
         case .cloud(let slug): return "cloud:\(slug)"
         }
     }
@@ -19,8 +23,18 @@ public enum STTChoice: Sendable, Equatable {
         guard let value = serialized else { self = .localParakeet; return }
         if value.hasPrefix("cloud:") {
             self = .cloud(slug: String(value.dropFirst("cloud:".count)))
+        } else if value == "localWhisper" {
+            self = .localWhisper
         } else {
             self = .localParakeet
+        }
+    }
+
+    /// Whether this is one of the local (offline) engines.
+    public var isLocal: Bool {
+        switch self {
+        case .localParakeet, .localWhisper: return true
+        case .cloud: return false
         }
     }
 }

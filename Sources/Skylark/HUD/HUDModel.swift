@@ -11,6 +11,9 @@ final class HUDModel {
 
     var state: HUDState = .idle
     var isHovering = false
+    /// True while global Whisper Mode is on — the listening dot goes hollow as a
+    /// subtle cue (phase-4 spec §5).
+    var isWhisperMode = false
     /// True while the speech model is still downloading/loading — the idle dot
     /// pulses to signal "not ready yet".
     var isPreparing = false

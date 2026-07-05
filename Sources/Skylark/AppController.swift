@@ -21,6 +21,58 @@ final class AppController {
     private(set) var cleanupModels: [ModelRegistryEntry] = []
     private(set) var sttModels: [ModelRegistryEntry] = []
 
+    /// Global Whisper Mode (quiet-speech) — persisted; drives capture gain, the
+    /// clip-skip floor, VAD sensitivity, and the HUD cue (phase-4 spec §5).
+    static let whisperModeKey = "whisperMode"
+    private(set) var whisperModeOn: Bool
+
+    // MARK: - Model manager (Settings → Models)
+
+    /// A local model the settings model-manager can download/delete.
+    enum ManagedModel: String, CaseIterable, Identifiable {
+        case parakeet, whisper, vad
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .parakeet: return "Parakeet TDT v3"
+            case .whisper: return "Whisper large-v3-turbo"
+            case .vad: return "Silero VAD"
+            }
+        }
+        var approxSize: String {
+            switch self {
+            case .parakeet: return "~483 MB"
+            case .whisper: return "~626 MB"
+            case .vad: return "few MB"
+            }
+        }
+        var directory: URL {
+            switch self {
+            case .parakeet: return ModelPaths.parakeetModelDir
+            case .whisper: return ModelPaths.whisperKitBase
+            case .vad: return ModelPaths.vadModelDir
+            }
+        }
+    }
+
+    enum ManagedModelState: Equatable {
+        case notDownloaded
+        case downloading(Double)
+        case preparing
+        case ready(bytes: Int64)
+    }
+
+    /// Per-model download/on-disk state observed by the settings model manager.
+    private(set) var modelStates: [ManagedModel: ManagedModelState] = [:]
+
+    // MARK: - Audio devices (Settings → Audio)
+
+    static let inputDeviceKey = "audio.inputDeviceUID"
+    let audioDevices = AudioDeviceManager()
+    private(set) var inputDevices: [AudioInputDevice] = []
+    /// Selected input-device UID (nil = system default).
+    private(set) var selectedDeviceUID: String?
+
     /// Global cleanup override backing the menu "Cleanup" submenu. "auto" = use
     /// the resolved mode's tier; "raw"/"local"/"cloud" force that tier.
     static let cleanupOverrideKey = "cleanupTierOverride"
@@ -32,12 +84,18 @@ final class AppController {
     let openRouterClient: OpenRouterClient
 
     private let capture = AudioCaptureService()
-    private let transcriber: FluidAudioParakeet
+    private let parakeet: FluidAudioParakeet
+    private let whisper: WhisperKitWhisper
     private let endpointer = FluidAudioVAD()
     private let injector = TextInjector()
     private let monitor = HotkeyMonitor()
     private let frontmost = FrontmostAppMonitor()
     private let orchestrator: DictationOrchestrator
+
+    /// Which local engine is kept warm (memory policy: only the active local
+    /// engine stays resident on 16 GB machines). Cloud STT's fallback is this
+    /// engine. Updated on every local selection; cloud leaves it as the last local.
+    private var activeLocal: STTChoice = .localParakeet
 
     // Persistence (nil when storage is unavailable — the app still runs, sans
     // history/persisted modes, on in-memory providers).
@@ -45,8 +103,9 @@ final class AppController {
     private let modeStore: ModeStore?
 
     // Model-preparation states arrive on an arbitrary queue; funnel them through
-    // a Sendable stream and apply them on the main actor (see start()).
-    @ObservationIgnored private let prepStream: AsyncStream<ModelPreparationState>
+    // a Sendable stream (tagged with which model) and apply them on the main
+    // actor (see start()).
+    @ObservationIgnored private let prepStream: AsyncStream<(ManagedModel, ModelPreparationState)>
     @ObservationIgnored private var noteClearTask: Task<Void, Never>?
     /// Deferred launch note (e.g. "history disabled") shown once start() runs.
     @ObservationIgnored private var pendingStatusNote: String?
@@ -57,9 +116,12 @@ final class AppController {
     @ObservationIgnored private var started = false
 
     init() {
-        let (stream, cont) = AsyncStream<ModelPreparationState>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        let (stream, cont) = AsyncStream<(ManagedModel, ModelPreparationState)>.makeStream(bufferingPolicy: .bufferingNewest(16))
         prepStream = stream
-        transcriber = FluidAudioParakeet(progress: { state in cont.yield(state) })
+        parakeet = FluidAudioParakeet(progress: { state in cont.yield((.parakeet, state)) })
+        whisper = WhisperKitWhisper(progress: { state in cont.yield((.whisper, state)) })
+        whisperModeOn = UserDefaults.standard.bool(forKey: Self.whisperModeKey)
+        selectedDeviceUID = UserDefaults.standard.string(forKey: Self.inputDeviceKey)
 
         // Composition root: one on-disk database; fall back to in-memory
         // providers (no history/persisted modes) if it can't open.
@@ -97,7 +159,7 @@ final class AppController {
 
         orchestrator = DictationOrchestrator(
             capture: capture,
-            transcriber: transcriber,
+            transcriber: parakeet,
             injector: injector,
             endpointer: endpointer,
             cleaners: CleanerRegistry(local: LocalCleaner(), cloudFactory: cloudFactory),
@@ -155,20 +217,30 @@ final class AppController {
         // Model-preparation progress → menu line, HUD dot, readiness gate.
         Task { [weak self] in
             guard let stream = self?.prepStream else { return }
-            for await prep in stream {
-                self?.applyModelPrep(prep)
+            for await (model, prep) in stream {
+                self?.applyModelPrep(model, prep)
             }
         }
 
         capture.prepare()
 
+        // Seed model-manager state from disk, then apply persisted whisper mode
+        // (gain/floor/VAD/HUD) and the selected input device before first press.
+        refreshModelStates()
+        applyWhisperTuning()
+        startAudioDevices()
+
         // The transcriber is not ready until its model finishes preparing.
         Task { [orchestrator] in await orchestrator.setTranscriberReady(false) }
         hud.isPreparing = true
 
-        // Prepare Parakeet + VAD concurrently at launch (VAD degrades gracefully).
-        Task { [transcriber] in try? await transcriber.warmUp() }
-        Task { [endpointer] in await endpointer.prepare() }
+        // Prepare Parakeet (default active local) + VAD concurrently at launch
+        // (VAD degrades gracefully). Whisper stays cold until selected.
+        Task { [parakeet] in try? await parakeet.warmUp() }
+        Task { [endpointer, whisperModeOn] in
+            await endpointer.prepare()
+            await endpointer.setTuning(.forWhisperMode(whisperModeOn))
+        }
 
         // Track the frontmost app so the orchestrator resolves modes at fn-down.
         frontmost.start()
@@ -229,22 +301,54 @@ final class AppController {
 
     // MARK: - Model preparation + notes
 
-    private func applyModelPrep(_ prep: ModelPreparationState) {
-        hud.isPreparing = prep.isPreparing
+    private func applyModelPrep(_ model: ManagedModel, _ prep: ModelPreparationState) {
+        // Per-model manager state (all models).
+        switch prep {
+        case .checking, .loading:
+            modelStates[model] = .preparing
+        case let .downloading(progress):
+            modelStates[model] = .downloading(progress)
+        case .ready:
+            modelStates[model] = .ready(bytes: ModelPaths.installedSize(at: model.directory))
+        case .failed:
+            modelStates[model] = ModelPaths.isPresent(at: model.directory)
+                ? .ready(bytes: ModelPaths.installedSize(at: model.directory))
+                : .notDownloaded
+        }
+
+        // Menu line reflects any in-flight preparation; the readiness gate and HUD
+        // dot follow only the ACTIVE speech engine so a background model download
+        // never blocks (or spins) dictation on the current engine.
+        let isActiveEngine = (model == activeSpeechModel)
         switch prep {
         case .checking:
-            modelStatus = "Preparing speech model…"
+            modelStatus = "Preparing \(model.label)…"
         case let .downloading(progress):
-            modelStatus = "Downloading speech model… \(Int((progress * 100).rounded()))%"
+            modelStatus = "Downloading \(model.label)… \(Int((progress * 100).rounded()))%"
         case .loading:
-            modelStatus = "Loading speech model…"
+            modelStatus = "Loading \(model.label)…"
         case .ready:
-            modelStatus = nil
-            Task { [orchestrator] in await orchestrator.setTranscriberReady(true) }
+            if isActiveEngine {
+                modelStatus = nil
+                Task { [orchestrator] in await orchestrator.setTranscriberReady(true) }
+            } else if modelStatus?.contains(model.label) == true {
+                modelStatus = nil
+            }
         case .failed:
-            modelStatus = "Speech model failed to load"
-            Task { [orchestrator] in await orchestrator.setTranscriberReady(false) }
+            modelStatus = "\(model.label) failed to load"
+            if isActiveEngine {
+                Task { [orchestrator] in await orchestrator.setTranscriberReady(false) }
+            }
         }
+        if isActiveEngine {
+            hud.isPreparing = prep.isPreparing
+        }
+    }
+
+    /// The model backing the active speech engine (the warm local engine, or the
+    /// cloud fallback's local engine).
+    private var activeSpeechModel: ManagedModel {
+        activeLocal == .localWhisper ? .whisper : .parakeet
     }
 
     private func showNote(_ note: String) {
@@ -337,16 +441,19 @@ final class AppController {
     }
 
     /// Build the transcriber for the current STT choice and swap it into the
-    /// orchestrator. Cloud wraps local in a `FallbackTranscriber`; a missing key
-    /// falls straight back to local with a one-time notice.
+    /// orchestrator, honouring the memory policy: only the active local engine
+    /// stays warm. Cloud wraps the active local engine in a `FallbackTranscriber`;
+    /// a missing key falls straight back to local with a one-time notice.
     private func rebuildTranscriber() {
         switch modelSelection.sttChoice {
         case .localParakeet:
-            Task { [orchestrator, transcriber] in await orchestrator.setTranscriber(transcriber) }
+            switchLocalEngine(to: .localParakeet)
+        case .localWhisper:
+            switchLocalEngine(to: .localWhisper)
         case .cloud(let slug):
             guard KeychainStore().get() != nil else {
                 showNote("No API key — using local engine")
-                Task { [orchestrator, transcriber] in await orchestrator.setTranscriber(transcriber) }
+                switchLocalEngine(to: activeLocal)
                 return
             }
             let entry = sttModels.first { $0.slug == slug }
@@ -355,11 +462,184 @@ final class AppController {
             let notice: @Sendable (String) -> Void = { [weak self] message in
                 Task { @MainActor in self?.showNote(message) }
             }
-            let fallback = FallbackTranscriber(primary: cloud, fallback: transcriber, notice: notice)
+            // Fallback = whichever local engine is currently active (stays warm).
+            let localFallback: any Transcriber = (activeLocal == .localWhisper) ? whisper : parakeet
+            let idle: any Transcriber = (activeLocal == .localWhisper) ? parakeet : whisper
+            let fallback = FallbackTranscriber(primary: cloud, fallback: localFallback, notice: notice)
             Task { [orchestrator] in
                 try? await fallback.warmUp()
                 await orchestrator.setTranscriber(fallback)
+                await orchestrator.setTranscriberReady(true)
+                await Self.shutdownEngine(idle) // free the non-fallback local engine
             }
+        }
+    }
+
+    /// Switch the active local engine, warming the new one and (after the switch
+    /// completes) shutting the other down to stay within the 16 GB memory budget.
+    private func switchLocalEngine(to choice: STTChoice) {
+        activeLocal = choice
+        let keepWhisper = (choice == .localWhisper)
+        let keep: any Transcriber = keepWhisper ? whisper : parakeet
+        let drop: any Transcriber = keepWhisper ? parakeet : whisper
+        Task { [orchestrator, weak self] in
+            let ready = await Self.engineReady(keep)
+            if !ready { await orchestrator.setTranscriberReady(false) }
+            await orchestrator.setTranscriber(keep)
+            try? await keep.warmUp()
+            await orchestrator.setTranscriberReady(true)
+            await Self.shutdownEngine(drop)
+            self?.applyWhisperTuning()
+        }
+    }
+
+    private static func engineReady(_ engine: any Transcriber) async -> Bool {
+        if let p = engine as? FluidAudioParakeet { return await p.isReady }
+        if let w = engine as? WhisperKitWhisper { return await w.isReady }
+        return true
+    }
+
+    private static func shutdownEngine(_ engine: any Transcriber) async {
+        if let p = engine as? FluidAudioParakeet { await p.shutdown() }
+        else if let w = engine as? WhisperKitWhisper { await w.shutdown() }
+    }
+
+    // MARK: - Whisper Mode (menu bar)
+
+    /// Toggle global Whisper Mode; persist and re-apply the tuning everywhere.
+    func toggleWhisperMode() {
+        whisperModeOn.toggle()
+        UserDefaults.standard.set(whisperModeOn, forKey: Self.whisperModeKey)
+        applyWhisperTuning()
+        showNote(whisperModeOn ? "Whisper Mode on" : "Whisper Mode off")
+    }
+
+    /// Push the current whisper-mode tuning to capture (gain), the engines'
+    /// clip-skip floor, the VAD, and the HUD cue.
+    private func applyWhisperTuning() {
+        let tuning = WhisperModeTuning.forWhisperMode(whisperModeOn)
+        capture.setGain(tuning.captureGain)
+        hud.isWhisperMode = whisperModeOn
+        Task { [parakeet, whisper, endpointer] in
+            await parakeet.setSilenceFloor(tuning.silenceFloor)
+            await whisper.setSilenceFloor(tuning.silenceFloor)
+            await endpointer.setTuning(tuning)
+        }
+    }
+
+    // MARK: - Model manager (Settings → Models)
+
+    /// Re-read on-disk model presence/size (skips models mid-download/prepare).
+    func refreshModelStates() {
+        for model in ManagedModel.allCases {
+            switch modelStates[model] {
+            case .downloading, .preparing: continue
+            default: break
+            }
+            let size = ModelPaths.installedSize(at: model.directory)
+            modelStates[model] = size > 0 ? .ready(bytes: size) : .notDownloaded
+        }
+    }
+
+    /// Whether a model is the active speech engine (delete is blocked for it).
+    func isModelInUse(_ model: ManagedModel) -> Bool {
+        switch model {
+        case .parakeet: return activeSpeechModel == .parakeet
+        case .whisper: return activeSpeechModel == .whisper
+        case .vad: return false
+        }
+    }
+
+    /// Download a model to disk. Non-active engines are unloaded again afterward
+    /// so only the active engine holds memory.
+    func downloadModel(_ model: ManagedModel) {
+        switch model {
+        case .parakeet:
+            Task { [parakeet, weak self] in
+                try? await parakeet.warmUp()
+                if self?.activeSpeechModel != .parakeet { await parakeet.shutdown() }
+                self?.refreshModelStates()
+            }
+        case .whisper:
+            Task { [whisper, weak self] in
+                try? await whisper.warmUp()
+                if self?.activeSpeechModel != .whisper { await whisper.shutdown() }
+                self?.refreshModelStates()
+            }
+        case .vad:
+            modelStates[.vad] = .preparing
+            Task { [endpointer, weak self] in
+                await endpointer.prepare()
+                // refreshModelStates() skips `.preparing`, so set VAD explicitly.
+                let size = ModelPaths.installedSize(at: ManagedModel.vad.directory)
+                self?.modelStates[.vad] = size > 0 ? .ready(bytes: size) : .notDownloaded
+            }
+        }
+    }
+
+    /// Delete a model from disk (confirmed). Blocked for the in-use engine.
+    func deleteModel(_ model: ManagedModel) {
+        guard !isModelInUse(model) else {
+            showNote("Can't delete the speech engine in use")
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Delete \(model.label)?"
+        alert.informativeText = "The model files will be removed from disk. It re-downloads the next time it's used."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task { [parakeet, whisper, weak self] in
+            switch model {
+            case .parakeet: await parakeet.shutdown()
+            case .whisper: await whisper.shutdown()
+            case .vad: break
+            }
+            try? ModelPaths.removeFromDisk(at: model.directory)
+            self?.refreshModelStates()
+        }
+    }
+
+    // MARK: - Audio devices (Settings → Audio)
+
+    private func startAudioDevices() {
+        audioDevices.onChange = { [weak self] in self?.handleDeviceListChanged() }
+        audioDevices.start()
+        inputDevices = audioDevices.devices
+        applySelectedDevice(note: false)
+    }
+
+    private func handleDeviceListChanged() {
+        inputDevices = audioDevices.devices
+        applySelectedDevice(note: false)
+    }
+
+    /// Select an input device by UID (nil = system default). Persists and applies.
+    func selectInputDevice(_ uid: String?) {
+        selectedDeviceUID = uid
+        if let uid {
+            UserDefaults.standard.set(uid, forKey: Self.inputDeviceKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.inputDeviceKey)
+        }
+        applySelectedDevice(note: true)
+    }
+
+    private func applySelectedDevice(note: Bool) {
+        guard let uid = selectedDeviceUID, !uid.isEmpty else {
+            capture.setPreferredDeviceUID(nil)
+            return
+        }
+        if let device = inputDevices.first(where: { $0.uid == uid }) {
+            capture.setPreferredDeviceUID(uid)
+            if note, device.isBluetooth {
+                showNote("Bluetooth mics reduce recognition quality (HFP). Consider the built-in mic.")
+            }
+        } else {
+            // Persisted device is gone — fall back to the system default.
+            capture.setPreferredDeviceUID(nil)
+            if note { showNote("Selected mic unavailable — using the system default") }
         }
     }
 
@@ -423,8 +703,8 @@ final class AppController {
         }
         let window = Self.makeWindow(
             title: "Skylark Settings",
-            content: SettingsView(client: openRouterClient),
-            width: 440, height: 300
+            content: SettingsView(controller: self, client: openRouterClient),
+            width: 460, height: 620
         )
         settingsWindow = window
         window.makeKeyAndOrderFront(nil)

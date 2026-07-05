@@ -23,4 +23,64 @@ public enum ModelPaths {
     public static func ensureModelsDirectory() {
         try? FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
     }
+
+    // MARK: - Per-engine model directories
+
+    /// FluidAudio Parakeet TDT v3 repo folder (`AsrModels.downloadAndLoad(to:)`
+    /// clones the HuggingFace repo into this subfolder of `models`).
+    public static var parakeetModelDir: URL {
+        models.appendingPathComponent("parakeet-tdt-0.6b-v3-coreml", isDirectory: true)
+    }
+
+    /// FluidAudio Silero VAD repo folder (`VadManager` appends `Models/` to the
+    /// app-support base, landing here alongside the ASR repo).
+    public static var vadModelDir: URL {
+        models.appendingPathComponent("silero-vad-coreml", isDirectory: true)
+    }
+
+    /// WhisperKit download base — passed to WhisperKit as `downloadBase` so its
+    /// HubApi cache lands here instead of the default `Documents/huggingface`.
+    /// WhisperKit nests the model under `models/argmaxinc/whisperkit-coreml/<variant>`.
+    public static var whisperKitBase: URL {
+        models.appendingPathComponent("whisperkit", isDirectory: true)
+    }
+
+    // MARK: - On-disk size / removal (model manager)
+
+    /// Total size on disk (bytes) of everything under `url`, or 0 if absent.
+    /// Walks the directory; cheap enough for the settings model manager (not on
+    /// any latency path). Never inspects file contents.
+    public static func installedSize(at url: URL) -> Int64 {
+        let fm = FileManager.default
+        var isDir: ObjCBool = false
+        guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { return 0 }
+        guard isDir.boolValue else {
+            let attrs = try? fm.attributesOfItem(atPath: url.path)
+            return (attrs?[.size] as? Int64) ?? 0
+        }
+        guard let enumerator = fm.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey],
+            options: []
+        ) else { return 0 }
+        var total: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.totalFileAllocatedSizeKey, .fileSizeKey])
+            total += Int64(values?.totalFileAllocatedSize ?? values?.fileSize ?? 0)
+        }
+        return total
+    }
+
+    /// Whether a model directory is present and non-empty.
+    public static func isPresent(at url: URL) -> Bool {
+        installedSize(at: url) > 0
+    }
+
+    /// Delete a model directory from disk. Idempotent; throws only on a real
+    /// filesystem error (a missing directory is a no-op).
+    public static func removeFromDisk(at url: URL) throws {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: url.path) else { return }
+        try fm.removeItem(at: url)
+    }
 }

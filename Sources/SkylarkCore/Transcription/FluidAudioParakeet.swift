@@ -20,6 +20,10 @@ public actor FluidAudioParakeet: Transcriber {
     private let modelsDirectory: URL
     private let progress: @Sendable (ModelPreparationState) -> Void
 
+    /// Silence floor for the skip guard, tunable so whisper mode can accept
+    /// quieter speech (phase-4 spec §5). Defaults to the standard floor.
+    private var silenceFloor: Float = FluidAudioParakeet.silenceFloor
+
     private var models: AsrModels?
     private var manager: AsrManager?
     private var decoderState: TdtDecoderState?
@@ -104,6 +108,12 @@ public actor FluidAudioParakeet: Transcriber {
         logger.info("Parakeet ready")
     }
 
+    /// Apply the whisper-mode tuning (currently just the silence floor for the
+    /// skip guard). Takes effect on the next `transcribe`.
+    public func setSilenceFloor(_ floor: Float) {
+        silenceFloor = floor
+    }
+
     /// Release the models (only on quit / engine switch, never mid-session).
     public func shutdown() async {
         await manager?.cleanup()
@@ -118,7 +128,7 @@ public actor FluidAudioParakeet: Transcriber {
     public func transcribe(_ clip: AudioClip, hint: TranscriptionHint) async throws -> String {
         // Guard first — a too-short or silent clip returns "" without loading or
         // touching the model (privacy + latency: never throw for that).
-        if Self.shouldSkip(clip) { return "" }
+        if ClipGuard.shouldSkip(clip, minDuration: Self.minClipDuration, silenceFloor: silenceFloor) { return "" }
 
         guard let manager, decoderState != nil else {
             throw ParakeetError.notReady
@@ -136,16 +146,10 @@ public actor FluidAudioParakeet: Transcriber {
 
     // MARK: - Clip guard (pure, unit-tested)
 
-    /// Whether a clip is too short or too quiet to bother transcribing.
+    /// Whether a clip is too short or too quiet to bother transcribing (default
+    /// silence floor). Delegates to the shared `ClipGuard`.
     public static func shouldSkip(_ clip: AudioClip) -> Bool {
-        if clip.samples.isEmpty { return true }
-        if clip.duration < minClipDuration { return true }
-        var peak: Float = 0
-        for s in clip.samples {
-            let a = abs(s)
-            if a > peak { peak = a }
-        }
-        return peak < silenceFloor
+        ClipGuard.shouldSkip(clip, minDuration: minClipDuration, silenceFloor: silenceFloor)
     }
 }
 

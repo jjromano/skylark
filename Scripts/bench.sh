@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 #
-# bench.sh — headless local-Parakeet decode benchmark.
+# bench.sh — headless local-decode benchmark, both local engines.
 #
 # With no args, synthesizes three clips with say(1) (short ~2 s, medium ~6 s,
-# long ~15 s), converts them to 16 kHz mono WAV, and runs SkylarkBench on them.
-# Pass file paths to benchmark your own audio instead. On first run SkylarkBench
-# downloads the Parakeet TDT v3 model (~483 MB) into the app's models dir.
+# long ~15 s), converts them to 16 kHz mono WAV, and runs SkylarkBench over both
+# the Parakeet and Whisper engines on the same clips, then prints a comparison
+# table. Pass file paths to benchmark your own audio instead. On first run this
+# downloads the Parakeet TDT v3 model (~483 MB) AND the Whisper large-v3-turbo
+# model (~626 MB) into the app's models dir — expected.
 #
 # Fully headless: say(1) needs no microphone or GUI.
 
@@ -50,5 +52,36 @@ fi
 echo "→ swift build -c release --product SkylarkBench"
 swift build -c release --product SkylarkBench
 
-echo "→ Running SkylarkBench"
-swift run -c release SkylarkBench "${FILES[@]}"
+RESULTS="$BENCH_DIR/results.tsv"
+mkdir -p "$BENCH_DIR"
+: > "$RESULTS"
+
+for ENGINE in parakeet whisper; do
+    echo ""
+    echo "→ Running SkylarkBench (engine: $ENGINE)"
+    # Tee the run so RESULT lines are collected for the comparison table while
+    # the per-engine table still streams to the console.
+    swift run -c release SkylarkBench --engine "$ENGINE" "${FILES[@]}" \
+        | tee >(grep '^RESULT' >> "$RESULTS")
+done
+
+echo ""
+echo "══ Two-engine comparison (median decode ms · RTFx) ══"
+awk -F'\t' '
+    { file[$3]=$3
+      dur[$3]=$4
+      ms[$2","$3]=$5
+      rtfx[$2","$3]=$6
+      seen[$3]=1 }
+    END {
+        printf "%-28s %8s %12s %8s %12s %8s\n", "file", "dur(s)", "parakeet ms", "RTFx", "whisper ms", "RTFx"
+        printf "%s\n", "--------------------------------------------------------------------------------"
+        for (f in seen) {
+            printf "%-28s %8s %12s %8s %12s %8s\n", substr(f,1,28), dur[f], \
+                (("parakeet," f) in ms ? ms["parakeet," f] : "-"), \
+                (("parakeet," f) in rtfx ? rtfx["parakeet," f] : "-"), \
+                (("whisper," f) in ms ? ms["whisper," f] : "-"), \
+                (("whisper," f) in rtfx ? rtfx["whisper," f] : "-")
+        }
+    }
+' "$RESULTS"

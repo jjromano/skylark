@@ -2,14 +2,16 @@ import AVFoundation
 import Foundation
 import SkylarkCore
 
-// SkylarkBench — headless latency harness for the local Parakeet decode path.
+// SkylarkBench — headless latency harness for the local decode path.
 //
-//   swift run -c release SkylarkBench [--repeat N] [--models-dir DIR] file...
+//   swift run -c release SkylarkBench [--engine parakeet|whisper] [--repeat N]
+//                                     [--models-dir DIR] file...
 //
 // For each audio file it prints the audio duration, the median decode time over
 // N repeats, and the real-time factor (RTFx = audioSeconds / decodeSeconds).
-// Exits nonzero on any failure so CI / Scripts/bench.sh can gate on it.
-// Never prints transcript content (privacy invariant).
+// It also emits machine-readable `RESULT<TAB>...` lines that Scripts/bench.sh
+// merges into a two-engine comparison table. Exits nonzero on any failure so CI
+// / Scripts/bench.sh can gate on it. Never prints transcript content.
 
 struct BenchError: Error, CustomStringConvertible {
     let description: String
@@ -26,8 +28,14 @@ final class ConverterFeed: @unchecked Sendable {
 
 // MARK: - Argument parsing
 
+enum EngineChoice: String {
+    case parakeet
+    case whisper
+}
+
 var repeats = 3
 var modelsDir: URL = ModelPaths.models
+var engineChoice: EngineChoice = .parakeet
 var files: [String] = []
 
 var args = Array(CommandLine.arguments.dropFirst())
@@ -35,6 +43,13 @@ var i = 0
 while i < args.count {
     let arg = args[i]
     switch arg {
+    case "--engine":
+        guard i + 1 < args.count, let choice = EngineChoice(rawValue: args[i + 1]) else {
+            FileHandle.standardError.write(Data("error: --engine needs parakeet|whisper\n".utf8))
+            exit(2)
+        }
+        engineChoice = choice
+        i += 2
     case "--repeat":
         guard i + 1 < args.count, let n = Int(args[i + 1]), n > 0 else {
             FileHandle.standardError.write(Data("error: --repeat needs a positive integer\n".utf8))
@@ -56,7 +71,7 @@ while i < args.count {
 }
 
 guard !files.isEmpty else {
-    FileHandle.standardError.write(Data("usage: SkylarkBench [--repeat N] [--models-dir DIR] file...\n".utf8))
+    FileHandle.standardError.write(Data("usage: SkylarkBench [--engine parakeet|whisper] [--repeat N] [--models-dir DIR] file...\n".utf8))
     exit(2)
 }
 
@@ -136,10 +151,21 @@ func lpad(_ s: String, _ width: Int) -> String {
 
 // MARK: - Run
 
-func run(files: [String], repeats: Int, modelsDir: URL) async -> Int32 {
-    let engine = FluidAudioParakeet(modelsDirectory: modelsDir)
+func run(files: [String], repeats: Int, modelsDir: URL, engineChoice: EngineChoice) async -> Int32 {
+    let engine: any Transcriber
+    let engineLabel: String
+    switch engineChoice {
+    case .parakeet:
+        engine = FluidAudioParakeet(modelsDirectory: modelsDir)
+        engineLabel = "parakeet"
+        print("Preparing Parakeet models (dir: \(modelsDir.path))…")
+    case .whisper:
+        // First run downloads ~626 MB (Whisper large-v3-turbo) — expected.
+        engine = WhisperKitWhisper(downloadBase: modelsDir.appendingPathComponent("whisperkit"))
+        engineLabel = "whisper"
+        print("Preparing WhisperKit models (dir: \(modelsDir.appendingPathComponent("whisperkit").path))…")
+    }
 
-    print("Preparing Parakeet models (dir: \(modelsDir.path))…")
     do {
         try await engine.warmUp()
     } catch {
@@ -148,6 +174,7 @@ func run(files: [String], repeats: Int, modelsDir: URL) async -> Int32 {
     }
 
     print("")
+    print("engine: \(engineLabel)")
     print(pad("file", 28) + " " + lpad("dur (s)", 10) + " " + lpad("decode (ms)", 14) + " " + lpad("RTFx", 8))
     print(String(repeating: "-", count: 64))
 
@@ -190,6 +217,8 @@ func run(files: [String], repeats: Int, modelsDir: URL) async -> Int32 {
               + lpad(String(format: "%.2f", clip.duration), 10) + " "
               + lpad(String(format: "%.1f", med), 14) + " "
               + lpad(String(format: "%.1f", rtfx), 8))
+        // Machine-readable line for Scripts/bench.sh's comparison table.
+        print("RESULT\t\(engineLabel)\t\(name)\t\(String(format: "%.2f", clip.duration))\t\(String(format: "%.1f", med))\t\(String(format: "%.1f", rtfx))")
     }
 
     print(String(repeating: "-", count: 64))
@@ -203,5 +232,5 @@ func run(files: [String], repeats: Int, modelsDir: URL) async -> Int32 {
     return failed ? 1 : 0
 }
 
-let code = await run(files: files, repeats: repeats, modelsDir: modelsDir)
+let code = await run(files: files, repeats: repeats, modelsDir: modelsDir, engineChoice: engineChoice)
 exit(code)

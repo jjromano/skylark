@@ -1,4 +1,6 @@
+import Accelerate
 import AVFoundation
+import CoreAudio
 import Foundation
 import Synchronization
 import os
@@ -36,6 +38,14 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     public let frames: AsyncStream<[Float]>
     private let framesWanted = Atomic<Bool>(false)
 
+    // Whisper-mode capture gain, stored as Float bit-pattern for lock-free reads
+    // on the audio thread (Float isn't AtomicRepresentable). 1.0 = unity.
+    private let gainBits = Atomic<UInt32>(Float(1.0).bitPattern)
+
+    // Preferred input-device UID (nil = system default). Read off the audio path
+    // in `start()`; guarded by the orchestrator's serialization of lifecycle.
+    private let uidLock = Mutex<String?>(nil)
+
     private let signposter = OSSignposter(subsystem: "com.jjromano.skylark", category: "audio")
     private let logger = Logger(subsystem: "com.jjromano.skylark", category: "audio")
     private var captureSignpostID: OSSignpostID?
@@ -60,6 +70,18 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
 
     public func setFramesWanted(_ wanted: Bool) {
         framesWanted.store(wanted, ordering: .relaxed)
+    }
+
+    /// Set the whisper-mode capture gain (linear multiplier). Applied in the tap,
+    /// vectorized and clamped to [-1, 1]. Lock-free; safe to call any time.
+    public func setGain(_ gain: Float) {
+        gainBits.store(gain.bitPattern, ordering: .relaxed)
+    }
+
+    /// Choose the input device by CoreAudio UID (nil = system default). Applied
+    /// at the next `start()`; a missing/unplugged UID falls back to the default.
+    public func setPreferredDeviceUID(_ uid: String?) {
+        uidLock.withLock { $0 = uid }
     }
 
     // MARK: - Lifecycle
@@ -134,6 +156,9 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     }
 
     private func installTapAndStart() throws {
+        // Re-apply the preferred input device at every start so a device that
+        // appeared/vanished between dictations is honoured (or falls back safely).
+        applyPreferredDevice()
         configureConverterIfNeeded()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
@@ -143,6 +168,30 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         }
         tapInstalled = true
         try engine.start()
+    }
+
+    /// Set the engine's input hardware device from the preferred UID, if any and
+    /// still present. Must run while the engine is stopped (before `start`). A
+    /// missing UID or resolution failure leaves the system default in place.
+    private func applyPreferredDevice() {
+        guard let uid = uidLock.withLock({ $0 }), !uid.isEmpty else { return }
+        guard let deviceID = AudioDeviceManager.deviceID(forUID: uid) else {
+            logger.notice("preferred input device not found; using system default")
+            return
+        }
+        guard let audioUnit = engine.inputNode.audioUnit else { return }
+        var device = deviceID
+        let status = AudioUnitSetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &device,
+            UInt32(MemoryLayout<AudioDeviceID>.size)
+        )
+        if status != noErr {
+            logger.notice("failed to set input device (osstatus \(status, privacy: .public)); using default")
+        }
     }
 
     /// Render-thread callback. Converts to 16 kHz mono, appends lock-free.
@@ -172,6 +221,11 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
 
         let frames = Int(outputBuffer.frameLength)
         guard frames > 0 else { return }
+
+        // Whisper-mode gain: vectorized in-place multiply + clamp on the converted
+        // samples before they're stored or RMS'd. Allocation-free; unity when off.
+        let gain = Float(bitPattern: gainBits.load(ordering: .relaxed))
+        WhisperModeTuning.applyGain(channel, count: frames, gain: gain)
 
         // Reserve a contiguous slot in the preallocated storage, lock-free.
         let start = writeIndex.load(ordering: .relaxed)

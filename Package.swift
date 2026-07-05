@@ -42,6 +42,10 @@ let package = Package(
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.4"),
         // Persistence (MIT) — history/dictionary/modes/model-registry storage.
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
+        // WhisperKit fallback STT engine (MIT). Package/repo renamed to
+        // argmax-oss-swift; we consume only the `WhisperKit` product (which pulls
+        // just its `ArgmaxCore` target — no ArgumentParser/Vapor).
+        .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "1.0.0"),
     ],
     targets: [
         .target(
@@ -49,6 +53,7 @@ let package = Package(
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "GRDB", package: "GRDB.swift"),
+                .product(name: "WhisperKit", package: "argmax-oss-swift"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

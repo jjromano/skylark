@@ -47,6 +47,7 @@ struct MenuContent: View {
         CleanupMenu(controller: controller)
         CleanupModelMenu(controller: controller)
         SpeechEngineMenu(controller: controller)
+        WhisperModeToggle(controller: controller)
 
         Divider()
 
@@ -127,6 +128,15 @@ private struct SpeechEngineMenu: View {
                     Text("Local (Parakeet)")
                 }
             }
+            Button {
+                controller.selectSTT(.localWhisper)
+            } label: {
+                if controller.currentSTT == .localWhisper {
+                    Label("Local (Whisper large-v3-turbo)", systemImage: "checkmark")
+                } else {
+                    Text("Local (Whisper large-v3-turbo)")
+                }
+            }
             ForEach(controller.sttModels) { entry in
                 Button {
                     controller.selectSTT(.cloud(slug: entry.slug))
@@ -140,6 +150,23 @@ private struct SpeechEngineMenu: View {
             }
             Divider()
             Button("Custom Slug…") { controller.promptCustomSTTSlug() }
+        }
+    }
+}
+
+/// Global Whisper Mode (quiet-speech) toggle.
+private struct WhisperModeToggle: View {
+    let controller: AppController
+
+    var body: some View {
+        Button {
+            controller.toggleWhisperMode()
+        } label: {
+            if controller.whisperModeOn {
+                Label("Whisper Mode", systemImage: "checkmark")
+            } else {
+                Text("Whisper Mode")
+            }
         }
     }
 }

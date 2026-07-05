@@ -94,7 +94,15 @@ struct HUDView: View {
 
     private var listeningContent: some View {
         HStack(spacing: 8) {
-            Circle().fill(.red).frame(width: 8, height: 8)
+            // Whisper mode: hollow dot (stroke only) as a subtle quiet-speech cue.
+            Group {
+                if model.isWhisperMode {
+                    Circle().strokeBorder(.red, lineWidth: 1.5)
+                } else {
+                    Circle().fill(.red)
+                }
+            }
+            .frame(width: 8, height: 8)
             // Live waveform: newest level enters from the trailing edge. Driven
             // at the levels-stream cadence (~15–20 Hz) with eased height changes.
             HStack(spacing: 1) {

@@ -38,6 +38,16 @@ public actor FluidAudioVAD: SpeechEndpointer {
         self.segmentationConfig = cfg
     }
 
+    /// Apply whisper-mode tuning: nudge the VAD toward sensitive endpointing
+    /// (longer speech padding, lower min-speech) while keeping the tuned silence
+    /// duration. Takes effect on the next `beginSession`. `VadSegmentationConfig`
+    /// doesn't expose the primary detection threshold (that lives in `VadConfig`),
+    /// so we move the duration knobs it does expose (phase-4 spec §5).
+    public func setTuning(_ tuning: WhisperModeTuning) {
+        segmentationConfig.speechPadding = tuning.vadSpeechPadding
+        segmentationConfig.minSpeechDuration = tuning.vadMinSpeechDuration
+    }
+
     public func prepare() async {
         if vad != nil || loadFailed { return }
         do {
