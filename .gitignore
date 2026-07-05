@@ -1,0 +1,23 @@
+# SwiftPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Build artifacts
+dist/
+*.app
+
+# macOS
+.DS_Store
+
+# Xcode (if someone opens the package in Xcode)
+xcuserdata/
+DerivedData/
+
+# Secrets — belt and suspenders; keys live in Keychain, never on disk
+*.key
+.env
+.env.*
+
+# Local model downloads (fetched at runtime, never committed)
+Models/
