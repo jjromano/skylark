@@ -47,18 +47,16 @@ notice string, the pasted `text` is never interpolated);
 
 **History persistence.** `HistoryStore` (`Sources/SkylarkCore/Persistence/HistoryStore.swift`) is a GRDB actor over the local `history` table, opened by `SkylarkDatabase` (`Sources/SkylarkCore/Persistence/SkylarkDatabase.swift:80`) at `~/Library/Application Support/Skylark/skylark.sqlite` — local file, WAL mode, no sync/cloud path anywhere in the codebase. Schema matches ARCHITECTURE §5, including a nullable `audio_path` column.
 
-**Audio retention default.** The PRD/ARCHITECTURE describe audio retention
-as opt-in and off by default. In this build it is stronger than that: the
-opt-in toggle **does not exist yet**. The only call site that constructs a
-`HistoryRecord`, `DictationOrchestrator.emitHistory` (`Sources/SkylarkCore/Pipeline/DictationOrchestrator.swift:328-337`), hardcodes `audioPath: nil`.
-There is no settings flag, `UserDefaults` key, or Settings UI toggle for
-history-audio anywhere in `Sources/` (grep for
-`audioPath|audio_path|historyAudio|saveAudio|retainAudio` outside the
-schema/model declarations returns nothing). Net effect: audio is never
-written to disk in this build, full stop — stricter than the spec's
-"off by default," but worth flagging since the opt-in feature described in
-the PRD isn't implemented, so a user who wants audio retention has no way
-to turn it on yet.
+**Audio retention default.** Audio retention is opt-in and OFF by default,
+per PRD §8. *(This section was audited before the retention feature merged;
+re-verified after the merge:)* the toggle lives in Settings → History; when
+OFF (default) the clip handed to `HistoryHub` is dropped and never written.
+When ON, `HistoryHub` writes 16 kHz WAV files to
+`~/Library/Application Support/Skylark/Audio/` strictly off the paste path,
+and per-row delete / Clear History / "Delete all stored audio" remove the
+files. An orphan sweep at launch removes files with no DB row (logs a count
+only). Cloud STT never reads retained files — it encodes the in-memory clip
+of the current dictation only.
 
 ## 3. Keychain-only secrets
 

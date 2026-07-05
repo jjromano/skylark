@@ -100,15 +100,16 @@ The menu-bar icon (a mic glyph) opens a dropdown with:
   any cloud STT model from the registry, plus a custom-slug option.
 - **Whisper Mode** — toggles quiet-speech tuning (boosted input gain, more
   sensitive VAD) for dictating at low volume in shared spaces.
-- **Settings…** — API key, model manager (download/delete local models),
-  input device picker.
+- **History…** — searchable browser for past dictations: view raw vs.
+  cleaned text, copy, delete, or edit an entry. Edits are diffed against the
+  raw transcript and offered as custom-dictionary auto-adds, so correcting a
+  name once teaches Skylark to get it right next time.
+- **Settings…** — General (cleanup default, Whisper Mode, launch at login),
+  Models (download/delete local models), Audio (input device picker),
+  Dictionary, Modes (per-app profiles), History (audio retention, off by
+  default), and Account (API key).
 - **Onboarding…** — re-opens the permissions walkthrough.
 - **Quit Skylark**.
-
-Dictation history and per-app mode profiles are recorded to a local SQLite
-database as you use the app (see Privacy, below), but this build has no
-dedicated history/mode browser window yet — that's tracked as follow-up
-work, not shipped in the menu bar today.
 
 ## Cloud (optional)
 
