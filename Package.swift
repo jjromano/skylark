@@ -26,15 +26,27 @@ let package = Package(
     products: [
         .library(name: "SkylarkCore", targets: ["SkylarkCore"]),
         .executable(name: "Skylark", targets: ["Skylark"]),
+        .executable(name: "SkylarkBench", targets: ["SkylarkBench"]),
     ],
-    dependencies: [],
+    dependencies: [
+        // Local Parakeet ASR + Silero VAD (Apache-2.0, no external transitive deps).
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.4"),
+    ],
     targets: [
         .target(
             name: "SkylarkCore",
+            dependencies: [
+                .product(name: "FluidAudio", package: "FluidAudio"),
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(
             name: "Skylark",
+            dependencies: ["SkylarkCore"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .executableTarget(
+            name: "SkylarkBench",
             dependencies: ["SkylarkCore"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

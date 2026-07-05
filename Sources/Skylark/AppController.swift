@@ -10,11 +10,24 @@ final class AppController {
     let permissions = PermissionsService()
     let hud = HUDModel()
 
+    /// Menu-bar model-preparation line (nil once ready). E.g. "Downloading… 42%".
+    private(set) var modelStatus: String?
+    /// Last dictation latency, ms (menu "Last: 214 ms"). Nil until first paste.
+    private(set) var lastLatencyMs: Int?
+    /// Transient status note (e.g. model-not-ready discard).
+    private(set) var statusNote: String?
+
     private let capture = AudioCaptureService()
-    private let transcriber = StubTranscriber()
+    private let transcriber: FluidAudioParakeet
+    private let endpointer = FluidAudioVAD()
     private let injector = TextInjector()
     private let monitor = HotkeyMonitor()
     private let orchestrator: DictationOrchestrator
+
+    // Model-preparation states arrive on an arbitrary queue; funnel them through
+    // a Sendable stream and apply them on the main actor (see start()).
+    @ObservationIgnored private let prepStream: AsyncStream<ModelPreparationState>
+    @ObservationIgnored private var noteClearTask: Task<Void, Never>?
 
     @ObservationIgnored private lazy var hudPanel = HUDPanelController(model: hud, controller: self)
     @ObservationIgnored private var onboardingWindow: NSWindow?
@@ -22,10 +35,14 @@ final class AppController {
     @ObservationIgnored private var started = false
 
     init() {
+        let (stream, cont) = AsyncStream<ModelPreparationState>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        prepStream = stream
+        transcriber = FluidAudioParakeet(progress: { state in cont.yield(state) })
         orchestrator = DictationOrchestrator(
             capture: capture,
             transcriber: transcriber,
-            injector: injector
+            injector: injector,
+            endpointer: endpointer
         )
     }
 
@@ -48,6 +65,11 @@ final class AppController {
         Task { [orchestrator, hud, hudPanel] in
             for await state in orchestrator.hudStates {
                 hud.state = state
+                if case let .listening(level) = state {
+                    hud.pushLevel(level)
+                } else if case .idle = state {
+                    hud.resetWaveform()
+                }
                 hudPanel.refreshLayout()
             }
         }
@@ -55,9 +77,35 @@ final class AppController {
         Task { [orchestrator, monitor] in
             await orchestrator.run(events: monitor.events)
         }
+        // Menu-bar latency line.
+        Task { [orchestrator, weak self] in
+            for await summary in orchestrator.latencies {
+                self?.lastLatencyMs = Int(summary.totalMs.rounded())
+            }
+        }
+        // Transient status notes.
+        Task { [orchestrator, weak self] in
+            for await note in orchestrator.statusNotes {
+                self?.showNote(note)
+            }
+        }
+        // Model-preparation progress → menu line, HUD dot, readiness gate.
+        Task { [weak self] in
+            guard let stream = self?.prepStream else { return }
+            for await prep in stream {
+                self?.applyModelPrep(prep)
+            }
+        }
 
         capture.prepare()
+
+        // The transcriber is not ready until its model finishes preparing.
+        Task { [orchestrator] in await orchestrator.setTranscriberReady(false) }
+        hud.isPreparing = true
+
+        // Prepare Parakeet + VAD concurrently at launch (VAD degrades gracefully).
         Task { [transcriber] in try? await transcriber.warmUp() }
+        Task { [endpointer] in await endpointer.prepare() }
 
         // The monitor self-gates on Accessibility, so starting it is always safe.
         monitor.start()
@@ -88,13 +136,45 @@ final class AppController {
         }
     }
 
+    // MARK: - Model preparation + notes
+
+    private func applyModelPrep(_ prep: ModelPreparationState) {
+        hud.isPreparing = prep.isPreparing
+        switch prep {
+        case .checking:
+            modelStatus = "Preparing speech model…"
+        case let .downloading(progress):
+            modelStatus = "Downloading speech model… \(Int((progress * 100).rounded()))%"
+        case .loading:
+            modelStatus = "Loading speech model…"
+        case .ready:
+            modelStatus = nil
+            Task { [orchestrator] in await orchestrator.setTranscriberReady(true) }
+        case .failed:
+            modelStatus = "Speech model failed to load"
+            Task { [orchestrator] in await orchestrator.setTranscriberReady(false) }
+        }
+    }
+
+    private func showNote(_ note: String) {
+        statusNote = note
+        noteClearTask?.cancel()
+        noteClearTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(4))
+            if !Task.isCancelled { self?.statusNote = nil }
+        }
+    }
+
     // MARK: - HUD-driven actions
 
     func toggleHandsFree() {
         Task { [orchestrator, hud] in
             switch hud.state {
             case .idle:
+                // The HUD record button starts a hands-free session (no key to
+                // hold), so arm VAD endpointing right after starting.
                 await orchestrator.handle(.startRecording)
+                await orchestrator.handle(.engageHandsFree)
             case .listening:
                 await orchestrator.handle(.stopRecording)
             case .processing:

@@ -32,6 +32,16 @@ struct MenuContent: View {
         Text("Status: \(controller.statusLine)")
             .font(.caption)
 
+        if let modelStatus = controller.modelStatus {
+            Text(modelStatus).font(.caption)
+        }
+        if let note = controller.statusNote {
+            Text(note).font(.caption)
+        }
+        if let last = controller.lastLatencyMs {
+            Text("Last: \(last) ms").font(.caption)
+        }
+
         Divider()
 
         Button("Settings…") { controller.showSettings() }

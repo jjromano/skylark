@@ -19,5 +19,8 @@ DerivedData/
 .env
 .env.*
 
-# Local model downloads (fetched at runtime, never committed)
-Models/
+# Local model downloads (fetched at runtime, never committed). Anchored to the
+# repo root so it can't shadow the `Sources/SkylarkCore/Models/` source dir
+# (ARCHITECTURE §1). Runtime models actually live in ~/Library/Application
+# Support/Skylark/Models, outside the repo entirely.
+/Models/

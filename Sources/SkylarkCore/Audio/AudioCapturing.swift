@@ -11,4 +11,16 @@ public protocol AudioCapturing: Sendable {
     func stop() -> AudioClip
     /// RMS levels per tap callback for the HUD waveform (emitted even in Phase 0).
     var levels: AsyncStream<Float> { get }
+    /// Raw 16 kHz mono frames for streaming VAD (hands-free endpointing only).
+    /// Emitted only while frame delivery is enabled, so the push-to-talk path
+    /// pays no per-callback allocation.
+    var frames: AsyncStream<[Float]> { get }
+    /// Enable/disable raw-frame delivery on `frames`. Off by default.
+    func setFramesWanted(_ wanted: Bool)
+}
+
+public extension AudioCapturing {
+    /// Default: no frame delivery (fakes and Phase-0 callers don't need it).
+    var frames: AsyncStream<[Float]> { AsyncStream { $0.finish() } }
+    func setFramesWanted(_ wanted: Bool) {}
 }

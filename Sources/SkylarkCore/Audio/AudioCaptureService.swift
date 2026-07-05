@@ -30,6 +30,12 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     private let levelsContinuation: AsyncStream<Float>.Continuation
     public let levels: AsyncStream<Float>
 
+    // Raw-frame delivery for hands-free VAD. Gated by `framesWanted` so the
+    // push-to-talk path never allocates a per-callback array copy.
+    private let framesContinuation: AsyncStream<[Float]>.Continuation
+    public let frames: AsyncStream<[Float]>
+    private let framesWanted = Atomic<Bool>(false)
+
     private let signposter = OSSignposter(subsystem: "com.jjromano.skylark", category: "audio")
     private let logger = Logger(subsystem: "com.jjromano.skylark", category: "audio")
     private var captureSignpostID: OSSignpostID?
@@ -41,11 +47,19 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         let (stream, continuation) = AsyncStream<Float>.makeStream(bufferingPolicy: .bufferingNewest(4))
         levels = stream
         levelsContinuation = continuation
+        let (frameStream, frameCont) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        frames = frameStream
+        framesContinuation = frameCont
     }
 
     deinit {
         storage.deallocate()
         levelsContinuation.finish()
+        framesContinuation.finish()
+    }
+
+    public func setFramesWanted(_ wanted: Bool) {
+        framesWanted.store(wanted, ordering: .relaxed)
     }
 
     // MARK: - Lifecycle
@@ -176,6 +190,12 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         }
         let rms = (sumSquares / Float(frames)).squareRoot()
         levelsContinuation.yield(rms)
+
+        // Hands-free only: hand a copy of the converted frames to the VAD path.
+        // Off (no allocation) for push-to-talk.
+        if framesWanted.load(ordering: .relaxed) {
+            framesContinuation.yield(Array(UnsafeBufferPointer(start: channel, count: frames)))
+        }
     }
 }
 

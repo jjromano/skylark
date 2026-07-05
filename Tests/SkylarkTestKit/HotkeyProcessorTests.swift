@@ -30,9 +30,10 @@ struct HotkeyProcessorTests {
         // First quick tap (discarded, but records release time).
         #expect(p.process(.fnDown, at: at(0)) == .startRecording)
         #expect(p.process(.fnUp, at: at(80)) == .discard)
-        // Second quick tap within the double-tap window → lock (no extra output).
+        // Second quick tap within the double-tap window → lock; emits
+        // .engageHandsFree so the orchestrator arms VAD endpointing.
         #expect(p.process(.fnDown, at: at(150)) == .startRecording)
-        #expect(p.process(.fnUp, at: at(220)) == nil)
+        #expect(p.process(.fnUp, at: at(220)) == .engageHandsFree)
         #expect(p.state == .doubleTapLock)
         #expect(p.isRecording)
         // Next Fn press stops the locked session.
@@ -80,7 +81,7 @@ struct HotkeyProcessorTests {
         #expect(p.process(.fnDown, at: at(0)) == .startRecording)
         #expect(p.process(.fnUp, at: at(80)) == .discard)
         #expect(p.process(.fnDown, at: at(150)) == .startRecording)
-        #expect(p.process(.fnUp, at: at(220)) == nil) // locked
+        #expect(p.process(.fnUp, at: at(220)) == .engageHandsFree) // locked
         #expect(p.state == .doubleTapLock)
         #expect(p.process(.otherKeyDown(isEscape: true), at: at(400)) == .cancel)
         #expect(p.state == .idle)

@@ -20,6 +20,14 @@ private final class FakeCapture: AudioCapturing, @unchecked Sendable {
     func stop() -> AudioClip { clip }
 }
 
+private struct ThrowingTranscriber: Transcriber {
+    let id: TranscriberID = .stub
+    func warmUp() async throws {}
+    func transcribe(_ clip: AudioClip, hint: TranscriptionHint) async throws -> String {
+        throw ParakeetError.notReady
+    }
+}
+
 private actor SpyInjector: TextInjecting {
     private(set) var inserted: [String] = []
 
@@ -115,6 +123,36 @@ struct DictationOrchestratorTests {
             transcriber: StubTranscriber(),
             injector: spy
         )
+        await orchestrator.handle(.stopRecording)
+        await #expect(orchestrator.phase == .idle)
+        await #expect(spy.count() == 0)
+    }
+
+    @Test("Transcriber not ready: start is discarded, nothing recorded or inserted")
+    func notReadyDiscards() async {
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy
+        )
+        await orchestrator.setTranscriberReady(false)
+        await orchestrator.handle(.startRecording)
+        // Never entered recording.
+        await #expect(orchestrator.phase == .idle)
+        await orchestrator.handle(.stopRecording)
+        await #expect(spy.count() == 0)
+    }
+
+    @Test("Transcriber throws: drops to idle with no injection")
+    func transcriberThrowsNoInjection() async {
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: ThrowingTranscriber(),
+            injector: spy
+        )
+        await orchestrator.handle(.startRecording)
         await orchestrator.handle(.stopRecording)
         await #expect(orchestrator.phase == .idle)
         await #expect(spy.count() == 0)

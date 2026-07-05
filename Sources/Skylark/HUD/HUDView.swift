@@ -44,8 +44,8 @@ struct HUDView: View {
             } else {
                 statusDot
             }
-        case let .listening(level):
-            listeningContent(level: level)
+        case .listening:
+            listeningContent
         case .processing:
             processingContent
         }
@@ -54,9 +54,17 @@ struct HUDView: View {
     // MARK: - Pieces
 
     private var statusDot: some View {
+        // Pulses while the speech model is preparing; steady grey once ready.
         Circle()
-            .fill(Color.secondary)
+            .fill(model.isPreparing ? Color.orange : Color.secondary)
             .frame(width: 6, height: 6)
+            .opacity(model.isPreparing ? 0.35 : 1)
+            .animation(
+                model.isPreparing
+                    ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
+                    : .default,
+                value: model.isPreparing
+            )
     }
 
     private var expandedControls: some View {
@@ -84,20 +92,22 @@ struct HUDView: View {
         .padding(.horizontal, 12)
     }
 
-    private func listeningContent(level: Float) -> some View {
+    private var listeningContent: some View {
         HStack(spacing: 8) {
             Circle().fill(.red).frame(width: 8, height: 8)
-            // Placeholder waveform slot — stable layout; Phase 1 drives bars.
-            HStack(spacing: 2) {
-                ForEach(0..<7, id: \.self) { i in
+            // Live waveform: newest level enters from the trailing edge. Driven
+            // at the levels-stream cadence (~15–20 Hz) with eased height changes.
+            HStack(spacing: 1) {
+                ForEach(Array(model.waveform.enumerated()), id: \.offset) { _, level in
                     Capsule()
                         .fill(.white.opacity(0.55))
-                        .frame(width: 2, height: barHeight(i, level: level))
+                        .frame(width: 2, height: barHeight(level))
                 }
             }
-            .frame(height: 12)
+            .frame(height: 14)
+            .animation(.easeOut(duration: 0.08), value: model.waveform)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
     }
 
     private var processingContent: some View {
@@ -112,9 +122,12 @@ struct HUDView: View {
         .padding(.horizontal, 12)
     }
 
-    private func barHeight(_ index: Int, level: Float) -> CGFloat {
-        // Static reserved bars for Phase 0 (level currently unused in geometry).
-        let base: [CGFloat] = [4, 8, 12, 10, 12, 6, 4]
-        return base[index % base.count]
+    private func barHeight(_ level: Float) -> CGFloat {
+        // Map RMS (roughly 0…0.3 for speech) into a 3…14 pt bar with a mild
+        // curve so quiet speech is still visible. Clamped to the band height.
+        let minH: CGFloat = 3
+        let maxH: CGFloat = 14
+        let normalized = min(1, CGFloat((level).squareRoot()) * 2.2)
+        return minH + (maxH - minH) * normalized
     }
 }

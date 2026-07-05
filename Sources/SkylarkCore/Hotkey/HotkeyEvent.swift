@@ -12,4 +12,7 @@ public enum HotkeyEvent: Sendable, Equatable {
     case cancel
     /// Silent discard of an accidental/too-short activation: drop audio, no paste.
     case discard
+    /// The current recording became a hands-free (double-tap-lock) session:
+    /// there is no key to release, so the orchestrator arms VAD endpointing.
+    case engageHandsFree
 }

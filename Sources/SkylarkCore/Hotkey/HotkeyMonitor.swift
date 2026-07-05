@@ -133,16 +133,31 @@ public final class HotkeyMonitor: @unchecked Sendable {
         tapIsBuilt = false
     }
 
+    /// After the OS disables and we re-enable the tap, we reconcile the sticky
+    /// Fn state from `CGEventSource.flagsState`. If that flips Fn pressed→released
+    /// (we missed the real key-up while disabled), a live recording would be
+    /// stuck — so feed a synthetic fnUp. Pure decision, unit-tested.
+    public static func reconcileNeedsSyntheticFnUp(wasPressed: Bool, nowPressed: Bool) -> Bool {
+        wasPressed && !nowPressed
+    }
+
     // MARK: - Event handling (runs on the main run loop)
 
     /// Bridges a raw CG event through the processor. Returns nil to swallow the
     /// event (used to suppress the system Globe action on bare Fn).
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
-        // Re-enable and reconcile after the OS disables the tap.
+        // Re-enable and reconcile after the OS disables the tap. If the reconcile
+        // flips fn pressed→released while a recording is live, feed a synthetic
+        // fnUp so the session can't get stuck recording forever.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
             let flags = CGEventSource.flagsState(.combinedSessionState)
-            isFnPressed = flags.contains(.maskSecondaryFn)
+            let wasPressed = isFnPressed
+            let nowPressed = flags.contains(.maskSecondaryFn)
+            isFnPressed = nowPressed
+            if Self.reconcileNeedsSyntheticFnUp(wasPressed: wasPressed, nowPressed: nowPressed) {
+                emit(processor.process(.fnUp, at: ContinuousClock.now))
+            }
             return Unmanaged.passUnretained(event)
         }
 

@@ -111,10 +111,11 @@ public struct HotkeyProcessor: Sendable {
         }
 
         // Double-tap: this release is close to the previous one → lock hands-free.
+        // Signal the orchestrator so it arms VAD endpointing (no key to release).
         if let last = lastReleaseAt, last.duration(to: now) < Self.doubleTapWindow {
             state = .doubleTapLock
             lastReleaseAt = nil
-            return nil
+            return .engageHandsFree
         }
 
         let elapsed = start.duration(to: now)
