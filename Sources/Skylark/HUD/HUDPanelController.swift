@@ -1,0 +1,105 @@
+import AppKit
+import SkylarkCore
+import SwiftUI
+
+// NSPanel recipe adapted from Hex (MIT): Views/InvisibleWindow.swift, but sized
+// to content (not screen-sized) per the Phase 0 HUD spec.
+
+/// A borderless, non-activating floating panel that hosts the HUD pill,
+/// sized to its SwiftUI content and clamped just below the notch / menu bar.
+@MainActor
+final class HUDPanelController {
+    private let panel: NSPanel
+    private let hosting: NSHostingController<HUDView>
+    private let model: HUDModel
+
+    init(model: HUDModel, controller: AppController) {
+        self.model = model
+
+        let view = HUDView(
+            model: model,
+            onToggleRecord: { [weak controller] in controller?.toggleHandsFree() },
+            onCancel: { [weak controller] in controller?.cancelRecording() },
+            onOpenSettings: { [weak controller] in controller?.showSettings() }
+        )
+        hosting = NSHostingController(rootView: view)
+        hosting.sizingOptions = [.preferredContentSize]
+
+        panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 64, height: 12),
+            styleMask: [.fullSizeContentView, .borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.contentViewController = hosting
+        panel.level = .statusBar
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.hidesOnDeactivate = false
+        panel.isMovable = false
+        panel.ignoresMouseEvents = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(screenParametersChanged),
+            name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(panelResized),
+            name: NSWindow.didResizeNotification,
+            object: panel
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    var canBecomeKey: Bool { false }
+
+    func show() {
+        refreshLayout()
+        panel.orderFrontRegardless()
+    }
+
+    func hide() {
+        panel.orderOut(nil)
+    }
+
+    /// Re-fit the panel to its content and re-clamp its position.
+    func refreshLayout() {
+        let size = HUDMetrics.size(for: model.state, hovering: model.isHovering)
+        // +4 accounts for the 2pt padding around the pill in HUDView.
+        panel.setContentSize(CGSize(width: size.width + 4, height: size.height + 4))
+        reposition()
+    }
+
+    @objc private func screenParametersChanged() {
+        reposition()
+    }
+
+    @objc private func panelResized() {
+        reposition()
+    }
+
+    private func reposition() {
+        guard let screen = NSScreen.main else { return }
+        let size = panel.frame.size
+        let x = screen.frame.midX - size.width / 2
+
+        let topInset = screen.safeAreaInsets.top
+        let y: CGFloat
+        if topInset > 0 {
+            // Just below the notch.
+            y = screen.frame.maxY - topInset - size.height - HUDMetrics.topGap
+        } else {
+            // Just below the menu bar.
+            y = screen.visibleFrame.maxY - size.height - HUDMetrics.topGap
+        }
+        panel.setFrameOrigin(NSPoint(x: x.rounded(), y: y.rounded()))
+    }
+}
