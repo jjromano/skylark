@@ -12,10 +12,12 @@ place.
 | Language/UI | Swift 6.2, SwiftUI + AppKit where needed | PRD §11; low-latency audio, AX APIs |
 | Build system | **Pure SwiftPM — no Xcode project** | Build box has CLT only; reproducible for non-technical users; FluidAudio/WhisperKit are SPM packages |
 | App packaging | `swift build -c release` → `Scripts/bundle.sh` assembles `Skylark.app` (Info.plist, icon, resources) → `codesign` with a **self-signed "Skylark Dev" certificate** | Stable signing identity so TCC grants (Mic, Accessibility, Input Monitoring) survive rebuilds |
-| Min deployment | macOS 15; Tier‑1 local cleanup gated `#available(macOS 26)` for FoundationModels **[pending research — may raise floor to FluidAudio's min]** | Both current machines run macOS 26 |
+| Min deployment | **macOS 26** | All target machines run 26; FoundationModels needs 26; kills `#available` gating. (Deps allow lower: FluidAudio ≥14, WhisperKit ≥13) |
 | Bundle ID | `com.jjromano.skylark` | Stable TCC identity |
 | Persistence | SQLite via **GRDB** (MIT, SPM) | Code-first, testable, no Core Data model files (which want Xcode tooling) |
 | App style | `LSUIElement` menu-bar app + floating `NSPanel` HUD | PRD §9, §11 |
+| Resources | Never `Bundle.module` in app code — SPM's generated accessor breaks inside a signed .app (looks at bundle root; codesign rejects root files). Bundler puts `<Pkg>_<Target>.bundle` in `Contents/Resources`; load via `Bundle.main.resourceURL` helper. Verified: FluidAudio/WhisperKit library targets ship no resource bundles, so deps are unaffected | Empirically verified on this machine |
+| FoundationModels macros | `@Generable`/`@Guide` don't compile with CLT-only (macro plugin ships in Xcode). Tier‑1 cleanup uses plain `String` responses | Verified locally |
 
 ## 1. Package layout
 
@@ -47,7 +49,8 @@ Makefile                # make app / make run / make test
 ## 2. Core abstractions (API surface — orchestrator-owned)
 
 ```swift
-// One recorded utterance, 16 kHz mono Float32 (engines' native rate — verify) [pending research]
+// One recorded utterance, 16 kHz mono Float32 (confirmed native rate for
+// FluidAudio ASR + VAD and WhisperKit; capture converts once at the tap)
 struct AudioClip { let samples: [Float]; let sampleRate: Double; let duration: TimeInterval }
 
 protocol Transcriber: Sendable {
@@ -87,7 +90,25 @@ Fn up   ─→ clip finalized ─→ Transcriber finishes final text
         ─→ Cleaner.clean(raw) async ─→ TextInjector.replace(token, cleaned)
 ```
 
-Hands-free toggle: same, but VAD endpointing generates the "Fn up" event.
+Hands-free toggle: same, but VAD endpointing generates the "Fn up" event
+(FluidAudio `VadManager` streaming `.speechEnd` events).
+
+**Transcription strategy for push-to-talk (Phase 1 MVP):** batch — feed the
+whole clip to `AsrManager.transcribe` on release. At Parakeet's ~140× real-time
+on ANE, a 10 s utterance decodes in well under 100 ms, comfortably inside the
+300 ms bar, with none of the sliding-window complexity. Live interim text in
+the HUD via `SlidingWindowAsrManager` is an additive enhancement after the
+latency bar is proven.
+
+**Injection strategy (AX-first — deliberate inversion of Hex's order):**
+1. Probe `kAXFocusedUIElement`; if it answers `kAXValue`/`kAXSelectedText`
+   reads, set `kAXSelectedTextAttribute` — clipboard untouched, and we get a
+   real success/failure signal.
+2. On any AX failure: full multi-item `NSPasteboard` snapshot (all types) →
+   write text → poll `changeCount` until committed (5 ms poll, 150 ms cap) →
+   synthesized Cmd-V (explicit Cmd down, layout-resolved V, Cmd up, posted to
+   `.cghidEventTap`) → 500 ms grace → restore snapshot. If the paste itself
+   fails, leave the text on the clipboard as the user's fallback.
 
 **In-place replacement strategy** (Tier 1/2 cleanup): when insertion went via
 AX we can rewrite the inserted range precisely. When insertion used the paste
@@ -104,8 +125,19 @@ unsafe. **[design to validate in Phase 2]**
 - `AudioCaptureService` — wraps AVAudioEngine; render-thread tap writes into a
   preallocated ring buffer, publishes frames/levels via `AsyncStream`
   (no allocation, no locks on the audio thread).
-- `HotkeyMonitor` — CGEventTap on its own thread; posts key events into the
-  orchestrator. **[pending research: exact Fn capture mechanism]**
+- `HotkeyMonitor` — active CGEventTap (`.cghidEventTap`, head-insert,
+  `.defaultTap`) on its own run loop. Bare Fn = `.flagsChanged` + keycode
+  `kVK_Function` (0x3F) + `.maskSecondaryFn`, with the three known traps
+  handled (per Hex/Handy, both MIT): sticky fn-pressed bool because arrow/F-keys
+  spuriously carry the fn mask; skip unknown-keycode keyDowns carrying the fn
+  flag (Fn+media keys); reconcile modifier state from
+  `CGEventSource.flagsState` after `.tapDisabledByTimeout` and re-enable the
+  tap. Swallow the bare-Fn event (return nil) to suppress the system Globe
+  action; also detect `AppleFnUsageType` (com.apple.HIToolbox) and surface a
+  hint in onboarding. Push-to-talk/double-tap-lock is a pure, unit-testable
+  state machine adapted from Hex's `HotKeyProcessor` (idle / pressAndHold /
+  doubleTapLock; 0.3 s double-tap window; ≥0.3 s minimum hold for
+  modifier-only chords; ESC cancels).
 - UI — `@MainActor`, observes an `@Observable HUDModel` snapshot the
   orchestrator updates.
 - Engines — each `Transcriber` manages its own executor; `warmUp()` at app
@@ -119,16 +151,50 @@ unsafe. **[design to validate in Phase 2]**
 - `model_registry(slug, label, provider_pin, kind ENUM(stt, cleanup), sort)`
 - Settings in `UserDefaults` (non-secret); OpenRouter key in Keychain only.
 
-## 6. External services
+## 6. Engine integration facts (verified from source, 2026-07)
 
-- **OpenRouter STT**: `POST /api/v1/audio/transcriptions`, per-clip; slugs +
-  request shape **[pending research]**. 60 s timeout budget, transparent local
-  fallback with non-blocking notice (PRD §6.2).
-- **OpenRouter cleanup**: chat completions, provider pinned to Groq, streaming
-  SSE. Pinning syntax **[pending research]**.
-- **Model downloads**: FluidAudio/WhisperKit fetch their CoreML models on
-  first use; download manager UI wraps their APIs. Locations/sizes
-  **[pending research]**.
+### FluidAudio (Apache-2.0, SPM `from: "0.15.4"`, zero transitive deps)
+- Batch path (our primary): `AsrModels.downloadAndLoad(to:)` once →
+  `AsrManager` (actor) `.transcribe(_ samples: [Float], decoderState: inout
+  TdtDecoderState)`. **Every transcribe takes `inout TdtDecoderState`** — the
+  README's stateless example is stale. `reset()` clears decoder state but
+  keeps models warm; `cleanup()` releases them (only on quit/engine switch).
+- Parakeet TDT v3 int8 ≈ **483 MB** on disk, auto-downloaded from HuggingFace.
+  Pass our own directory: `~/Library/Application Support/Skylark/Models/`.
+- Compute: default `.cpuAndNeuralEngine` — keep it (low memory, ANE).
+- Interim results for TDT v3 = `SlidingWindowAsrManager`
+  (volatile/confirmed updates via `AsyncStream`), NOT transducer cache
+  streaming. True low-latency streaming needs different model variants
+  (Parakeet EOU 120M with end-of-utterance callbacks, Unified 0.6B) — a
+  Phase 1+ option, not the MVP path.
+- **VAD included**: `VadManager` (Silero CoreML, 16 kHz, 256 ms chunks) with a
+  streaming hysteresis state machine (`.speechStart`/`.speechEnd` events) and
+  endpointing knobs (`minSilenceDuration` etc.). No extra dependency needed.
+- Builds clean on Swift 6.2.3 / macOS 26 (verified). No open ASR issues on 26.
+
+### WhisperKit (MIT) — Phase 4
+- Repo renamed: package is now `argmax-oss-swift`, `from: "1.0.0"`, product
+  `WhisperKit`. large-v3-turbo checkpoint = `openai_whisper-large-v3-v20240930`
+  (1.62 GB full; `_626MB` compressed variant is their default for capable
+  Macs). **Must override `downloadBase`** — default drops models into
+  `Documents/huggingface`. `prewarmModels()` exists.
+
+### OpenRouter (verified against live API + docs)
+- STT: `POST /api/v1/audio/transcriptions`, JSON with base64
+  `input_audio.data` + `format` (not multipart); optional `language: "en"`.
+  Response: `{text, usage.cost}`. 60 s upstream timeout. Slugs: Groq fast
+  Whisper = **`openai/whisper-large-v3-turbo`** (Groq is sole provider,
+  $0.04/hr); accuracy = `openai/gpt-4o-transcribe` (token-priced; registry
+  also seeds `openai/gpt-4o-mini-transcribe` — cheaper, steadier uptime).
+- Cleanup: `POST /api/v1/chat/completions`, `"stream": true` (SSE, ignore
+  `: OPENROUTER PROCESSING` keep-alives). Provider pinning:
+  `"provider": {"order": ["groq"], "allow_fallbacks": true}` (soft pin —
+  Groq 30-min uptime floats 95–99%, so hard `only` pin would hurt
+  reliability). `:nitro` suffix ≡ `provider.sort:"throughput"`.
+- Cleanup slugs (all live on Groq): `meta-llama/llama-3.1-8b-instruct`
+  ($0.05/$0.08 per 1M), `openai/gpt-oss-20b`, `meta-llama/llama-3.3-70b-instruct`.
+- Auth: `Authorization: Bearer <key>`; validate stored key via
+  `GET /api/v1/key` at onboarding.
 
 ## 7. Privacy invariants (enforced in review, every phase)
 

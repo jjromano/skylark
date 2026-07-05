@@ -5,6 +5,19 @@ Native Swift/SwiftUI macOS menu-bar dictation app. Read
 record) before working. Latency is the product: never add blocking work to the
 audio or paste path.
 
+## Machines
+
+- **Build/dev box:** JJ's always-on headless Mac Mini (M4, 24GB, macOS 26).
+  Apple Intelligence is OFF here by choice — Foundation Models reports
+  `.appleIntelligenceNotEnabled`; treat that as a supported runtime state, not
+  an error. No interactive testing here (no mic/keyboard/screen use).
+- **Target machines:** JJ's MacBook Air (M3, 16GB) and Stephanie's MacBook
+  Pro. Latency/memory acceptance (PRD §12) is judged on the M3 Air, not the
+  Mini — Mini benchmarks are advisory.
+- Distribution = build from source on each target machine (planned
+  `Scripts/install.sh`); never assume a binary built on one machine is
+  trusted on another.
+
 ## Build (SwiftPM only — no Xcode on this machine)
 
 ```sh
