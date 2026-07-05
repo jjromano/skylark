@@ -16,7 +16,7 @@ place.
 | Bundle ID | `com.jjromano.skylark` | Stable TCC identity |
 | Persistence | SQLite via **GRDB** (MIT, SPM) | Code-first, testable, no Core Data model files (which want Xcode tooling) |
 | App style | `LSUIElement` menu-bar app + floating `NSPanel` HUD | PRD §9, §11 |
-| Resources | Never `Bundle.module` in app code — SPM's generated accessor breaks inside a signed .app (looks at bundle root; codesign rejects root files). Bundler puts `<Pkg>_<Target>.bundle` in `Contents/Resources`; load via `Bundle.main.resourceURL` helper. Verified: FluidAudio/WhisperKit library targets ship no resource bundles, so deps are unaffected | Empirically verified on this machine |
+| Resources | Never `Bundle.module` in app code — SPM's generated accessor breaks inside a signed .app (looks at bundle root; codesign rejects root files). Bundler puts `<Pkg>_<Target>.bundle` in `Contents/Resources`; load via `Bundle.main.resourceURL` helper. FluidAudio/WhisperKit library targets ship no resource bundles. GRDB ships `GRDB_GRDB.bundle` (privacy manifest); `bundle.sh` copies it into `Contents/Resources`. If GRDB ever loads it via the generated accessor at runtime it would look at the bundle root instead — no such failure observed, but if a `could not load resource bundle` crash ever appears, this is why | Empirically verified on this machine (build-time; runtime lookup unexercised) |
 | FoundationModels macros | `@Generable`/`@Guide` don't compile with CLT-only (macro plugin ships in Xcode). Tier‑1 cleanup uses plain `String` responses | Verified locally |
 
 ## 1. Package layout
