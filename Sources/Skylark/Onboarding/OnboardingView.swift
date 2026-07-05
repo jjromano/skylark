@@ -4,6 +4,7 @@ import SwiftUI
 /// Three permission rows with live status badges. Polls while visible.
 struct OnboardingView: View {
     @Bindable var permissions: PermissionsService
+    let apiKeyClient: OpenRouterClient
     var onClose: () -> Void
 
     var body: some View {
@@ -47,6 +48,10 @@ struct OnboardingView: View {
                 .font(.caption)
                 .foregroundStyle(.orange)
             }
+
+            Divider()
+
+            APIKeyCard(client: apiKeyClient)
 
             Divider()
 

@@ -45,6 +45,8 @@ struct MenuContent: View {
         Divider()
 
         CleanupMenu(controller: controller)
+        CleanupModelMenu(controller: controller)
+        SpeechEngineMenu(controller: controller)
 
         Divider()
 
@@ -69,6 +71,7 @@ private struct CleanupMenu: View {
             item("Auto", value: "auto")
             item("Raw", value: "raw")
             item("Local", value: "local")
+            item("Cloud", value: "cloud")
         }
     }
 
@@ -82,6 +85,61 @@ private struct CleanupMenu: View {
             } else {
                 Text(title)
             }
+        }
+    }
+}
+
+/// Global cloud cleanup model picker (registry `.cleanup` entries + custom slug).
+private struct CleanupModelMenu: View {
+    let controller: AppController
+
+    var body: some View {
+        Menu("Cleanup Model") {
+            ForEach(controller.cleanupModels) { entry in
+                Button {
+                    controller.selectCleanupSlug(entry.slug)
+                } label: {
+                    if controller.currentCleanupSlug == entry.slug {
+                        Label(entry.label, systemImage: "checkmark")
+                    } else {
+                        Text(entry.label)
+                    }
+                }
+            }
+            Divider()
+            Button("Custom Slug…") { controller.promptCustomCleanupSlug() }
+        }
+    }
+}
+
+/// Speech engine picker: local Parakeet + registry `.stt` entries + custom slug.
+private struct SpeechEngineMenu: View {
+    let controller: AppController
+
+    var body: some View {
+        Menu("Speech Engine") {
+            Button {
+                controller.selectSTT(.localParakeet)
+            } label: {
+                if controller.currentSTT == .localParakeet {
+                    Label("Local (Parakeet)", systemImage: "checkmark")
+                } else {
+                    Text("Local (Parakeet)")
+                }
+            }
+            ForEach(controller.sttModels) { entry in
+                Button {
+                    controller.selectSTT(.cloud(slug: entry.slug))
+                } label: {
+                    if controller.currentSTT == .cloud(slug: entry.slug) {
+                        Label(entry.label, systemImage: "checkmark")
+                    } else {
+                        Text(entry.label)
+                    }
+                }
+            }
+            Divider()
+            Button("Custom Slug…") { controller.promptCustomSTTSlug() }
         }
     }
 }

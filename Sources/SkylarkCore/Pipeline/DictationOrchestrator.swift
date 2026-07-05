@@ -14,10 +14,18 @@ public actor DictationOrchestrator {
     }
 
     private let capture: any AudioCapturing
-    private let transcriber: any Transcriber
+    /// Swappable at runtime (`setTranscriber`) so the menu-bar Speech Engine
+    /// quick-switch can move between local and cloud without rebuilding the
+    /// orchestrator. The ready-gate (`transcriberReady`) is independent.
+    private var transcriber: any Transcriber
     private let injector: any TextInjecting
     private let endpointer: (any SpeechEndpointer)?
     private let hint: TranscriptionHint
+
+    /// Detached history sinks (phase-3 spec §7). Both off the paste path; nil in
+    /// tests/headless callers that don't record.
+    private let historyRecord: (@Sendable (HistoryRecord) -> Void)?
+    private let historyUpdate: (@Sendable (HistoryRecord) -> Void)?
 
     // Cleanup wiring (Phase 2). Defaults keep behaviour raw-only + instant so the
     // 3-arg init and existing call sites are unaffected.
@@ -80,6 +88,8 @@ public actor DictationOrchestrator {
         modeProvider: any ModeProviding = InMemoryModeProvider(),
         dictionary: any DictionaryProviding = InMemoryDictionaryProvider(),
         frontmostBundleID: @escaping @Sendable () -> String? = { nil },
+        historyRecord: (@Sendable (HistoryRecord) -> Void)? = nil,
+        historyUpdate: (@Sendable (HistoryRecord) -> Void)? = nil,
         replaceTimeout: Duration = .seconds(5),
         waitForCleanTimeout: Duration = .seconds(2)
     ) {
@@ -92,6 +102,8 @@ public actor DictationOrchestrator {
         self.modeProvider = modeProvider
         self.dictionary = dictionary
         self.frontmostBundleID = frontmostBundleID
+        self.historyRecord = historyRecord
+        self.historyUpdate = historyUpdate
         self.replaceTimeout = replaceTimeout
         self.waitForCleanTimeout = waitForCleanTimeout
         let (stream, continuation) = AsyncStream<HUDState>.makeStream(bufferingPolicy: .bufferingNewest(1))
@@ -109,6 +121,12 @@ public actor DictationOrchestrator {
     /// The app calls this when model preparation completes (or fails).
     public func setTranscriberReady(_ ready: Bool) {
         transcriberReady = ready
+    }
+
+    /// Swap the active transcriber (menu-bar Speech Engine quick-switch). Takes
+    /// effect on the next dictation; the ready-gate is managed separately.
+    public func setTranscriber(_ transcriber: any Transcriber) {
+        self.transcriber = transcriber
     }
 
     /// Temporary global cleanup override from the menu bar. `nil` = Auto (use the
@@ -239,6 +257,13 @@ public actor DictationOrchestrator {
 
         phase = .injecting
 
+        // Stamp the dictation now so a late clean-text update correlates back to
+        // this exact history row (HistoryHub keys by timestamp).
+        let historyTimestamp = Date()
+        // Clean text known synchronously (paste wait-for-clean path only); the AX
+        // path learns it later and updates the record then.
+        var syncCleanText: String?
+
         if effectiveTier == .raw {
             // Tier 0: raw stands, no cleanup stage.
             await insertRaw(rawText)
@@ -250,7 +275,10 @@ public actor DictationOrchestrator {
                 let cleaner = cleaners.cleaner(for: effectiveTier)
                 let context = setup.context
                 Task { [weak self] in
-                    await self?.runCleanupAndReplace(token: token, rawText: rawText, cleaner: cleaner, context: context)
+                    await self?.runCleanupAndReplace(
+                        token: token, rawText: rawText, cleaner: cleaner,
+                        context: context, historyTimestamp: historyTimestamp
+                    )
                 }
             }
         } else {
@@ -258,22 +286,66 @@ public actor DictationOrchestrator {
             // deviation; select-back is unsafe here). Race the cleaner against a
             // 2 s clock; on timeout/failure inject raw.
             let cleaner = cleaners.cleaner(for: effectiveTier)
-            let finalText = await cleanWithTimeout(
+            let cleaned = await cleanWithTimeout(
                 cleaner, rawText, context: setup.context, cap: waitForCleanTimeout
-            ) ?? rawText
-            await insertRaw(finalText)
+            )
+            if let cleaned, cleaned != rawText { syncCleanText = cleaned }
+            await insertRaw(cleaned ?? rawText)
         }
 
         let afterInject = ContinuousClock.now
-        recordLatency(
+        let summary = recordLatency(
             captureClose: t0.duration(to: afterCapture),
             transcribe: afterCapture.duration(to: afterTranscribe),
             inject: afterTranscribe.duration(to: afterInject),
             total: t0.duration(to: afterInject)
         )
 
+        emitHistory(
+            timestamp: historyTimestamp,
+            rawText: rawText,
+            cleanText: syncCleanText,
+            modeID: setup.mode.id,
+            durationSec: clip.duration,
+            latencyMs: summary.totalMs
+        )
+
         phase = .idle
         publish(.idle)
+    }
+
+    /// Append a completed dictation to history via the detached sink (off the
+    /// paste path; no-op when no sink is wired). Never logs transcript content.
+    private func emitHistory(
+        timestamp: Date,
+        rawText: String,
+        cleanText: String?,
+        modeID: String,
+        durationSec: TimeInterval,
+        latencyMs: Double
+    ) {
+        guard let historyRecord else { return }
+        let record = HistoryRecord(
+            timestamp: timestamp,
+            rawText: rawText,
+            cleanText: cleanText,
+            modeID: modeID,
+            engine: Self.engineString(transcriber.id),
+            durationMs: Int((durationSec * 1000).rounded()),
+            latencyMs: Int(latencyMs.rounded()),
+            audioPath: nil
+        )
+        historyRecord(record)
+    }
+
+    /// Stable engine string for the history row.
+    private static func engineString(_ id: TranscriberID) -> String {
+        switch id {
+        case .parakeet: return "parakeet"
+        case .whisperKit: return "whisperkit"
+        case .cloud(let slug): return slug
+        case .stub: return "stub"
+        }
     }
 
     /// Insert text, swallowing failures so injection never wedges the state
@@ -350,7 +422,8 @@ public actor DictationOrchestrator {
         token: InsertionToken,
         rawText: String,
         cleaner: any Cleaner,
-        context: CleanupContext
+        context: CleanupContext,
+        historyTimestamp: Date
     ) async {
         guard let cleaned = await cleanWithTimeout(cleaner, rawText, context: context, cap: replaceTimeout) else {
             return
@@ -358,9 +431,25 @@ public actor DictationOrchestrator {
         guard cleaned != rawText else { return }
         do {
             try await injector.replace(token, with: cleaned)
+            // Replace succeeded — record the clean text against this dictation.
+            emitHistoryUpdate(timestamp: historyTimestamp, cleanText: cleaned)
         } catch {
             logger.notice("cleanup replace skipped: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    /// Emit a clean-text update for a previously-recorded dictation (matched by
+    /// timestamp in the sink). Off the paste path; no-op without a sink.
+    private func emitHistoryUpdate(timestamp: Date, cleanText: String) {
+        guard let historyUpdate else { return }
+        historyUpdate(HistoryRecord(
+            timestamp: timestamp,
+            rawText: "",
+            cleanText: cleanText,
+            engine: "",
+            durationMs: 0,
+            latencyMs: 0
+        ))
     }
 
     /// Race a cleaner against a timeout; returns the cleaned text, or nil on
@@ -396,7 +485,8 @@ public actor DictationOrchestrator {
 
     // MARK: - Latency
 
-    private func recordLatency(captureClose: Duration, transcribe: Duration, inject: Duration, total: Duration) {
+    @discardableResult
+    private func recordLatency(captureClose: Duration, transcribe: Duration, inject: Duration, total: Duration) -> DictationLatency {
         let summary = DictationLatency(
             captureCloseMs: captureClose.milliseconds,
             transcribeMs: transcribe.milliseconds,
@@ -412,6 +502,7 @@ public actor DictationOrchestrator {
             total: \(summary.totalMs, format: .fixed(precision: 1), privacy: .public)
             """)
         latencyContinuation.yield(summary)
+        return summary
     }
 
     // MARK: - Levels
