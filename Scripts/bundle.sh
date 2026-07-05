@@ -27,6 +27,12 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$CONTENTS/MacOS/$APP_NAME"
 cp "Resources/Info.plist" "$CONTENTS/Info.plist"
 
+if [[ -f "Resources/AppIcon.icns" ]]; then
+    cp "Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
+else
+    echo "⚠️  Resources/AppIcon.icns not found — run 'swift Scripts/make-icon.swift' to generate it."
+fi
+
 # Copy any SwiftPM resource bundles (<Pkg>_<Target>.bundle) next to the binary.
 # (Phase 0 ships none, but be forward-compatible.)
 shopt -s nullglob
