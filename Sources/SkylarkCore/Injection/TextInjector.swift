@@ -41,6 +41,10 @@ public struct InsertionToken: @unchecked Sendable, Equatable {
 public protocol TextInjecting: Sendable {
     func insert(_ text: String) async throws -> InsertionToken
     func replace(_ token: InsertionToken, with text: String) async throws
+    /// Whether the focused element supports precise AX insertion right now. The
+    /// orchestrator probes this at paste time to pick the cleanup strategy
+    /// (in-place replace vs. wait-for-clean).
+    func canInsertDirectly() async -> Bool
 }
 
 /// Posts a real Cmd-V (or an injected substitute in tests).
@@ -76,7 +80,9 @@ public struct CmdVPasteExecutor: PasteExecutor {
 }
 
 public enum InjectionError: Error, Sendable {
-    case replaceNotImplemented
+    /// In-place replacement isn't available for paste-inserted text; the
+    /// orchestrator handles paste targets with wait-for-clean instead.
+    case replaceUnsupported
 }
 
 /// AX-first text injection with a clipboard-preserving paste fallback.
@@ -102,15 +108,29 @@ public final class TextInjector: TextInjecting {
         return await performClipboardPaste(text, pasteboard: .general, executor: executor)
     }
 
+    /// In-place replacement of the just-inserted range (ARCHITECTURE §3).
+    /// AX-inserted text is rewritten precisely; paste-inserted text is
+    /// unsupported here (the orchestrator waits-for-clean before pasting).
     public func replace(_ token: InsertionToken, with text: String) async throws {
-        // In-place replacement lands in Phase 2 (ARCHITECTURE §3).
-        throw InjectionError.replaceNotImplemented
+        switch token.method {
+        case .paste:
+            throw InjectionError.replaceUnsupported
+        case let .ax(element):
+            // Any failed precondition aborts silently — the raw text stands.
+            _ = Self.performAXReplace(element: element, original: token.text, replacement: text)
+        }
+    }
+
+    /// Whether the focused element supports precise AX insertion right now.
+    public func canInsertDirectly() async -> Bool {
+        Self.focusedEditableElement() != nil
     }
 
     // MARK: - AX path
 
-    /// Attempts AX insertion; returns the focused element on success, else nil.
-    static func insertViaAX(_ text: String) -> AXUIElement? {
+    /// The focused element if it answers `kAXValue`/`kAXSelectedText` reads
+    /// (i.e. supports direct AX insertion); nil otherwise.
+    static func focusedEditableElement() -> AXUIElement? {
         let systemWide = AXUIElementCreateSystemWide()
         var focusedRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
@@ -125,9 +145,87 @@ public final class TextInjector: TextInjecting {
         let supportsValue = AXUIElementCopyAttributeValue(focused, kAXValueAttribute as CFString, &probe) == .success
         let supportsSelected = AXUIElementCopyAttributeValue(focused, kAXSelectedTextAttribute as CFString, &probe) == .success
         guard supportsValue || supportsSelected else { return nil }
+        return focused
+    }
 
+    /// Attempts AX insertion; returns the focused element on success, else nil.
+    static func insertViaAX(_ text: String) -> AXUIElement? {
+        guard let focused = focusedEditableElement() else { return nil }
         let result = AXUIElementSetAttributeValue(focused, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
         return result == .success ? focused : nil
+    }
+
+    // MARK: - In-place replacement (AX)
+
+    /// Precisely replaces the `original` run ending at the caret with
+    /// `replacement`. Returns true when the replacement was applied; false (no
+    /// mutation) on any mismatch — focus moved, caret math impossible, or the
+    /// text at the computed range isn't what we inserted.
+    static func performAXReplace(element: AXUIElement, original: String, replacement: String) -> Bool {
+        // 1) Focus must still be the token's element (user hasn't clicked away).
+        guard let focused = focusedEditableElement(), CFEqual(focused, element) else { return false }
+
+        // 2) Read the caret (selected range); expected collapsed at the end of
+        //    the inserted text. AX ranges are UTF-16 code units.
+        guard let caret = selectedRange(element) else { return false }
+        guard let candidate = candidateRange(caretLocation: caret.location, insertedUTF16Count: utf16Count(original)) else {
+            return false
+        }
+
+        // 3) Verify the candidate range actually holds our inserted text.
+        guard let atRange = string(in: element, range: candidate), atRange == original else { return false }
+
+        // 4) Select the range, replace it, restore a collapsed caret at the end.
+        guard setSelectedRange(element, candidate) else { return false }
+        guard AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, replacement as CFTypeRef) == .success else {
+            return false
+        }
+        let newCaret = CFRange(location: candidate.location + utf16Count(replacement), length: 0)
+        _ = setSelectedRange(element, newCaret)
+        return true
+    }
+
+    // MARK: - Range math (pure, unit-tested)
+
+    /// Number of UTF-16 code units — the unit AX text ranges use.
+    public nonisolated static func utf16Count(_ text: String) -> Int { text.utf16.count }
+
+    /// The range the inserted text occupies, given the caret sits at its end.
+    /// nil when the math underflows (caret before the inserted text).
+    public nonisolated static func candidateRange(caretLocation: Int, insertedUTF16Count: Int) -> CFRange? {
+        let start = caretLocation - insertedUTF16Count
+        guard start >= 0, insertedUTF16Count >= 0 else { return nil }
+        return CFRange(location: start, length: insertedUTF16Count)
+    }
+
+    // MARK: - AX getters/setters
+
+    private static func selectedRange(_ element: AXUIElement) -> CFRange? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &ref) == .success,
+              let ref else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(ref as! AXValue, .cfRange, &range) else { return nil }
+        return range
+    }
+
+    private static func string(in element: AXUIElement, range: CFRange) -> String? {
+        var mutableRange = range
+        guard let rangeValue = AXValueCreate(.cfRange, &mutableRange) else { return nil }
+        var ref: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXStringForRangeParameterizedAttribute as CFString,
+            rangeValue,
+            &ref
+        ) == .success else { return nil }
+        return ref as? String
+    }
+
+    private static func setSelectedRange(_ element: AXUIElement, _ range: CFRange) -> Bool {
+        var mutableRange = range
+        guard let value = AXValueCreate(.cfRange, &mutableRange) else { return false }
+        return AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, value) == .success
     }
 
     // MARK: - Paste path (testable choreography)

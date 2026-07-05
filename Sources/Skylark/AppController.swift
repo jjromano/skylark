@@ -17,11 +17,16 @@ final class AppController {
     /// Transient status note (e.g. model-not-ready discard).
     private(set) var statusNote: String?
 
+    /// Global cleanup override backing the menu "Cleanup" submenu. "auto" = use
+    /// the resolved mode's tier; "raw"/"local" force that tier.
+    static let cleanupOverrideKey = "cleanupTierOverride"
+
     private let capture = AudioCaptureService()
     private let transcriber: FluidAudioParakeet
     private let endpointer = FluidAudioVAD()
     private let injector = TextInjector()
     private let monitor = HotkeyMonitor()
+    private let frontmost = FrontmostAppMonitor()
     private let orchestrator: DictationOrchestrator
 
     // Model-preparation states arrive on an arbitrary queue; funnel them through
@@ -42,7 +47,11 @@ final class AppController {
             capture: capture,
             transcriber: transcriber,
             injector: injector,
-            endpointer: endpointer
+            endpointer: endpointer,
+            cleaners: CleanerRegistry(local: LocalCleaner()),
+            modeProvider: InMemoryModeProvider(),
+            dictionary: InMemoryDictionaryProvider(),
+            frontmostBundleID: frontmost.snapshot
         )
     }
 
@@ -106,6 +115,12 @@ final class AppController {
         // Prepare Parakeet + VAD concurrently at launch (VAD degrades gracefully).
         Task { [transcriber] in try? await transcriber.warmUp() }
         Task { [endpointer] in await endpointer.prepare() }
+
+        // Track the frontmost app so the orchestrator resolves modes at fn-down.
+        frontmost.start()
+
+        // Apply any persisted cleanup override to the orchestrator.
+        applyCleanupOverride(UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto")
 
         // The monitor self-gates on Accessibility, so starting it is always safe.
         monitor.start()
@@ -185,6 +200,29 @@ final class AppController {
 
     func cancelRecording() {
         Task { [orchestrator] in await orchestrator.handle(.cancel) }
+    }
+
+    // MARK: - Cleanup override (menu bar)
+
+    /// The persisted override raw value ("auto"/"raw"/"local").
+    var cleanupOverride: String {
+        UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto"
+    }
+
+    /// Set from the menu; persists and pushes the tier into mode resolution.
+    func setCleanupOverride(_ raw: String) {
+        UserDefaults.standard.set(raw, forKey: Self.cleanupOverrideKey)
+        applyCleanupOverride(raw)
+    }
+
+    private func applyCleanupOverride(_ raw: String) {
+        let tier: CleanupTier?
+        switch raw {
+        case "raw": tier = .raw
+        case "local": tier = .local
+        default: tier = nil // auto
+        }
+        Task { [orchestrator] in await orchestrator.setTierOverride(tier) }
     }
 
     // MARK: - Windows

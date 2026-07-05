@@ -29,3 +29,10 @@ public struct DictionaryEntry: Sendable, Equatable, Codable, Identifiable {
 public protocol DictionaryProviding: Sendable {
     func entries() async throws -> [DictionaryEntry]
 }
+
+/// In-memory default used until the GRDB store is wired in (integration pass).
+public struct InMemoryDictionaryProvider: DictionaryProviding {
+    private let seeded: [DictionaryEntry]
+    public init(entries: [DictionaryEntry] = []) { self.seeded = entries }
+    public func entries() async throws -> [DictionaryEntry] { seeded }
+}

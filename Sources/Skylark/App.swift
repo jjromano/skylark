@@ -44,6 +44,10 @@ struct MenuContent: View {
 
         Divider()
 
+        CleanupMenu(controller: controller)
+
+        Divider()
+
         Button("Settings…") { controller.showSettings() }
         Button("Onboarding…") { controller.showOnboarding() }
 
@@ -51,5 +55,33 @@ struct MenuContent: View {
 
         Button("Quit Skylark") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
+    }
+}
+
+/// Temporary global cleanup-tier override (real Settings UI lands later).
+/// Auto = use the app-resolved mode's tier; Raw/Local force a tier.
+private struct CleanupMenu: View {
+    let controller: AppController
+    @AppStorage(AppController.cleanupOverrideKey) private var override = "auto"
+
+    var body: some View {
+        Menu("Cleanup") {
+            item("Auto", value: "auto")
+            item("Raw", value: "raw")
+            item("Local", value: "local")
+        }
+    }
+
+    private func item(_ title: String, value: String) -> some View {
+        Button {
+            override = value
+            controller.setCleanupOverride(value)
+        } label: {
+            if override == value {
+                Label(title, systemImage: "checkmark")
+            } else {
+                Text(title)
+            }
+        }
     }
 }

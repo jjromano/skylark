@@ -1,7 +1,7 @@
 import Foundation
 
 /// Which cleanup tier a cleaner implements (PRD §6.3).
-public enum CleanupTier: Sendable, Equatable {
+public enum CleanupTier: Sendable, Equatable, Codable {
     /// Tier 0 — verbatim passthrough, zero added latency.
     case raw
     /// Tier 1 — on-device model (Apple Foundation Models).

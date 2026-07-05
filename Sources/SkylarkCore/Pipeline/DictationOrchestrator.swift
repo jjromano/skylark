@@ -19,6 +19,25 @@ public actor DictationOrchestrator {
     private let endpointer: (any SpeechEndpointer)?
     private let hint: TranscriptionHint
 
+    // Cleanup wiring (Phase 2). Defaults keep behaviour raw-only + instant so the
+    // 3-arg init and existing call sites are unaffected.
+    private let cleaners: CleanerRegistry
+    private let modeProvider: any ModeProviding
+    private let dictionary: any DictionaryProviding
+    private let frontmostBundleID: @Sendable () -> String?
+
+    /// Temporary global cleanup override from the menu bar (nil = auto/use mode).
+    private var tierOverride: CleanupTier?
+
+    /// Resolved once per session at fn-down, consumed at paste time.
+    private var sessionSetup: SessionSetup?
+    private var setupTask: Task<SessionSetup, Never>?
+
+    /// Cap on the cleanup+replace path (AX targets); raw already stands.
+    private let replaceTimeout: Duration
+    /// Cap on wait-for-clean before pasting (paste targets, deliberate wait).
+    private let waitForCleanTimeout: Duration
+
     public private(set) var phase: Phase = .idle
 
     /// Whether the transcriber is ready to decode. Defaults true (engines with
@@ -56,13 +75,25 @@ public actor DictationOrchestrator {
         transcriber: any Transcriber,
         injector: any TextInjecting,
         endpointer: (any SpeechEndpointer)? = nil,
-        hint: TranscriptionHint = .none
+        hint: TranscriptionHint = .none,
+        cleaners: CleanerRegistry = CleanerRegistry(),
+        modeProvider: any ModeProviding = InMemoryModeProvider(),
+        dictionary: any DictionaryProviding = InMemoryDictionaryProvider(),
+        frontmostBundleID: @escaping @Sendable () -> String? = { nil },
+        replaceTimeout: Duration = .seconds(5),
+        waitForCleanTimeout: Duration = .seconds(2)
     ) {
         self.capture = capture
         self.transcriber = transcriber
         self.injector = injector
         self.endpointer = endpointer
         self.hint = hint
+        self.cleaners = cleaners
+        self.modeProvider = modeProvider
+        self.dictionary = dictionary
+        self.frontmostBundleID = frontmostBundleID
+        self.replaceTimeout = replaceTimeout
+        self.waitForCleanTimeout = waitForCleanTimeout
         let (stream, continuation) = AsyncStream<HUDState>.makeStream(bufferingPolicy: .bufferingNewest(1))
         hudStates = stream
         hudContinuation = continuation
@@ -78,6 +109,12 @@ public actor DictationOrchestrator {
     /// The app calls this when model preparation completes (or fails).
     public func setTranscriberReady(_ ready: Bool) {
         transcriberReady = ready
+    }
+
+    /// Temporary global cleanup override from the menu bar. `nil` = Auto (use the
+    /// resolved mode's tier); a value forces that tier for every dictation.
+    public func setTierOverride(_ tier: CleanupTier?) {
+        tierOverride = tier
     }
 
     /// Consume hotkey events until the stream ends.
@@ -120,6 +157,14 @@ public actor DictationOrchestrator {
         }
         phase = .recording
         isHandsFree = false
+        // Capture the target app AT dictation start (fn-down) and resolve the
+        // mode + dictionary off the paste path while the user speaks.
+        let bundleID = frontmostBundleID()
+        sessionSetup = nil
+        setupTask?.cancel()
+        setupTask = Task { [modeProvider, dictionary] in
+            await Self.buildSetup(bundleID: bundleID, modeProvider: modeProvider, dictionary: dictionary)
+        }
         publish(.listening(level: 0))
         startLevelForwarding()
     }
@@ -184,15 +229,42 @@ public actor DictationOrchestrator {
             return
         }
 
-        phase = .injecting
-        do {
-            _ = try await injector.insert(text)
-        } catch {
-            // An injection failure must not wedge the state machine.
-            logger.error("injection failed: \(error.localizedDescription, privacy: .public)")
-        }
-        let afterInject = ContinuousClock.now
+        // Resolve the session setup (usually already prepared during recording).
+        let setup = await resolvedSetup()
+        // Dictionary correction is part of the raw text — always applied, even
+        // Tier 0 (PRD §8). Off-path regex compile happened in setup; this is the
+        // ≤5 ms apply.
+        let rawText = setup.corrector.apply(text)
+        let effectiveTier = tierOverride ?? setup.mode.cleanupTier
 
+        phase = .injecting
+
+        if effectiveTier == .raw {
+            // Tier 0: raw stands, no cleanup stage.
+            await insertRaw(rawText)
+        } else if await injector.canInsertDirectly() {
+            // AX target: paste raw now (latency bar), replace after cleanup
+            // detached from the HUD state.
+            let token = await insertRaw(rawText)
+            if let token {
+                let cleaner = cleaners.cleaner(for: effectiveTier)
+                let context = setup.context
+                Task { [weak self] in
+                    await self?.runCleanupAndReplace(token: token, rawText: rawText, cleaner: cleaner, context: context)
+                }
+            }
+        } else {
+            // Paste target: wait-for-clean before inserting (deliberate PRD
+            // deviation; select-back is unsafe here). Race the cleaner against a
+            // 2 s clock; on timeout/failure inject raw.
+            let cleaner = cleaners.cleaner(for: effectiveTier)
+            let finalText = await cleanWithTimeout(
+                cleaner, rawText, context: setup.context, cap: waitForCleanTimeout
+            ) ?? rawText
+            await insertRaw(finalText)
+        }
+
+        let afterInject = ContinuousClock.now
         recordLatency(
             captureClose: t0.duration(to: afterCapture),
             transcribe: afterCapture.duration(to: afterTranscribe),
@@ -204,13 +276,113 @@ public actor DictationOrchestrator {
         publish(.idle)
     }
 
+    /// Insert text, swallowing failures so injection never wedges the state
+    /// machine. Returns the token on success.
+    @discardableResult
+    private func insertRaw(_ text: String) async -> InsertionToken? {
+        do {
+            return try await injector.insert(text)
+        } catch {
+            logger.error("injection failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+    }
+
     private func cancelRecording() {
         guard phase == .recording else { return }
         stopLevelForwarding()
         stopHandsFree()
+        setupTask?.cancel()
+        setupTask = nil
+        sessionSetup = nil
         _ = capture.stop() // discard audio
         phase = .idle
         publish(.idle)
+    }
+
+    // MARK: - Cleanup / mode setup
+
+    /// Everything resolved at dictation start, consumed at paste time.
+    struct SessionSetup {
+        let mode: DictationMode
+        let context: CleanupContext
+        let corrector: DictionaryCorrector
+    }
+
+    /// Resolve mode + dictionary off the paste path (compiles correction regexes
+    /// here, not on the latency path). Runs during recording via `setupTask`.
+    private static func buildSetup(
+        bundleID: String?,
+        modeProvider: any ModeProviding,
+        dictionary: any DictionaryProviding
+    ) async -> SessionSetup {
+        let modes = (try? await modeProvider.modes()) ?? []
+        let mode = ModeResolver.resolve(bundleID: bundleID, modes: modes)
+        let entries = (try? await dictionary.entries()) ?? []
+        let context = CleanupContext(
+            targetAppBundleID: bundleID,
+            registerHint: mode.registerHint,
+            // Bias-only terms (replacement == nil) protect exact spellings.
+            dictionaryTerms: entries.filter { $0.replacement == nil }.map(\.phrase)
+        )
+        let corrector = DictionaryCorrector(entries: entries)
+        return SessionSetup(mode: mode, context: context, corrector: corrector)
+    }
+
+    /// The setup for the active session — the prepared one if ready, else built
+    /// inline (very short utterances that finish before `setupTask`).
+    private func resolvedSetup() async -> SessionSetup {
+        if let sessionSetup { return sessionSetup }
+        let setup: SessionSetup
+        if let setupTask {
+            setup = await setupTask.value
+        } else {
+            setup = await Self.buildSetup(bundleID: frontmostBundleID(), modeProvider: modeProvider, dictionary: dictionary)
+        }
+        sessionSetup = setup
+        return setup
+    }
+
+    /// Run the cleaner on `rawText` (capped at `replaceTimeout`) and, on a
+    /// changed result, replace the AX-inserted range in place. Every failure is
+    /// silent-to-the-user: raw stands, one log line.
+    private func runCleanupAndReplace(
+        token: InsertionToken,
+        rawText: String,
+        cleaner: any Cleaner,
+        context: CleanupContext
+    ) async {
+        guard let cleaned = await cleanWithTimeout(cleaner, rawText, context: context, cap: replaceTimeout) else {
+            return
+        }
+        guard cleaned != rawText else { return }
+        do {
+            try await injector.replace(token, with: cleaned)
+        } catch {
+            logger.notice("cleanup replace skipped: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Race a cleaner against a timeout; returns the cleaned text, or nil on
+    /// timeout or failure (caller keeps raw). Never throws.
+    private func cleanWithTimeout(
+        _ cleaner: any Cleaner,
+        _ text: String,
+        context: CleanupContext,
+        cap: Duration
+    ) async -> String? {
+        await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                try? await cleaner.clean(text, context: context)
+            }
+            group.addTask {
+                try? await Task.sleep(for: cap)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
     }
 
     // MARK: - Hands-free lifecycle
