@@ -90,6 +90,13 @@ extension ModeRecord: PersistableRecord {
     }
 }
 
+/// Errors surfaced by mode-management operations (phase-5a spec §4).
+public enum ModeStoreError: Error, Sendable, Equatable {
+    /// Every mode set must have exactly one default; deleting it is blocked
+    /// (the UI should disable the delete action for the default mode too).
+    case cannotDeleteDefault
+}
+
 /// CRUD over `modes`, seeded with the same two defaults the Phase-2 worktree's
 /// `InMemoryModeProvider` uses: "Default" (local tier, is default) and "Raw"
 /// (raw tier).
@@ -111,9 +118,25 @@ public actor ModeStore {
         }
     }
 
+    /// Deleting the default mode is blocked (there must always be exactly one
+    /// default so mode resolution stays total); leaves history rows intact,
+    /// `mode_id` there is informational only.
     public func delete(id: String) async throws {
-        _ = try await db.dbQueue.write { db in
-            try ModeRecord.deleteOne(db, key: id)
+        try await db.dbQueue.write { db in
+            let isDefault = try Bool.fetchOne(
+                db, sql: "SELECT is_default FROM modes WHERE id = ?", arguments: [id]
+            ) ?? false
+            guard !isDefault else { throw ModeStoreError.cannotDeleteDefault }
+            try db.execute(sql: "DELETE FROM modes WHERE id = ?", arguments: [id])
+        }
+    }
+
+    /// Make `id` the sole default, atomically. No-op (but still succeeds) if
+    /// `id` doesn't exist — the caller already validated it from a fetched list.
+    public func setDefault(id: String) async throws {
+        try await db.dbQueue.write { db in
+            try db.execute(sql: "UPDATE modes SET is_default = 0")
+            try db.execute(sql: "UPDATE modes SET is_default = 1 WHERE id = ?", arguments: [id])
         }
     }
 

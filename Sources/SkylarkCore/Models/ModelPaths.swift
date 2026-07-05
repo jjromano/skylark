@@ -24,6 +24,18 @@ public enum ModelPaths {
         try? FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
     }
 
+    /// `~/Library/Application Support/Skylark/Audio` — retained-audio WAV files
+    /// (phase-5a spec §2, opt-in, default off). Only ever written to when the
+    /// user has turned on history-audio retention.
+    public static var audioDirectory: URL {
+        appSupport.appendingPathComponent("Audio", isDirectory: true)
+    }
+
+    /// Ensure the audio directory exists; ignore if it already does.
+    public static func ensureAudioDirectory() {
+        try? FileManager.default.createDirectory(at: audioDirectory, withIntermediateDirectories: true)
+    }
+
     // MARK: - Per-engine model directories
 
     /// FluidAudio Parakeet TDT v3 repo folder (`AsrModels.downloadAndLoad(to:)`

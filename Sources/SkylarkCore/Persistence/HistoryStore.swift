@@ -94,6 +94,12 @@ public actor HistoryStore {
         }
     }
 
+    public func fetch(id: Int64) async throws -> HistoryRecord? {
+        try await db.dbQueue.read { db in
+            try HistoryRecord.fetchOne(db, key: id)
+        }
+    }
+
     public func updateEditedText(id: Int64, new text: String) async throws {
         try await db.dbQueue.write { db in
             try db.execute(sql: "UPDATE history SET clean_text = ? WHERE id = ?", arguments: [text, id])
@@ -110,6 +116,22 @@ public actor HistoryStore {
     public func purgeAll() async throws {
         _ = try await db.dbQueue.write { db in
             try HistoryRecord.deleteAll(db)
+        }
+    }
+
+    /// Every non-null `audio_path`, for the retained-audio delete/purge/orphan
+    /// sweep (phase-5a spec §2). Off any latency path.
+    public func allAudioPaths() async throws -> [String] {
+        try await db.dbQueue.read { db in
+            try String.fetchAll(db, sql: "SELECT audio_path FROM history WHERE audio_path IS NOT NULL")
+        }
+    }
+
+    /// Null out every row's `audio_path` without touching the row itself — used
+    /// by "Delete all stored audio" (the text history stays; only audio goes).
+    public func clearAllAudioPaths() async throws {
+        try await db.dbQueue.write { db in
+            try db.execute(sql: "UPDATE history SET audio_path = NULL WHERE audio_path IS NOT NULL")
         }
     }
 }

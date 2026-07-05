@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SkylarkCore
 import SwiftUI
 
@@ -77,6 +78,60 @@ final class AppController {
     /// the resolved mode's tier; "raw"/"local"/"cloud" force that tier.
     static let cleanupOverrideKey = "cleanupTierOverride"
 
+    // MARK: - History (Settings → History)
+
+    /// Audio retention opt-in (default OFF — PRD §8, phase-5a spec §2).
+    /// `nonisolated` so the `HistoryHub` retention closure (a plain `@Sendable`
+    /// closure, not main-actor-isolated) can read it directly.
+    nonisolated static let historyAudioRetentionKey = "history.audioRetentionEnabled"
+
+    var audioRetentionEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Self.historyAudioRetentionKey)
+    }
+
+    func setAudioRetentionEnabled(_ enabled: Bool) {
+        UserDefaults.standard.set(enabled, forKey: Self.historyAudioRetentionKey)
+    }
+
+    /// Deletes every retained audio file; the text history rows stay.
+    func deleteAllStoredAudio() {
+        Task { [historyHub] in await historyHub?.deleteAllAudio() }
+    }
+
+    // MARK: - Launch at login (Settings → General)
+
+    /// `SMAppService.mainApp` operates on the built, signed `.app` bundle; when
+    /// run unbundled (`swift run`) its status reads `.notFound` — not an error,
+    /// just "needs `make app` + a first launch from Finder" (surfaced in the UI).
+    var launchAtLoginStatus: SMAppService.Status {
+        SMAppService.mainApp.status
+    }
+
+    /// Human-readable reason `launchAtLoginStatus` isn't a plain on/off, or nil
+    /// when it is.
+    var launchAtLoginFootnote: String? {
+        switch launchAtLoginStatus {
+        case .notFound:
+            return "Needs a bundled app (`make app`) and one launch from Finder before this works."
+        case .requiresApproval:
+            return "Approve Skylark in System Settings → General → Login Items."
+        default:
+            return nil
+        }
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled {
+                try SMAppService.mainApp.register()
+            } else {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            showNote("Launch at Login failed: \(error.localizedDescription)")
+        }
+    }
+
     /// Live model selection (cleanup slug + STT engine), UserDefaults-backed.
     let modelSelection: ModelSelection
     /// Shared OpenRouter client (reads the key from Keychain per request, so a
@@ -98,9 +153,13 @@ final class AppController {
     private var activeLocal: STTChoice = .localParakeet
 
     // Persistence (nil when storage is unavailable — the app still runs, sans
-    // history/persisted modes, on in-memory providers).
+    // history/persisted modes, on in-memory providers). Exposed (not private)
+    // for the Settings → Dictionary/Modes/History views and the History window.
     private let registryStore: RegistryStore?
-    private let modeStore: ModeStore?
+    let modeStore: ModeStore?
+    let dictionaryStore: DictionaryStore?
+    let historyStore: HistoryStore?
+    let historyHub: HistoryHub?
 
     // Model-preparation states arrive on an arbitrary queue; funnel them through
     // a Sendable stream (tagged with which model) and apply them on the main
@@ -133,15 +192,25 @@ final class AppController {
             self.modeStore = modeStore
             self.registryStore = RegistryStore(db: db)
             modeProvider = ModeProviderAdapter(store: modeStore)
-            dictionaryProvider = DictionaryStore(db: db)
-            historyHub = HistoryHub(store: HistoryStore(db: db))
+            let dictStore = DictionaryStore(db: db)
+            self.dictionaryStore = dictStore
+            dictionaryProvider = dictStore
+            let histStore = HistoryStore(db: db)
+            self.historyStore = histStore
+            historyHub = HistoryHub(
+                store: histStore,
+                audioRetentionEnabled: { UserDefaults.standard.bool(forKey: Self.historyAudioRetentionKey) }
+            )
         } else {
             self.modeStore = nil
             self.registryStore = nil
+            self.dictionaryStore = nil
+            self.historyStore = nil
             modeProvider = InMemoryModeProvider()
             dictionaryProvider = InMemoryDictionaryProvider()
             pendingStatusNote = "History disabled — storage unavailable"
         }
+        self.historyHub = historyHub
 
         let client = OpenRouterClient(keyProvider: { KeychainStore().get() })
         openRouterClient = client
@@ -248,6 +317,10 @@ final class AppController {
         // Persistence + selection: seed defaults, load the quick-switch lists,
         // then apply the persisted cleanup override + STT choice.
         Task { [weak self] in await self?.bootstrapSelection() }
+
+        // Orphaned audio files (no matching history row, e.g. left behind by a
+        // crash) get swept once at launch. Detached; logs a count only.
+        Task { [historyHub] in await historyHub?.sweepOrphans() }
 
         if let note = pendingStatusNote {
             showNote(note)
@@ -704,9 +777,31 @@ final class AppController {
         let window = Self.makeWindow(
             title: "Skylark Settings",
             content: SettingsView(controller: self, client: openRouterClient),
-            width: 460, height: 620
+            width: 560, height: 640
         )
         settingsWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @ObservationIgnored private var historyWindow: NSWindow?
+
+    func showHistory() {
+        if let window = historyWindow {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        guard let historyStore, let historyHub else {
+            showNote("History unavailable — storage didn't open")
+            return
+        }
+        let window = Self.makeWindow(
+            title: "Skylark History",
+            content: HistoryView(store: historyStore, hub: historyHub, modeStore: modeStore, dictionaryStore: dictionaryStore),
+            width: 720, height: 480
+        )
+        historyWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }

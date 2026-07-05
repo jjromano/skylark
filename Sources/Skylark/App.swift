@@ -52,6 +52,7 @@ struct MenuContent: View {
         Divider()
 
         Button("Settings…") { controller.showSettings() }
+        Button("History…") { controller.showHistory() }
         Button("Onboarding…") { controller.showOnboarding() }
 
         Divider()

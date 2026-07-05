@@ -79,7 +79,7 @@ struct HistorySinkTests {
             transcriber: StubTranscriber(),
             injector: HistorySpyInjector(direct: true),
             modeProvider: modes(tier: .raw),
-            historyRecord: { sink.record($0) },
+            historyRecord: { record, _ in sink.record(record) },
             historyUpdate: { sink.update($0) }
         )
 
@@ -108,7 +108,7 @@ struct HistorySinkTests {
             injector: HistorySpyInjector(direct: true),
             cleaners: CleanerRegistry(local: cleaner),
             modeProvider: modes(tier: .local),
-            historyRecord: { sink.record($0) },
+            historyRecord: { record, _ in sink.record(record) },
             historyUpdate: { sink.update($0) }
         )
 
@@ -135,7 +135,7 @@ struct HistorySinkTests {
             injector: HistorySpyInjector(direct: false),
             cleaners: CleanerRegistry(local: cleaner),
             modeProvider: modes(tier: .local),
-            historyRecord: { sink.record($0) },
+            historyRecord: { record, _ in sink.record(record) },
             historyUpdate: { sink.update($0) }
         )
 

@@ -85,4 +85,16 @@ public actor DictionaryStore: DictionaryProviding {
             try DictionaryRecord.deleteOne(db, key: id)
         }
     }
+
+    /// In-place update by id (phrase + replacement), for inline-editing an
+    /// existing entry. Unlike `upsert`, this never inserts a new row, so
+    /// renaming a phrase doesn't orphan the old one.
+    public func update(id: Int64, phrase: String, replacement: String?) async throws {
+        try await db.dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE dictionary SET phrase = ?, replacement = ? WHERE id = ?",
+                arguments: [phrase, replacement, id]
+            )
+        }
+    }
 }

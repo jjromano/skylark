@@ -196,4 +196,36 @@ struct PersistenceTests {
         let afterDelete = try await store.all()
         #expect(afterDelete.isEmpty)
     }
+
+    @Test("Mode setDefault(id:) flips exactly one default, atomically")
+    func modeSetDefaultUniqueness() async throws {
+        let store = ModeStore(db: try makeDB())
+        try await store.seedIfEmpty() // "default" (isDefault) + "raw"
+        try await store.upsert(ModeRecord(id: "work", name: "Work", cleanupTier: .local, isDefault: false))
+
+        try await store.setDefault(id: "work")
+        let afterFirst = try await store.all()
+        #expect(afterFirst.filter(\.isDefault).count == 1)
+        #expect(afterFirst.first { $0.id == "work" }?.isDefault == true)
+        #expect(afterFirst.first { $0.id == "default" }?.isDefault == false)
+
+        // Switching again keeps the invariant — never two defaults at once.
+        try await store.setDefault(id: "raw")
+        let afterSecond = try await store.all()
+        #expect(afterSecond.filter(\.isDefault).count == 1)
+        #expect(afterSecond.first { $0.id == "raw" }?.isDefault == true)
+        #expect(afterSecond.first { $0.id == "work" }?.isDefault == false)
+    }
+
+    @Test("Mode delete is blocked for the default mode")
+    func modeDeleteBlockedForDefault() async throws {
+        let store = ModeStore(db: try makeDB())
+        try await store.seedIfEmpty()
+
+        await #expect(throws: ModeStoreError.self) {
+            try await store.delete(id: "default")
+        }
+        let modes = try await store.all()
+        #expect(modes.contains { $0.id == "default" })
+    }
 }

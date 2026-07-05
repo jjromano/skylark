@@ -23,8 +23,10 @@ public actor DictationOrchestrator {
     private let hint: TranscriptionHint
 
     /// Detached history sinks (phase-3 spec §7). Both off the paste path; nil in
-    /// tests/headless callers that don't record.
-    private let historyRecord: (@Sendable (HistoryRecord) -> Void)?
+    /// tests/headless callers that don't record. `historyRecord` also carries
+    /// the just-captured clip so the sink can retain audio when opted in
+    /// (phase-5a spec §2); the sink itself decides whether to keep it.
+    private let historyRecord: (@Sendable (HistoryRecord, AudioClip) -> Void)?
     private let historyUpdate: (@Sendable (HistoryRecord) -> Void)?
 
     // Cleanup wiring (Phase 2). Defaults keep behaviour raw-only + instant so the
@@ -88,7 +90,7 @@ public actor DictationOrchestrator {
         modeProvider: any ModeProviding = InMemoryModeProvider(),
         dictionary: any DictionaryProviding = InMemoryDictionaryProvider(),
         frontmostBundleID: @escaping @Sendable () -> String? = { nil },
-        historyRecord: (@Sendable (HistoryRecord) -> Void)? = nil,
+        historyRecord: (@Sendable (HistoryRecord, AudioClip) -> Void)? = nil,
         historyUpdate: (@Sendable (HistoryRecord) -> Void)? = nil,
         replaceTimeout: Duration = .seconds(5),
         waitForCleanTimeout: Duration = .seconds(2)
@@ -307,7 +309,8 @@ public actor DictationOrchestrator {
             cleanText: syncCleanText,
             modeID: setup.mode.id,
             durationSec: clip.duration,
-            latencyMs: summary.totalMs
+            latencyMs: summary.totalMs,
+            clip: clip
         )
 
         phase = .idle
@@ -322,7 +325,8 @@ public actor DictationOrchestrator {
         cleanText: String?,
         modeID: String,
         durationSec: TimeInterval,
-        latencyMs: Double
+        latencyMs: Double,
+        clip: AudioClip
     ) {
         guard let historyRecord else { return }
         let record = HistoryRecord(
@@ -335,7 +339,7 @@ public actor DictationOrchestrator {
             latencyMs: Int(latencyMs.rounded()),
             audioPath: nil
         )
-        historyRecord(record)
+        historyRecord(record, clip)
     }
 
     /// Stable engine string for the history row.
