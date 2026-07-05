@@ -15,6 +15,15 @@ if FileManager.default.fileExists(atPath: cltFrameworks + "/Testing.framework") 
         "-F", cltFrameworks,
         "-Xlinker", "-rpath", "-Xlinker", cltFrameworks,
     ]))
+    // This CLT distribution ships `Testing.framework`'s Foundation cross-import
+    // overlay declaration (`Testing.swiftcrossimport/Foundation.swiftoverlay`,
+    // pointing at `_Testing_Foundation`) without the overlay module itself
+    // (`_Testing_Foundation.framework/Modules` is empty — no .swiftmodule). Any
+    // file that imports both `Testing` and `Foundation` then fails with
+    // "no such module '_Testing_Foundation'". Disabling cross-import overlay
+    // search avoids the auto-import; on machines with full Xcode (where the
+    // overlay is actually present) this flag is a no-op.
+    testingSwiftSettings.append(.unsafeFlags(["-Xfrontend", "-disable-cross-import-overlay-search"]))
 }
 
 let package = Package(
@@ -31,12 +40,15 @@ let package = Package(
     dependencies: [
         // Local Parakeet ASR + Silero VAD (Apache-2.0, no external transitive deps).
         .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.4"),
+        // Persistence (MIT) — history/dictionary/modes/model-registry storage.
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
     ],
     targets: [
         .target(
             name: "SkylarkCore",
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "GRDB", package: "GRDB.swift"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
