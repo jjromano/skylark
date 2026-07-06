@@ -47,7 +47,12 @@ printf 'APPL????' > "$CONTENTS/PkgInfo"
 
 echo "→ Codesigning"
 if security find-identity -v -p codesigning | grep -q "$IDENTITY"; then
-    codesign --force --deep --options runtime \
+    # No hardened runtime (--options runtime): this is a locally self-signed
+    # build that is never notarized, so hardened runtime buys nothing — but it
+    # WOULD require a com.apple.security.device.audio-input entitlement or macOS
+    # blocks the microphone (AVAuthorizationStatus.restricted → shows "denied"
+    # and the app never appears in Privacy → Microphone).
+    codesign --force --deep \
         --sign "$IDENTITY" "$APP"
     echo "✓ Signed with '$IDENTITY'"
 else
