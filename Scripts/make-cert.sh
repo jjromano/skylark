@@ -29,6 +29,16 @@ EOF
     exit 1
 fi
 
+# We reach here only when no *valid* (trusted) identity exists. A previous run
+# may have imported the cert but died before trusting it (so it's present but
+# not "valid"). Remove any such stray/duplicate remnants first — two certs with
+# this common name would make `codesign --sign "$IDENTITY"` fail.
+echo "→ Clearing any stale '$IDENTITY' remnants from a previous run…"
+for _ in 1 2 3 4 5; do
+    security delete-identity -c "$IDENTITY" /Library/Keychains/System.keychain >/dev/null 2>&1 || break
+done
+security delete-certificate -c "$IDENTITY" -t /Library/Keychains/System.keychain >/dev/null 2>&1 || true
+
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
@@ -77,8 +87,18 @@ security import "$P12" -k /Library/Keychains/System.keychain \
     -P "$P12_PASS" -T /usr/bin/codesign -A
 
 echo "→ Trusting the certificate for code signing…"
-security add-trusted-cert -d -r trustAsRoot \
-    -p codeSign -k /Library/Keychains/System.keychain "$CRT"
+# A self-signed cert must use `trustRoot`; `trustAsRoot` is only valid for
+# non-self-signed certs and errors with "SecTrustSettingsSetTrustSettings:
+# ... parameters ... not valid". Runs under root (sudo), which is the
+# authorization the admin trust domain requires. Non-fatal: the identity is
+# already imported and codesign-usable, so a trust hiccup shouldn't abort the
+# whole install — the build just falls back to ad-hoc signing with a warning.
+if ! security add-trusted-cert -d -r trustRoot \
+    -p codeSign -k /Library/Keychains/System.keychain "$CRT"; then
+    echo "⚠️  Could not set trust on the certificate. The identity is imported" >&2
+    echo "   and usable, but the build may sign ad-hoc (permission grants would" >&2
+    echo "   then need re-approval after each rebuild). Re-run to retry trust." >&2
+fi
 
 echo "✓ Done. Verify with:"
 echo "    security find-identity -v -p codesigning"
