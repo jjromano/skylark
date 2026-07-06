@@ -52,18 +52,29 @@ KEY="$WORKDIR/skylark.key"
 CRT="$WORKDIR/skylark.crt"
 P12="$WORKDIR/skylark.p12"
 
+# Use the system LibreSSL explicitly. A Homebrew/conda OpenSSL 3.x earlier on
+# PATH writes PKCS#12 files whose default MAC/PBE algorithms macOS's
+# `security import` rejects ("MAC verification failed"); /usr/bin/openssl
+# (LibreSSL, always present on macOS) does not.
+OPENSSL="/usr/bin/openssl"
+
+# Transport passphrase for the PKCS#12 hand-off into the keychain. NOT a secret
+# and never stored — but it must be non-empty: macOS 26's `security import`
+# fails MAC verification on an empty-password PKCS#12.
+P12_PASS="skylark-dev-transport"
+
 echo "→ Generating self-signed codesigning certificate…"
-openssl req -x509 -newkey rsa:2048 -nodes \
+"$OPENSSL" req -x509 -newkey rsa:2048 -nodes \
     -keyout "$KEY" -out "$CRT" \
     -days 3650 -config "$CONFIG"
 
-# Bundle into a PKCS#12 with no password for import.
-openssl pkcs12 -export -inkey "$KEY" -in "$CRT" \
-    -out "$P12" -passout pass:
+# Bundle into a PKCS#12 for import.
+"$OPENSSL" pkcs12 -export -inkey "$KEY" -in "$CRT" \
+    -out "$P12" -passout pass:"$P12_PASS"
 
 echo "→ Importing identity into the System keychain…"
 security import "$P12" -k /Library/Keychains/System.keychain \
-    -P "" -T /usr/bin/codesign -A
+    -P "$P12_PASS" -T /usr/bin/codesign -A
 
 echo "→ Trusting the certificate for code signing…"
 security add-trusted-cert -d -r trustAsRoot \
