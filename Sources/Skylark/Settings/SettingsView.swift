@@ -100,8 +100,7 @@ private struct GeneralTab: View {
                 }
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .formStyle(.grouped)
     }
 }
 
@@ -134,8 +133,7 @@ private struct HistorySettingsTab: View {
                     }
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .formStyle(.grouped)
     }
 }
 
