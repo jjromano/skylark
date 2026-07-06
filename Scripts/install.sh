@@ -58,6 +58,22 @@ fi
 echo "  ✓ Command Line Tools ($(xcode-select -p))"
 echo "  ✓ $(swift --version 2>&1 | head -1)"
 
+# The Package.swift manifest requires Swift tools 6.2+. Command Line Tools that
+# predate that fail deep in the build with an opaque "tools version" error, so
+# catch it here with an actionable message instead.
+REQUIRED_SWIFT="6.2"
+SWIFT_VER="$(swift --version 2>&1 | grep -oE 'Swift version [0-9]+\.[0-9]+' | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)"
+if [[ -n "$SWIFT_VER" && "$(printf '%s\n%s\n' "$REQUIRED_SWIFT" "$SWIFT_VER" | sort -V | head -1)" != "$REQUIRED_SWIFT" ]]; then
+    fail "Skylark needs Swift $REQUIRED_SWIFT or newer to build, but this machine has Swift $SWIFT_VER.
+Your Command Line Tools are out of date. Update them, then re-run this script:
+
+    softwareupdate --list
+    sudo softwareupdate --install \"<newest 'Command Line Tools for Xcode 26.x' shown>\"
+
+Or reinstall the latest outright:
+    sudo rm -rf /Library/Developer/CommandLineTools && sudo xcode-select --install"
+fi
+
 # --- Signing certificate --------------------------------------------------
 echo ""
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "$IDENTITY"; then
