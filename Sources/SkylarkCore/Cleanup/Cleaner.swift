@@ -26,11 +26,45 @@ public struct CleanupContext: Sendable {
     }
 }
 
+/// Cleaned text plus WHICH engine actually produced it — degrading wrappers
+/// report the chain element that ran, so history rows can show real
+/// provenance ("llama-3.3-70b" vs "local" vs "raw") instead of the tier the
+/// user requested.
+public struct CleanOutcome: Sendable, Equatable {
+    public let text: String
+    /// Stable engine label: "raw", "local", or a cloud model slug.
+    public let engine: String
+
+    public init(text: String, engine: String) {
+        self.text = text
+        self.engine = engine
+    }
+}
+
 /// Transforms a raw transcript into clean text (ARCHITECTURE §2). Implementations:
 /// `RawPassthrough`, `LocalCleaner` (FoundationModels), `OpenRouterCleaner`.
 public protocol Cleaner: Sendable {
     var tier: CleanupTier { get }
     func clean(_ transcript: String, context: CleanupContext) async throws -> String
+    /// `clean` plus engine provenance. Defaulted for simple cleaners (their
+    /// engine IS their tier); `DegradingCleaner` overrides to report the chain
+    /// element that actually produced the output.
+    func cleanTracked(_ transcript: String, context: CleanupContext) async throws -> CleanOutcome
+}
+
+public extension Cleaner {
+    /// Stable engine label derived from the tier.
+    var engineID: String {
+        switch tier {
+        case .raw: return "raw"
+        case .local: return "local"
+        case .cloud(let slug): return slug
+        }
+    }
+
+    func cleanTracked(_ transcript: String, context: CleanupContext) async throws -> CleanOutcome {
+        CleanOutcome(text: try await clean(transcript, context: context), engine: engineID)
+    }
 }
 
 public enum CleanerError: Error, Sendable {

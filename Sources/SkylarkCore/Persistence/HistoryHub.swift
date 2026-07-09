@@ -73,7 +73,7 @@ public actor HistoryHub {
     /// text, so the row's count always reflects whichever text is now final.
     public func updateClean(_ record: HistoryRecord) async {
         guard let clean = record.cleanText, let id = ids[record.timestamp] else { return }
-        try? await store.updateEditedText(id: id, new: clean)
+        try? await store.updateEditedText(id: id, new: clean, cleanupEngine: record.cleanupEngine)
     }
 
     /// Fire-and-forget append sink for the orchestrator (`historyRecord`).

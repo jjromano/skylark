@@ -164,6 +164,16 @@ public final class SkylarkDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v4") { db in
+            // Cleanup provenance: which engine ("raw", "local", or a cloud
+            // model slug) actually produced clean_text — so History can show
+            // real model usage vs. silent fallbacks. Nil for pre-v4 rows and
+            // rows whose cleanup never landed.
+            try db.alter(table: "history") { t in
+                t.add(column: "cleanup_engine", .text)
+            }
+        }
+
         return migrator
     }
 }

@@ -245,6 +245,12 @@ private struct HistoryDetailView: View {
                 Text(record.engine)
             }
             GridRow {
+                Text("Cleanup").foregroundStyle(.secondary)
+                // Which engine actually produced the clean text — surfaces
+                // silent fallbacks ("local" while a cloud model is selected).
+                Text(record.cleanupEngine ?? (record.cleanText == nil ? "none (raw kept)" : "—"))
+            }
+            GridRow {
                 Text("Duration").foregroundStyle(.secondary)
                 Text("\(record.durationMs) ms")
             }

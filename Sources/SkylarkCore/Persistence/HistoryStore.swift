@@ -16,6 +16,9 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
     public var wordCount: Int
     public var appBundleID: String?
     public var appName: String?
+    /// Which cleanup engine produced `cleanText` ("raw", "local", or a cloud
+    /// model slug); nil when cleanup never landed or for pre-v4 rows.
+    public var cleanupEngine: String?
 
     public init(
         id: Int64? = nil,
@@ -29,7 +32,8 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
         audioPath: String? = nil,
         wordCount: Int = 0,
         appBundleID: String? = nil,
-        appName: String? = nil
+        appName: String? = nil,
+        cleanupEngine: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -43,6 +47,7 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
         self.wordCount = wordCount
         self.appBundleID = appBundleID
         self.appName = appName
+        self.cleanupEngine = cleanupEngine
     }
 
     enum CodingKeys: String, CodingKey {
@@ -57,6 +62,7 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
         case wordCount = "word_count"
         case appBundleID = "app_bundle_id"
         case appName = "app_name"
+        case cleanupEngine = "cleanup_engine"
     }
 }
 
@@ -115,13 +121,20 @@ public actor HistoryStore {
     /// Updates the clean text and refreshes `word_count` from it (correlated
     /// clean-text arrives after the raw-text append; the word count should
     /// reflect whichever text is now "final").
-    public func updateEditedText(id: Int64, new text: String) async throws {
+    public func updateEditedText(id: Int64, new text: String, cleanupEngine: String? = nil) async throws {
         let count = WordCount.count(text)
         try await db.dbQueue.write { db in
-            try db.execute(
-                sql: "UPDATE history SET clean_text = ?, word_count = ? WHERE id = ?",
-                arguments: [text, count, id]
-            )
+            if let cleanupEngine {
+                try db.execute(
+                    sql: "UPDATE history SET clean_text = ?, word_count = ?, cleanup_engine = ? WHERE id = ?",
+                    arguments: [text, count, cleanupEngine, id]
+                )
+            } else {
+                try db.execute(
+                    sql: "UPDATE history SET clean_text = ?, word_count = ? WHERE id = ?",
+                    arguments: [text, count, id]
+                )
+            }
         }
     }
 

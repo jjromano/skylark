@@ -19,6 +19,24 @@ public struct FallbackTranscriber: Transcriber {
     private let primaryTimeout: Duration
     private let notice: @Sendable (String) -> Void
 
+    /// The engine that ran the most recent `transcribe` (primary until a
+    /// fallback actually happens). Boxed so this Sendable struct can update
+    /// it from `transcribe`; read by the orchestrator for history rows.
+    private let lastRun: LockedBox<TranscriberID>
+
+    /// True provenance for history: primary's id until a run falls back.
+    public var lastRunID: TranscriberID { lastRun.value }
+
+    private final class LockedBox<Value: Sendable>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: Value
+        init(_ value: Value) { stored = value }
+        var value: Value {
+            get { lock.withLock { stored } }
+            set { lock.withLock { stored = newValue } }
+        }
+    }
+
     public init(
         primary: any Transcriber,
         fallback: any Transcriber,
@@ -31,6 +49,7 @@ public struct FallbackTranscriber: Transcriber {
         self.notice = notice
         // Report the primary's identity — that's the engine the user selected.
         self.id = primary.id
+        self.lastRun = LockedBox(primary.id)
     }
 
     public func warmUp() async throws {
@@ -47,11 +66,14 @@ public struct FallbackTranscriber: Transcriber {
 
     public func transcribe(_ clip: AudioClip, hint: TranscriptionHint) async throws -> String {
         do {
-            return try await raceTimeout {
+            let text = try await raceTimeout {
                 try await primary.transcribe(clip, hint: hint)
             }
+            lastRun.value = primary.id
+            return text
         } catch {
             notice("Cloud transcription unavailable — using local engine")
+            lastRun.value = fallback.id
             return try await fallback.transcribe(clip, hint: hint)
         }
     }

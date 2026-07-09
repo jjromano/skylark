@@ -290,53 +290,64 @@ public actor DictationOrchestrator {
         // Clean text known synchronously (paste wait-for-clean path only); the AX
         // path learns it later and updates the record then.
         var syncCleanText: String?
+        // Which cleanup engine produced the final text ("raw"/"local"/slug/
+        // "snippet"); nil on the AX path until the detached replace lands.
+        var syncCleanupEngine: String?
 
         if let snippetReplacement {
             syncCleanText = snippetReplacement
+            syncCleanupEngine = "snippet"
             await insertRaw(snippetReplacement)
         } else if rawText.isEmpty {
             // The whole utterance was the "press enter" command — nothing to
             // insert; the Return below is the entire action.
         } else if effectiveTier == .raw {
             // Tier 0: raw stands, no cleanup stage.
+            syncCleanupEngine = "raw"
             await insertRaw(rawText)
         } else if pressEnter {
             // Return must land after the FINAL text: the detached AX replace
             // would race the keystroke (a chat message would send, then get
             // edited), so wait for clean here even on AX targets.
             let cleaner = cleaners.cleaner(for: effectiveTier)
-            let cleaned = await cleanWithTimeout(
+            let outcome = await cleanWithTimeout(
                 cleaner, rawText, context: setup.context, cap: waitForCleanTimeout
             )
-            if let cleaned, cleaned != rawText { syncCleanText = cleaned }
-            await insertRaw(cleaned ?? rawText)
-        } else if await injector.canInsertDirectly() {
-            // AX target: paste raw now (latency bar), replace after cleanup
-            // detached from the HUD state.
-            let token = await insertRaw(rawText)
-            if let token {
-                let cleaner = cleaners.cleaner(for: effectiveTier)
-                let context = setup.context
-                Task { [weak self] in
-                    await self?.runCleanupAndReplace(
-                        token: token, rawText: rawText, cleaner: cleaner,
-                        context: context, historyTimestamp: historyTimestamp
-                    )
-                }
+            if let outcome {
+                syncCleanupEngine = outcome.engine
+                if outcome.text != rawText { syncCleanText = outcome.text }
+            }
+            await insertRaw(outcome?.text ?? rawText)
+        } else if let token = await insertDirectRaw(rawText) {
+            // The AX write landed VERIFIED — raw is on screen (latency bar);
+            // replace with cleaned text after cleanup, detached from the HUD
+            // state. Routing on the actual insert (not a capability probe)
+            // matters: Chrome claims writable AX selection but silently drops
+            // writes, which previously pasted raw here and lost the cleanup.
+            let cleaner = cleaners.cleaner(for: effectiveTier)
+            let context = setup.context
+            Task { [weak self] in
+                await self?.runCleanupAndReplace(
+                    token: token, rawText: rawText, cleaner: cleaner,
+                    context: context, historyTimestamp: historyTimestamp
+                )
             }
         } else {
-            // Paste target: wait-for-clean before inserting (deliberate PRD
-            // deviation; select-back is unsafe here). Race the cleaner against a
-            // 2 s clock; on timeout/failure inject raw — and say so.
+            // No verified in-place target (a paste would be needed): wait-for-
+            // clean before inserting (deliberate PRD deviation; select-back is
+            // unsafe here). Race the cleaner against a 2 s clock; on timeout/
+            // failure inject raw — and say so.
             let cleaner = cleaners.cleaner(for: effectiveTier)
-            let cleaned = await cleanWithTimeout(
+            let outcome = await cleanWithTimeout(
                 cleaner, rawText, context: setup.context, cap: waitForCleanTimeout
             )
-            if cleaned == nil {
+            if let outcome {
+                syncCleanupEngine = outcome.engine
+                if outcome.text != rawText { syncCleanText = outcome.text }
+            } else {
                 noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
             }
-            if let cleaned, cleaned != rawText { syncCleanText = cleaned }
-            await insertRaw(cleaned ?? rawText)
+            await insertRaw(outcome?.text ?? rawText)
         }
 
         if pressEnter {
@@ -358,6 +369,7 @@ public actor DictationOrchestrator {
                 timestamp: historyTimestamp,
                 rawText: rawText,
                 cleanText: syncCleanText,
+                cleanupEngine: syncCleanupEngine,
                 modeID: setup.mode.id,
                 durationSec: clip.duration,
                 latencyMs: summary.totalMs,
@@ -375,6 +387,7 @@ public actor DictationOrchestrator {
         timestamp: Date,
         rawText: String,
         cleanText: String?,
+        cleanupEngine: String?,
         modeID: String,
         durationSec: TimeInterval,
         latencyMs: Double,
@@ -386,10 +399,13 @@ public actor DictationOrchestrator {
             rawText: rawText,
             cleanText: cleanText,
             modeID: modeID,
-            engine: Self.engineString(transcriber.id),
+            // `lastRunID`, not `id`: a cloud primary that timed out and fell
+            // back to local must be recorded as the engine that actually ran.
+            engine: Self.engineString(transcriber.lastRunID),
             durationMs: Int((durationSec * 1000).rounded()),
             latencyMs: Int(latencyMs.rounded()),
-            audioPath: nil
+            audioPath: nil,
+            cleanupEngine: cleanupEngine
         )
         historyRecord(record, clip)
     }
@@ -401,6 +417,17 @@ public actor DictationOrchestrator {
         case .whisperKit: return "whisperkit"
         case .cloud(let slug): return slug
         case .stub: return "stub"
+        }
+    }
+
+    /// AX-verified in-place insert attempt (nil = nothing inserted, caller
+    /// should wait-for-clean). Failures degrade to nil, never wedge.
+    private func insertDirectRaw(_ text: String) async -> InsertionToken? {
+        do {
+            return try await injector.insertDirect(text)
+        } catch {
+            logger.error("direct injection failed: \(error.localizedDescription, privacy: .public)")
+            return nil
         }
     }
 
@@ -484,14 +511,14 @@ public actor DictationOrchestrator {
         context: CleanupContext,
         historyTimestamp: Date
     ) async {
-        guard let cleaned = await cleanWithTimeout(cleaner, rawText, context: context, cap: replaceTimeout) else {
+        guard let outcome = await cleanWithTimeout(cleaner, rawText, context: context, cap: replaceTimeout) else {
             return
         }
-        guard cleaned != rawText else { return }
+        guard outcome.text != rawText else { return }
         do {
-            try await injector.replace(token, with: cleaned)
+            try await injector.replace(token, with: outcome.text)
             // Replace succeeded — record the clean text against this dictation.
-            emitHistoryUpdate(timestamp: historyTimestamp, cleanText: cleaned)
+            emitHistoryUpdate(timestamp: historyTimestamp, cleanText: outcome.text, cleanupEngine: outcome.engine)
         } catch {
             logger.notice("cleanup replace skipped: \(error.localizedDescription, privacy: .public)")
             // The cleaned text exists but can't be applied here — say so
@@ -502,7 +529,7 @@ public actor DictationOrchestrator {
 
     /// Emit a clean-text update for a previously-recorded dictation (matched by
     /// timestamp in the sink). Off the paste path; no-op without a sink.
-    private func emitHistoryUpdate(timestamp: Date, cleanText: String) {
+    private func emitHistoryUpdate(timestamp: Date, cleanText: String, cleanupEngine: String? = nil) {
         guard let historyUpdate else { return }
         historyUpdate(HistoryRecord(
             timestamp: timestamp,
@@ -510,7 +537,8 @@ public actor DictationOrchestrator {
             cleanText: cleanText,
             engine: "",
             durationMs: 0,
-            latencyMs: 0
+            latencyMs: 0,
+            cleanupEngine: cleanupEngine
         ))
     }
 
@@ -521,10 +549,10 @@ public actor DictationOrchestrator {
         _ text: String,
         context: CleanupContext,
         cap: Duration
-    ) async -> String? {
-        await withTaskGroup(of: String?.self) { group in
+    ) async -> CleanOutcome? {
+        await withTaskGroup(of: CleanOutcome?.self) { group in
             group.addTask {
-                try? await cleaner.clean(text, context: context)
+                try? await cleaner.cleanTracked(text, context: context)
             }
             group.addTask {
                 try? await Task.sleep(for: cap)

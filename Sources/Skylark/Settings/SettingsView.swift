@@ -340,9 +340,29 @@ private struct GeneralPane: View {
 private struct HistoryPane: View {
     @Bindable var controller: AppController
     @State private var confirmDeleteAudio = false
+    @State private var recent: [HistoryRecord] = []
 
     var body: some View {
         Form {
+            Section {
+                if recent.isEmpty {
+                    Text("No dictations yet.")
+                        .font(.callout)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    ForEach(recent) { record in
+                        RecentDictationRow(record: record)
+                    }
+                }
+                Button("Open Full History…") { controller.showHistory() }
+            } header: {
+                Text("Recent dictations")
+            } footer: {
+                Text("Speech and cleanup show the engines that actually ran — a fallback here means the selected model didn't. The full history window adds search, playback, and editing.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 Picker("Keep history for", selection: Binding(
                     get: { controller.retentionDays },
@@ -396,6 +416,69 @@ private struct HistoryPane: View {
             }
         }
         .formStyle(.grouped)
+        .task {
+            recent = (try? await controller.historyStore?.recent(limit: 8)) ?? []
+        }
+    }
+}
+
+/// One recent dictation with engine/cleanup provenance badges.
+private struct RecentDictationRow: View {
+    let record: HistoryRecord
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(record.cleanText ?? record.rawText)
+                .font(.system(size: 12))
+                .lineLimit(1)
+            HStack(spacing: 6) {
+                Text(record.timestamp, format: .relative(presentation: .named))
+                if let app = record.appName {
+                    Text("·")
+                    Text(app)
+                }
+                badge("waveform", Self.engineLabel(record.engine))
+                badge("sparkles", Self.cleanupLabel(record.cleanupEngine))
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 1)
+    }
+
+    private func badge(_ icon: String, _ text: String) -> some View {
+        HStack(spacing: 3) {
+            Image(systemName: icon).font(.system(size: 8))
+            Text(text)
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1.5)
+        .background(Capsule().fill(.secondary.opacity(0.15)))
+    }
+
+    /// Friendly label for the STT engine string stored on the row.
+    static func engineLabel(_ engine: String) -> String {
+        switch engine {
+        case "parakeet": return "Parakeet · local"
+        case "whisperkit": return "Whisper · local"
+        case "stub": return "stub"
+        default: return shortSlug(engine) + " · cloud"
+        }
+    }
+
+    /// Friendly label for the cleanup engine ("raw"/"local"/slug/"snippet").
+    static func cleanupLabel(_ engine: String?) -> String {
+        switch engine {
+        case nil: return "no cleanup"
+        case "raw": return "raw"
+        case "local": return "Apple Intelligence"
+        case "snippet": return "snippet"
+        case let .some(slug): return shortSlug(slug) + " · cloud"
+        }
+    }
+
+    private static func shortSlug(_ slug: String) -> String {
+        slug.split(separator: "/").last.map(String.init) ?? slug
     }
 }
 

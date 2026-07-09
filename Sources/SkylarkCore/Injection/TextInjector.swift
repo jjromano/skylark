@@ -51,6 +51,12 @@ public protocol TextInjecting: Sendable {
     /// orchestrator probes this at paste time to pick the cleanup strategy
     /// (in-place replace vs. wait-for-clean).
     func canInsertDirectly() async -> Bool
+    /// ATTEMPT an AX-verified in-place insert: returns a replaceable token when
+    /// the write actually landed (read-back verified), or nil — having inserted
+    /// NOTHING — when it didn't. The orchestrator routes its cleanup strategy
+    /// on this real outcome, because capability probes lie: Chrome claims
+    /// writable selection attributes but silently drops AX writes.
+    func insertDirect(_ text: String) async throws -> InsertionToken?
     /// Synthesize a Return keystroke (spoken "press enter" command). Call only
     /// after `insert` has returned so the keystroke lands after the text.
     func pressReturn() async
@@ -59,6 +65,15 @@ public protocol TextInjecting: Sendable {
 public extension TextInjecting {
     /// Default no-op so test doubles and simple injectors need not implement it.
     func pressReturn() async {}
+
+    /// Default preserves the legacy probe-then-insert behavior for test doubles
+    /// and simple injectors: probe says yes → full insert; else nil.
+    func insertDirect(_ text: String) async throws -> InsertionToken? {
+        if await canInsertDirectly() {
+            return try await insert(text)
+        }
+        return nil
+    }
 }
 
 /// Posts a real Cmd-V (or an injected substitute in tests).
@@ -178,6 +193,24 @@ public final class TextInjector: TextInjecting {
         let token = await performClipboardPaste(toInsert, pasteboard: .general, executor: executor)
         rememberInsertion(text: toInsert, pid: targetPid)
         return token
+    }
+
+    /// AX-only insert attempt (protocol `insertDirect`): the verified AX write
+    /// or nothing — never the paste fallback. A nil return means NOTHING was
+    /// inserted (Chrome-style fields drop the write, which the read-back
+    /// verification catches), so the caller can safely wait-for-clean and
+    /// paste the final text instead.
+    public func insertDirect(_ text: String) async -> InsertionToken? {
+        let targetPid = Self.focusedPid()
+        let separator = leadingSeparator(targetPid: targetPid)
+        let toInsert = separator + text
+        Self.logInjectTarget(logger)
+        guard let element = Self.insertViaAX(toInsert) else {
+            logger.debug("direct AX insert unconfirmed; caller will wait-for-clean")
+            return nil
+        }
+        rememberInsertion(text: toInsert, pid: targetPid)
+        return InsertionToken(method: .ax(element), text: toInsert, leadingSeparator: separator, pasteUncertain: false)
     }
 
     /// In-place replacement of the just-inserted range (ARCHITECTURE §3).

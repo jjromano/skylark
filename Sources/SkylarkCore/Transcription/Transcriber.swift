@@ -32,4 +32,13 @@ public protocol Transcriber: Sendable {
 
     /// Batch-transcribe a whole clip.
     func transcribe(_ clip: AudioClip, hint: TranscriptionHint) async throws -> String
+
+    /// The engine that produced the MOST RECENT transcription. Defaults to
+    /// `id`; wrappers that can fall back (cloud → local) override it so
+    /// history rows record the engine that actually ran, not the one selected.
+    var lastRunID: TranscriberID { get }
+}
+
+public extension Transcriber {
+    var lastRunID: TranscriberID { id }
 }

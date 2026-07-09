@@ -66,6 +66,10 @@ struct DegradingCleaner: Cleaner {
     var notice: (@Sendable (String) -> Void)?
 
     func clean(_ transcript: String, context: CleanupContext) async throws -> String {
+        try await cleanTracked(transcript, context: context).text
+    }
+
+    func cleanTracked(_ transcript: String, context: CleanupContext) async throws -> CleanOutcome {
         var firstError: (any Error)?
         for (index, cleaner) in chain.enumerated() {
             do {
@@ -73,13 +77,13 @@ struct DegradingCleaner: Cleaner {
                 if index > 0 {
                     notice?("Cloud cleanup failed — used local instead (\(Self.reason(firstError)))")
                 }
-                return output
+                return CleanOutcome(text: output, engine: cleaner.engineID)
             } catch {
                 if firstError == nil { firstError = error }
             }
         }
         notice?("Cleanup unavailable — kept raw text (\(Self.reason(firstError)))")
-        return transcript
+        return CleanOutcome(text: transcript, engine: "raw")
     }
 
     /// Short human-readable failure reason; never transcript content.
