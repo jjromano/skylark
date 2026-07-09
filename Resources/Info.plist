@@ -26,5 +26,7 @@
     <string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Skylark uses the microphone to transcribe your speech. Audio never leaves this Mac in local mode.</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Skylark pauses Music and Spotify while you dictate, then resumes them afterward.</string>
 </dict>
 </plist>

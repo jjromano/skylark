@@ -51,6 +51,14 @@ public protocol TextInjecting: Sendable {
     /// orchestrator probes this at paste time to pick the cleanup strategy
     /// (in-place replace vs. wait-for-clean).
     func canInsertDirectly() async -> Bool
+    /// Synthesize a Return keystroke (spoken "press enter" command). Call only
+    /// after `insert` has returned so the keystroke lands after the text.
+    func pressReturn() async
+}
+
+public extension TextInjecting {
+    /// Default no-op so test doubles and simple injectors need not implement it.
+    func pressReturn() async {}
 }
 
 /// Posts a real Cmd-V (or an injected substitute in tests).
@@ -107,6 +115,40 @@ public final class TextInjector: TextInjecting {
 
     public init(executor: PasteExecutor = CmdVPasteExecutor()) {
         self.executor = executor
+    }
+
+    /// Synthesize a Return keyDown/keyUp to the same destination the paste path
+    /// posts to (`.cghidEventTap`), for the spoken "press enter" command. No
+    /// clipboard involvement.
+    ///
+    /// Call this only *after* `insert` has returned: on the paste path `insert`
+    /// awaits the post-paste settle grace before returning, and on the AX path the
+    /// write is synchronous, so by the time this runs the injected text has
+    /// already landed and the Return keystroke arrives after it in the target app.
+    /// Posting two CGEvents is fast and non-blocking; it stays off the audio path
+    /// because the app layer invokes it on the injection path, never per audio frame.
+    ///
+    /// Protocol witness — the orchestrator only sees `TextInjecting`, so this
+    /// must exist explicitly (the sync Bool variant below can't witness an
+    /// async Void requirement, and the default no-op would otherwise win).
+    public func pressReturn() async {
+        _ = synthesizeReturn()
+    }
+
+    /// - Returns: true when both events were synthesized and posted.
+    @discardableResult
+    public func synthesizeReturn() -> Bool {
+        guard let source = CGEventSource(stateID: .combinedSessionState) else { return false }
+        let returnKey: CGKeyCode = 36 // kVK_Return
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: returnKey, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: returnKey, keyDown: false)
+        else {
+            logger.notice("press-return: could not synthesize Return event")
+            return false
+        }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+        return true
     }
 
     public func insert(_ text: String) async throws -> InsertionToken {

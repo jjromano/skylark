@@ -5,6 +5,8 @@ import SwiftUI
 struct OnboardingView: View {
     @Bindable var permissions: PermissionsService
     let apiKeyClient: OpenRouterClient
+    /// Display name of the configured dictation key (e.g. "Fn (Globe)").
+    var hotkeyName: String = "Fn (Globe)"
     var onClose: () -> Void
 
     var body: some View {
@@ -12,7 +14,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Welcome to Skylark")
                     .font(.title2.bold())
-                Text("Grant three permissions so Skylark can hear you, read the focused text field, and watch for the Fn key.")
+                Text("Grant three permissions so Skylark can hear you, read the focused text field, and watch for your dictation key.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -35,10 +37,23 @@ struct OnboardingView: View {
                 PermissionRow(
                     icon: "keyboard",
                     title: "Input Monitoring",
-                    why: "Detect the Fn (Globe) key for push-to-talk.",
+                    why: "Detect the \(hotkeyName) key for push-to-talk.",
                     grant: permissions.inputMonitoring
                 ) { permissions.request(.inputMonitoring) }
             }
+
+            // How to dictate — the three gestures, using the configured key.
+            VStack(alignment: .leading, spacing: 6) {
+                Text("How to dictate")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                GestureRow(icon: "hand.tap.fill", text: "Hold \(hotkeyName), speak, release — the text lands where your cursor is.")
+                GestureRow(icon: "hand.tap", text: "Double-tap \(hotkeyName) for hands-free; it stops when you go quiet.")
+                GestureRow(icon: "escape", text: "Press Esc while recording to cancel.")
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
 
             if permissions.fnGlobeActionConflict {
                 Label(
@@ -57,7 +72,7 @@ struct OnboardingView: View {
 
             if permissions.allGranted {
                 HStack {
-                    Label("You're set — hold Fn and speak.", systemImage: "checkmark.seal.fill")
+                    Label("You're set — hold \(hotkeyName) and speak.", systemImage: "checkmark.seal.fill")
                         .foregroundStyle(.green)
                     Spacer()
                     Button("Close") { onClose() }
@@ -119,5 +134,23 @@ private struct PermissionRow: View {
             .padding(.vertical, 3)
             .background(Capsule().fill(color.opacity(0.18)))
             .foregroundStyle(color)
+    }
+}
+
+/// One "how to dictate" gesture line in the onboarding tutorial card.
+private struct GestureRow: View {
+    let icon: String
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundStyle(.tint)
+                .frame(width: 16)
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 }

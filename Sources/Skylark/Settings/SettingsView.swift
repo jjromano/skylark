@@ -11,15 +11,17 @@ struct SettingsView: View {
     @State private var selection: Pane? = .general
 
     enum Pane: String, Hashable, Identifiable, CaseIterable {
-        case general, models, audio, dictionary, modes, history, account
+        case general, insights, models, audio, dictionary, snippets, modes, history, account
         var id: String { rawValue }
 
         var title: String {
             switch self {
             case .general: return "General"
+            case .insights: return "Insights"
             case .models: return "Models"
             case .audio: return "Audio"
             case .dictionary: return "Dictionary"
+            case .snippets: return "Snippets"
             case .modes: return "Modes"
             case .history: return "History"
             case .account: return "Account"
@@ -28,13 +30,30 @@ struct SettingsView: View {
 
         var icon: String {
             switch self {
-            case .general: return "gearshape"
-            case .models: return "cpu"
+            case .general: return "gearshape.fill"
+            case .insights: return "chart.bar.fill"
+            case .models: return "cpu.fill"
             case .audio: return "waveform"
-            case .dictionary: return "character.book.closed"
+            case .dictionary: return "character.book.closed.fill"
+            case .snippets: return "scissors"
             case .modes: return "switch.2"
-            case .history: return "clock"
-            case .account: return "person.crop.circle"
+            case .history: return "clock.fill"
+            case .account: return "person.crop.circle.fill"
+            }
+        }
+
+        /// System-Settings-style tile tint behind the sidebar icon.
+        var tint: Color {
+            switch self {
+            case .general: return .gray
+            case .insights: return .purple
+            case .models: return .indigo
+            case .audio: return .pink
+            case .dictionary: return .brown
+            case .snippets: return .teal
+            case .modes: return .cyan
+            case .history: return .orange
+            case .account: return .blue
             }
         }
     }
@@ -43,7 +62,9 @@ struct SettingsView: View {
         Pane.allCases.filter { pane in
             switch pane {
             case .dictionary: return controller.dictionaryStore != nil
+            case .snippets: return controller.snippetStore != nil
             case .modes: return controller.modeStore != nil
+            case .insights: return controller.statsStore != nil
             default: return true
             }
         }
@@ -53,7 +74,7 @@ struct SettingsView: View {
         NavigationSplitView {
             List(selection: $selection) {
                 ForEach(panes) { pane in
-                    Label(pane.title, systemImage: pane.icon).tag(pane)
+                    SidebarRow(pane: pane).tag(pane)
                 }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 196, max: 220)
@@ -66,12 +87,12 @@ struct SettingsView: View {
                 .navigationTitle((selection ?? .general).title)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 740, height: 560)
+        .frame(width: 760, height: 600)
     }
 
     private var sidebarFooter: some View {
         HStack(spacing: 6) {
-            Image(systemName: "bird.fill").foregroundStyle(.secondary)
+            Image(nsImage: MenuBarIcon.image)
             Text("Skylark \(Bundle.main.shortVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -86,6 +107,8 @@ struct SettingsView: View {
         switch pane {
         case .general:
             GeneralPane(controller: controller)
+        case .insights:
+            InsightsView(controller: controller)
         case .models:
             ModelsPane(controller: controller)
         case .audio:
@@ -94,6 +117,10 @@ struct SettingsView: View {
             if let store = controller.dictionaryStore {
                 ScrollView { DictionaryView(store: store).padding(20) }
             }
+        case .snippets:
+            if let store = controller.snippetStore {
+                ScrollView { SnippetsView(store: store).padding(20) }
+            }
         case .modes:
             if let store = controller.modeStore {
                 ScrollView { ModesView(store: store, cleanupModels: controller.cleanupModels).padding(20) }
@@ -101,8 +128,28 @@ struct SettingsView: View {
         case .history:
             HistoryPane(controller: controller)
         case .account:
-            AccountPane(client: client)
+            AccountPane(controller: controller, client: client)
         }
+    }
+}
+
+/// Sidebar entry with a System-Settings-style colored icon tile.
+private struct SidebarRow: View {
+    let pane: SettingsView.Pane
+
+    var body: some View {
+        HStack(spacing: 8) {
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(pane.tint.gradient)
+                .frame(width: 22, height: 22)
+                .overlay(
+                    Image(systemName: pane.icon)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                )
+            Text(pane.title)
+        }
+        .padding(.vertical, 1)
     }
 }
 
@@ -116,8 +163,77 @@ private struct GeneralPane: View {
     /// registry slugs.
     private static let localCleanupTag = "skylark.local"
 
+    /// Sentinel for the mouse-trigger picker's "None" row (no binding).
+    private static let mouseOffTag = "off"
+
     var body: some View {
         Form {
+            Section {
+                Picker("Keyboard", selection: Binding(
+                    get: { controller.hotkeyKeyboard.rawValue },
+                    set: { raw in
+                        if let binding = HotkeyBinding(rawValue: raw) {
+                            controller.setHotkeyKeyboard(binding)
+                        }
+                    }
+                )) {
+                    ForEach(HotkeyBinding.keyboardOptions, id: \.rawValue) { option in
+                        Text(option.displayName).tag(option.rawValue)
+                    }
+                }
+                Picker("Mouse (optional)", selection: Binding(
+                    get: { controller.hotkeyMouse?.rawValue ?? Self.mouseOffTag },
+                    set: { raw in
+                        controller.setHotkeyMouse(raw == Self.mouseOffTag ? nil : HotkeyBinding(rawValue: raw))
+                    }
+                )) {
+                    Text("None").tag(Self.mouseOffTag)
+                    ForEach(HotkeyBinding.mouseOptions, id: \.rawValue) { option in
+                        Text(option.displayName).tag(option.rawValue)
+                    }
+                }
+            } header: {
+                Text("Dictation shortcut")
+            } footer: {
+                Text("Hold to talk; double-tap to lock hands-free; Esc cancels. Keyboard and mouse triggers are interchangeable.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Recording indicator") {
+                Picker("Style", selection: Binding(
+                    get: { controller.hud.style },
+                    set: { controller.setHUDStyle($0) }
+                )) {
+                    ForEach(HUDStyle.allCases) { style in
+                        Text(style.label).tag(style)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Toggle("Show idle pill between dictations", isOn: Binding(
+                    get: { controller.hud.showIdlePill },
+                    set: { controller.setHUDShowIdlePill($0) }
+                ))
+                .disabled(controller.hud.style == .hidden)
+            }
+
+            Section {
+                Toggle("Spoken “press enter” command", isOn: Binding(
+                    get: { controller.pressEnterEnabled },
+                    set: { controller.setPressEnterEnabled($0) }
+                ))
+                Toggle("Pause music while dictating", isOn: Binding(
+                    get: { controller.pauseMediaEnabled },
+                    set: { controller.setPauseMediaEnabled($0) }
+                ))
+            } header: {
+                Text("Behavior")
+            } footer: {
+                Text("End a dictation with “press enter” to send it as a message. Music pause covers Music and Spotify and asks for an Automation permission the first time.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Cleanup") {
                 Picker("Default cleanup tier", selection: Binding(
                     get: { controller.cleanupOverride },
@@ -180,6 +296,23 @@ private struct GeneralPane: View {
                     ForEach(SoundEffects.catalog) { cue in Text(cue.label).tag(cue.id) }
                 }
                 .disabled(!controller.soundEffectsEnabled)
+                HStack {
+                    Text("Volume")
+                    Slider(
+                        value: Binding(
+                            get: { controller.soundVolume },
+                            set: { controller.setSoundVolume($0) }
+                        ),
+                        in: 0...1
+                    ) { editing in
+                        // Audition on release, not on every tick.
+                        if !editing { controller.previewSoundVolume() }
+                    }
+                    Image(systemName: "speaker.wave.2")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .disabled(!controller.soundEffectsEnabled)
             }
 
             Section("Launch") {
@@ -206,6 +339,37 @@ private struct HistoryPane: View {
 
     var body: some View {
         Form {
+            Section {
+                Picker("Keep history for", selection: Binding(
+                    get: { controller.retentionDays },
+                    set: { controller.setRetentionDays($0) }
+                )) {
+                    Text("Forever").tag(0)
+                    Text("90 days").tag(90)
+                    Text("30 days").tag(30)
+                    Text("7 days").tag(7)
+                }
+            } header: {
+                Text("Retention")
+            } footer: {
+                Text("Older dictations (and any retained audio) are deleted automatically.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Learn corrections automatically", isOn: Binding(
+                    get: { controller.dictionaryAutoLearn },
+                    set: { controller.setDictionaryAutoLearn($0) }
+                ))
+            } header: {
+                Text("Dictionary learning")
+            } footer: {
+                Text("When you fix a word while editing a transcript in History, add the correction to the Dictionary without asking.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Audio retention") {
                 Toggle("Keep audio recordings (local only)", isOn: Binding(
                     get: { controller.audioRetentionEnabled },
@@ -482,16 +646,81 @@ private struct AudioPane: View {
 // MARK: - Account
 
 private struct AccountPane: View {
+    @Bindable var controller: AppController
     let client: OpenRouterClient
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 APIKeyCard(client: client, showRemove: true)
+                updatesCard
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(20)
         }
+    }
+
+    private var updatesCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("About & updates", systemImage: "arrow.triangle.2.circlepath")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Skylark \(Bundle.main.shortVersion)")
+                        .font(.system(size: 13, weight: .medium))
+                    if let info = controller.buildInfo, let commit = info.commit {
+                        Text("Build \(String(commit.prefix(7)))\(buildDateSuffix)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Development build (not installed via install.sh)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                switch controller.updateState {
+                case .checking:
+                    ProgressView().controlSize(.small)
+                case .available:
+                    Button("Update Now") { controller.runUpdate() }
+                        .buttonStyle(.borderedProminent)
+                default:
+                    Button("Check for Updates") { controller.checkForUpdates() }
+                }
+            }
+
+            switch controller.updateState {
+            case .upToDate:
+                Label("Skylark is up to date.", systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            case let .available(summary):
+                Label(summary.map { "Update available: \($0)" } ?? "An update is available.",
+                      systemImage: "arrow.down.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                Text("Updating opens Terminal, pulls the latest code, and rebuilds — about two minutes.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            case let .failed(reason):
+                Label(reason, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            default:
+                EmptyView()
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5)))
+    }
+
+    private var buildDateSuffix: String {
+        guard let date = controller.buildInfo?.date else { return "" }
+        return " · " + date.formatted(date: .abbreviated, time: .omitted)
     }
 }
 

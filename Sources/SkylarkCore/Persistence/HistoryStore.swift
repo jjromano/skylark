@@ -13,6 +13,9 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
     public var durationMs: Int
     public var latencyMs: Int
     public var audioPath: String?
+    public var wordCount: Int
+    public var appBundleID: String?
+    public var appName: String?
 
     public init(
         id: Int64? = nil,
@@ -23,7 +26,10 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
         engine: String,
         durationMs: Int,
         latencyMs: Int,
-        audioPath: String? = nil
+        audioPath: String? = nil,
+        wordCount: Int = 0,
+        appBundleID: String? = nil,
+        appName: String? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -34,6 +40,9 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
         self.durationMs = durationMs
         self.latencyMs = latencyMs
         self.audioPath = audioPath
+        self.wordCount = wordCount
+        self.appBundleID = appBundleID
+        self.appName = appName
     }
 
     enum CodingKeys: String, CodingKey {
@@ -45,6 +54,9 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
         case durationMs = "duration_ms"
         case latencyMs = "latency_ms"
         case audioPath = "audio_path"
+        case wordCount = "word_count"
+        case appBundleID = "app_bundle_id"
+        case appName = "app_name"
     }
 }
 
@@ -100,9 +112,16 @@ public actor HistoryStore {
         }
     }
 
+    /// Updates the clean text and refreshes `word_count` from it (correlated
+    /// clean-text arrives after the raw-text append; the word count should
+    /// reflect whichever text is now "final").
     public func updateEditedText(id: Int64, new text: String) async throws {
+        let count = WordCount.count(text)
         try await db.dbQueue.write { db in
-            try db.execute(sql: "UPDATE history SET clean_text = ? WHERE id = ?", arguments: [text, id])
+            try db.execute(
+                sql: "UPDATE history SET clean_text = ?, word_count = ? WHERE id = ?",
+                arguments: [text, count, id]
+            )
         }
     }
 
@@ -132,6 +151,32 @@ public actor HistoryStore {
     public func clearAllAudioPaths() async throws {
         try await db.dbQueue.write { db in
             try db.execute(sql: "UPDATE history SET audio_path = NULL WHERE audio_path IS NOT NULL")
+        }
+    }
+
+    /// UserDefaults key for the retention window (whole days; 0 = keep forever).
+    /// Read/write lives in the app layer — this constant just gives both sides
+    /// one spelling to agree on.
+    public static let retentionDefaultsKey = "history.retentionDays"
+
+    /// Deletes every row older than `days` (by `timestamp`), removing each
+    /// row's retained audio file first (same pattern as `deleteEntry`/
+    /// `purgeAll` in `HistoryHub`, just batched). Returns the number of rows
+    /// deleted. Off any latency path — called from a launch/periodic sweep.
+    @discardableResult
+    public func prune(olderThanDays days: Int) async throws -> Int {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
+        return try await db.dbQueue.write { db in
+            let paths = try String.fetchAll(
+                db,
+                sql: "SELECT audio_path FROM history WHERE timestamp < ? AND audio_path IS NOT NULL",
+                arguments: [cutoff]
+            )
+            for path in paths {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+            try db.execute(sql: "DELETE FROM history WHERE timestamp < ?", arguments: [cutoff])
+            return db.changesCount
         }
     }
 }

@@ -29,25 +29,37 @@ final class SoundEffects {
 
     static let defaultStartID = "Tink"
     static let defaultStopID = "Pop"
+    static let defaultVolume: Double = 0.5
 
     var enabled: Bool
     private var startID: String
     private var stopID: String
+    /// Cue volume 0…1, applied only to Skylark's own cues (never the system
+    /// output volume). Stored as Double to bind directly to a SwiftUI Slider.
+    private var volume: Double
 
     // Caches so playback never allocates/decodes on the hot path.
     private var systemSounds: [String: NSSound] = [:]
     private var synthPlayers: [String: AVAudioPlayer] = [:]
 
-    init(enabled: Bool, startID: String, stopID: String) {
+    init(enabled: Bool, startID: String, stopID: String, volume: Double = SoundEffects.defaultVolume) {
         self.enabled = enabled
         self.startID = startID
         self.stopID = stopID
+        self.volume = min(max(volume, 0), 1)
         prewarm(startID)
         prewarm(stopID)
     }
 
     func setStart(_ id: String) { startID = id; prewarm(id) }
     func setStop(_ id: String) { stopID = id; prewarm(id) }
+
+    /// Applies to all cached and future players immediately.
+    func setVolume(_ value: Double) {
+        volume = min(max(value, 0), 1)
+        for sound in systemSounds.values { sound.volume = Float(volume) }
+        for player in synthPlayers.values { player.volume = Float(volume) }
+    }
 
     func playStart() { guard enabled else { return }; play(startID) }
     func playStop() { guard enabled else { return }; play(stopID) }
@@ -72,7 +84,7 @@ final class SoundEffects {
     private func prewarm(_ id: String) {
         if id.hasPrefix("skylark.") {
             if synthPlayers[id] == nil, let player = Self.synthPlayer(for: id) {
-                player.volume = 0.5
+                player.volume = Float(volume)
                 player.prepareToPlay()
                 synthPlayers[id] = player
             }
@@ -84,7 +96,10 @@ final class SoundEffects {
     private func systemSound(_ name: String) -> NSSound? {
         if let cached = systemSounds[name] { return cached }
         let sound = NSSound(named: NSSound.Name(name))
-        if let sound { systemSounds[name] = sound }
+        if let sound {
+            sound.volume = Float(volume)
+            systemSounds[name] = sound
+        }
         return sound
     }
 

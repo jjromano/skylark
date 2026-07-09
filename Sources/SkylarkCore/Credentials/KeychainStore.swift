@@ -15,16 +15,22 @@ public enum KeychainError: Error, Sendable, Equatable {
 /// `kSecAttrAccessibleWhenUnlocked`. Never caches the key elsewhere; never logs
 /// it.
 public struct KeychainStore: Sendable {
-    private static let service = "com.jjromano.skylark"
-    private static let account = "openrouter-api-key"
+    private let service: String
+    private let account: String
 
-    public init() {}
+    /// Defaults address the real API-key item. Tests MUST pass a dedicated
+    /// service/account — the defaults would read/overwrite/delete the user's
+    /// actual stored key.
+    public init(service: String = "com.jjromano.skylark", account: String = "openrouter-api-key") {
+        self.service = service
+        self.account = account
+    }
 
     private var baseQuery: [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
-            kSecAttrAccount as String: Self.account,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
         ]
     }
 

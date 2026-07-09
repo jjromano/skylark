@@ -63,19 +63,31 @@ final class HUDPanelController {
 
     func show() {
         refreshLayout()
-        panel.orderFrontRegardless()
     }
 
     func hide() {
         panel.orderOut(nil)
     }
 
-    /// Re-fit the panel to its content and re-clamp its position.
+    /// Re-fit the panel to its content, re-clamp its position, and apply the
+    /// style-driven visibility (hidden style / hidden idle pill order out).
     func refreshLayout() {
-        let size = HUDMetrics.size(for: model.state, hovering: model.isHovering)
+        let visible = HUDMetrics.isVisible(
+            state: model.state,
+            hovering: model.isHovering,
+            style: model.style,
+            showIdlePill: model.showIdlePill,
+            isPreparing: model.isPreparing
+        )
+        guard visible else {
+            panel.orderOut(nil)
+            return
+        }
+        let size = HUDMetrics.size(for: model.state, hovering: model.isHovering, style: model.style)
         // +4 accounts for the 2pt padding around the pill in HUDView.
         panel.setContentSize(CGSize(width: size.width + 4, height: size.height + 4))
         reposition()
+        panel.orderFrontRegardless()
     }
 
     @objc private func screenParametersChanged() {

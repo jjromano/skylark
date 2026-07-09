@@ -34,6 +34,26 @@ public final class SkylarkDatabase: Sendable {
             dbQueue = try DatabaseQueue(configuration: configuration)
         }
 
+        try Self.migrator.migrate(dbQueue)
+    }
+
+    /// `~/Library/Application Support/Skylark/skylark.sqlite` (ARCHITECTURE §5).
+    public static func onDisk() throws -> SkylarkDatabase {
+        try SkylarkDatabase(path: ModelPaths.appSupport.appendingPathComponent("skylark.sqlite"))
+    }
+
+    /// In-memory database — tests only.
+    public static func inMemory() throws -> SkylarkDatabase {
+        try SkylarkDatabase(path: nil)
+    }
+
+    /// The full "v1" -> "v3" migration chain. Exposed (rather than inlined in
+    /// `init`) so tests can run it partially (`migrate(_:upTo:)`) to seed a
+    /// pre-"v3" database, insert legacy-shaped rows, then run the rest of the
+    /// chain and assert on the migration's own effects (e.g. the `word_count`
+    /// backfill) — a fresh `SkylarkDatabase` always starts fully migrated,
+    /// which otherwise leaves no way to observe an intermediate state.
+    public static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in
             try db.create(table: "history") { t in
@@ -111,16 +131,39 @@ public final class SkylarkDatabase: Sendable {
             try db.rename(table: "dictionary_new", to: "dictionary")
         }
 
-        try migrator.migrate(dbQueue)
-    }
+        migrator.registerMigration("v3") { db in
+            // Usage-stats + per-app attribution columns (workstream B spec §1).
+            try db.alter(table: "history") { t in
+                t.add(column: "word_count", .integer).notNull().defaults(to: 0)
+                t.add(column: "app_bundle_id", .text)
+                t.add(column: "app_name", .text)
+            }
 
-    /// `~/Library/Application Support/Skylark/skylark.sqlite` (ARCHITECTURE §5).
-    public static func onDisk() throws -> SkylarkDatabase {
-        try SkylarkDatabase(path: ModelPaths.appSupport.appendingPathComponent("skylark.sqlite"))
-    }
+            // Backfill word_count for existing rows from clean_text ?? raw_text.
+            let rows = try Row.fetchAll(db, sql: "SELECT id, raw_text, clean_text FROM history")
+            for row in rows {
+                let id: Int64 = row["id"]
+                let rawText: String = row["raw_text"]
+                let cleanText: String? = row["clean_text"]
+                let count = WordCount.count(cleanText ?? rawText)
+                try db.execute(sql: "UPDATE history SET word_count = ? WHERE id = ?", arguments: [count, id])
+            }
 
-    /// In-memory database — tests only.
-    public static func inMemory() throws -> SkylarkDatabase {
-        try SkylarkDatabase(path: nil)
+            // Stats queries (recent-days rollups, streaks) always filter/sort by
+            // timestamp; index it now that the table can grow unbounded.
+            try db.create(index: "history_on_timestamp", on: "history", columns: ["timestamp"], ifNotExists: true)
+
+            // Whole-utterance text expansion (workstream B spec §4). `trigger`
+            // is a SQL keyword; GRDB quotes every identifier it generates so
+            // this is safe as a column name.
+            try db.create(table: "snippets") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("trigger", .text).notNull().unique().collate(.nocase)
+                t.column("replacement", .text).notNull()
+                t.column("created_at", .datetime).notNull()
+            }
+        }
+
+        return migrator
     }
 }

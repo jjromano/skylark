@@ -148,11 +148,44 @@ unsafe. **[design to validate in Phase 2]**
 
 ## 5. Data model (GRDB)
 
-- `history(id, timestamp, raw_text, clean_text, mode_id, engine, duration_ms, latency_ms, audio_path NULLABLE)` — audio path only when opt-in.
+- `history(id, timestamp, raw_text, clean_text, mode_id, engine, duration_ms, latency_ms, audio_path NULLABLE, word_count, app_bundle_id NULLABLE, app_name NULLABLE)`
+  — audio path only when opt-in; word_count/app_* (v3) feed `StatsStore`
+  aggregates (Insights pane). Time-based retention pruning
+  (`HistoryStore.prune`) runs at launch and on setting change.
+- `snippets(id, trigger UNIQUE NOCASE, replacement, created_at)` — spoken
+  whole-utterance triggers; matched by `SnippetMatcher` in the orchestrator
+  before cleanup.
 - `dictionary(id, phrase, replacement NULLABLE, source ENUM(manual, auto_correction), created_at)`
 - `modes(id, name, bundle_id_pattern, engine, cleanup_tier, cleanup_model_slug, register_hint, is_default)`
-- `model_registry(slug, label, provider_pin, kind ENUM(stt, cleanup), sort)`
+- `model_registry(slug, label, provider_pin, kind ENUM(stt, cleanup), sort, seeded)`
+  — `seeded` (added ad hoc by `RegistryStore`, not the shared migrator; see §6)
+  distinguishes rows `syncSeed()` owns from user/ad-hoc entries.
 - Settings in `UserDefaults` (non-secret); OpenRouter key in Keychain only.
+
+### Hotkey bindings
+
+The dictation trigger is a `HotkeyBinding` (keyboard: Fn default, right
+⌘/⌥/⌃, F13–F19; mouse: buttons 2–4 as an optional second trigger). Both
+feed the same `HotkeyProcessor` state machine (`triggerDown`/`triggerUp`);
+`HotkeyMonitor` swallows only the bound keys/buttons. Persisted under
+`hotkey.keyboard` / `hotkey.mouse`; applied live via `setBindings`.
+
+### Voice commands & media
+
+- "press enter"/"press return" spoken terminally (opt-in) is stripped by
+  `PressEnterCommand.strip` pre-injection; the orchestrator then synthesizes
+  Return via `TextInjecting.pressReturn()` — on this path cleanup is awaited
+  (never the detached replace) so Return always lands after final text.
+- `MediaPauseController` (opt-in) pauses running Music/Spotify at listening
+  start and resumes exactly what it paused; AppleScript on the main actor,
+  fire-and-forget, never on the audio/paste path.
+
+### Updates
+
+`bundle.sh` stamps the bundle with commit/date/repo path/remote;
+`UpdateChecker` compares the commit against GitHub `main` (unauthenticated)
+and `UpdateCommandWriter` emits a Terminal `.command` running
+`git pull --ff-only && Scripts/install.sh` (Settings → Account).
 
 ## 6. Engine integration facts (verified from source, 2026-07)
 
@@ -198,6 +231,33 @@ unsafe. **[design to validate in Phase 2]**
   ($0.05/$0.08 per 1M), `openai/gpt-oss-20b`, `meta-llama/llama-3.3-70b-instruct`.
 - Auth: `Authorization: Bearer <key>`; validate stored key via
   `GET /api/v1/key` at onboarding.
+
+### Updating the model catalog
+
+Skylark is distributed by building from source (`git clone` + `Scripts/install.sh`,
+re-run after `git pull` = "the update"), so the cloud model catalog can't be
+pushed to installed copies — it travels with the source and reaches existing
+installs the same way any other code change does:
+
+1. `ModelRegistryEntry.seed` (`Sources/SkylarkCore/Models/ModelRegistryEntry.swift`)
+   is the source of truth — a hardcoded array of STT + cleanup OpenRouter
+   entries, edited in a PR like any other code.
+2. `RegistryStore.syncSeed()` (`Sources/SkylarkCore/Persistence/RegistryStore.swift`)
+   reconciles the on-disk `model_registry` table against `.seed` every time
+   it's called (app launch): it inserts any seed slug missing from the DB,
+   and refreshes `label`/`providerPin`/`sort` for rows *it* previously
+   seeded — never touching a row the user hand-added/edited, and never
+   deleting anything. `seedIfEmpty()` still exists and just delegates to
+   `syncSeed()`, so old call sites keep working.
+3. Consequently: a maintainer edits `.seed`, commits, and every existing
+   install picks up the change on its next launch after `git pull` +
+   `Scripts/install.sh` — no server round trip, no versioned migration
+   needed for catalog changes specifically.
+4. Use `/update-models` (`.claude/commands/update-models.md`) to curate the
+   seed: it fetches the live OpenRouter catalog, diffs it against `.seed`,
+   web-researches promising new entrants, proposes edits, and reminds the
+   maintainer that `Sources/Skylark/Settings/ModelInfo.swift` (blurbs/scores/
+   cost estimates, not synced automatically) needs matching updates.
 
 ## 7. Privacy invariants (enforced in review, every phase)
 

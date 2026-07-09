@@ -7,8 +7,10 @@ struct SkylarkApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("Skylark", systemImage: "bird.fill") {
+        MenuBarExtra {
             MenuContent(controller: appDelegate.controller)
+        } label: {
+            Image(nsImage: MenuBarIcon.image)
         }
     }
 }
@@ -40,6 +42,9 @@ struct MenuContent: View {
         }
         if let last = controller.lastLatencyMs {
             Text("Last: \(last) ms").font(.caption)
+        }
+        if let stats = controller.stats, stats.wordsToday > 0 {
+            Text("\(stats.wordsToday.formatted()) words today").font(.caption)
         }
 
         Divider()

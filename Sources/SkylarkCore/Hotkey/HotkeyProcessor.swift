@@ -6,24 +6,30 @@ import Foundation
 
 /// Discrete inputs the processor understands. The `HotkeyMonitor` derives these
 /// from raw `CGEvent`s; tests feed them directly.
+///
+/// The trigger inputs are physical-source agnostic: whichever key or mouse
+/// button is bound (see `HotkeyBinding`), the monitor maps its press/release to
+/// `.triggerDown`/`.triggerUp`. If both a keyboard and a mouse trigger are
+/// bound, they are interchangeable — a session started by one is continued and
+/// stopped by either (the first release ends a hold).
 public enum HotkeyInput: Sendable, Equatable {
-    /// The Fn (Globe) key went down.
-    case fnDown
-    /// The Fn (Globe) key went up.
-    case fnUp
-    /// A non-Fn key went down. `isEscape` marks the Escape key.
+    /// The bound dictation trigger (key or mouse button) went down.
+    case triggerDown
+    /// The bound dictation trigger went up.
+    case triggerUp
+    /// A non-trigger key went down. `isEscape` marks the Escape key.
     case otherKeyDown(isEscape: Bool)
-    /// A mouse button went down.
+    /// A non-trigger mouse button went down.
     case mouseDown
 }
 
-/// Pure push-to-talk / double-tap-lock state machine for the Fn chord.
+/// Pure push-to-talk / double-tap-lock state machine for the dictation trigger.
 ///
 /// - `idle`: waiting.
-/// - `pressAndHold`: Fn held, recording; releasing ≥ `minimumHold` stops+pastes,
-///   shorter is discarded (stray taps must not paste).
+/// - `pressAndHold`: trigger held, recording; releasing ≥ `minimumHold`
+///   stops+pastes, shorter is discarded (stray taps must not paste).
 /// - `doubleTapLock`: hands-free; two quick taps lock recording until the next
-///   Fn press stops it.
+///   trigger press stops it.
 public struct HotkeyProcessor: Sendable {
     // MARK: Tunables
 
@@ -42,10 +48,11 @@ public struct HotkeyProcessor: Sendable {
 
     public private(set) var state: State = .idle
 
-    /// Instant of the most recent Fn release, for double-tap detection.
+    /// Instant of the most recent trigger release, for double-tap detection.
     private var lastReleaseAt: ContinuousClock.Instant?
 
-    /// When true, ignore all input until Fn is fully released (chord/ESC/dirty).
+    /// When true, ignore all input until the trigger is fully released
+    /// (chord/ESC/dirty).
     private var isDirty = false
 
     public init() {}
@@ -69,19 +76,19 @@ public struct HotkeyProcessor: Sendable {
             return .cancel
         }
 
-        // While dirty, swallow everything until Fn is fully released.
+        // While dirty, swallow everything until the trigger is fully released.
         if isDirty {
-            if input == .fnUp {
+            if input == .triggerUp {
                 isDirty = false
             }
             return nil
         }
 
         switch input {
-        case .fnDown:
-            return handleFnDown(at: now)
-        case .fnUp:
-            return handleFnUp(at: now)
+        case .triggerDown:
+            return handleTriggerDown(at: now)
+        case .triggerUp:
+            return handleTriggerUp(at: now)
         case .otherKeyDown:
             return handleOtherKeyDown()
         case .mouseDown:
@@ -91,21 +98,23 @@ public struct HotkeyProcessor: Sendable {
 
     // MARK: - Handlers
 
-    private mutating func handleFnDown(at now: ContinuousClock.Instant) -> HotkeyEvent? {
+    private mutating func handleTriggerDown(at now: ContinuousClock.Instant) -> HotkeyEvent? {
         switch state {
         case .idle:
             state = .pressAndHold(start: now)
             return .startRecording
         case .pressAndHold:
+            // Already holding — a second interchangeable trigger pressing down
+            // does not disturb the session.
             return nil
         case .doubleTapLock:
-            // Pressing Fn again ends a locked session.
+            // Pressing the trigger again ends a locked session.
             resetToIdle()
             return .stopRecording
         }
     }
 
-    private mutating func handleFnUp(at now: ContinuousClock.Instant) -> HotkeyEvent? {
+    private mutating func handleTriggerUp(at now: ContinuousClock.Instant) -> HotkeyEvent? {
         guard case let .pressAndHold(start) = state else {
             return nil
         }
@@ -132,7 +141,8 @@ public struct HotkeyProcessor: Sendable {
 
     private mutating func handleOtherKeyDown() -> HotkeyEvent? {
         // (ESC handled above.) A different key during an active session means the
-        // user meant Fn+key, not dictation: cancel and go dirty until full release.
+        // user meant trigger+key, not dictation: cancel and go dirty until full
+        // release. (The monitor never routes the bound key here.)
         switch state {
         case .idle:
             return nil
@@ -150,8 +160,9 @@ public struct HotkeyProcessor: Sendable {
         guard case let .pressAndHold(start) = state else {
             return nil
         }
-        // Only discard clicks inside the min-hold window (Fn+click conflicts);
-        // after that, let the recording continue.
+        // Only discard clicks inside the min-hold window (trigger+click
+        // conflicts); after that, let the recording continue. The monitor never
+        // routes the bound mouse button here — it maps to trigger events.
         if start.duration(to: now) < Self.minimumHold {
             isDirty = true
             resetToIdle()

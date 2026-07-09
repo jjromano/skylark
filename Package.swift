@@ -71,7 +71,14 @@ let package = Package(
         // and the standalone runner (see Sources/SkylarkTestRunner/main.swift).
         .target(
             name: "SkylarkTestKit",
-            dependencies: ["SkylarkCore"],
+            dependencies: [
+                "SkylarkCore",
+                // Needed to drive `SkylarkDatabase.migrator` directly against a
+                // raw `DatabaseQueue` in migration tests (seeding pre-"v3" rows
+                // that a fully-migrated `SkylarkDatabase.inMemory()` can't
+                // represent).
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
             path: "Tests/SkylarkTestKit",
             swiftSettings: testingSwiftSettings
         ),

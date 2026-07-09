@@ -42,9 +42,21 @@ public actor HistoryHub {
 
     /// Persist a completed dictation, remembering its id for a later update.
     /// When audio retention is on, `clip` is written to disk first and the row
-    /// carries its path; when off, `clip` is dropped untouched.
-    public func record(_ record: HistoryRecord, clip: AudioClip?) async {
+    /// carries its path; when off, `clip` is dropped untouched. `word_count` is
+    /// always (re)computed here from `cleanText ?? rawText`, ignoring whatever
+    /// the caller stamped on the record, so it can never drift from the text
+    /// actually stored. `appBundleID`/`appName` default to nil for callers
+    /// (e.g. tests, headless recording) that don't have frontmost-app info.
+    public func record(
+        _ record: HistoryRecord,
+        clip: AudioClip?,
+        appBundleID: String? = nil,
+        appName: String? = nil
+    ) async {
         var toSave = record
+        toSave.wordCount = WordCount.count(record.cleanText ?? record.rawText)
+        toSave.appBundleID = appBundleID
+        toSave.appName = appName
         if audioRetentionEnabled(), let clip, !clip.samples.isEmpty {
             toSave.audioPath = writeAudio(clip)
         }
@@ -57,14 +69,25 @@ public actor HistoryHub {
 
     /// Update the clean text of a previously-recorded dictation (matched by
     /// timestamp). No-op if the record wasn't tracked or carries no clean text.
+    /// `HistoryStore.updateEditedText` recomputes `word_count` from the new
+    /// text, so the row's count always reflects whichever text is now final.
     public func updateClean(_ record: HistoryRecord) async {
         guard let clean = record.cleanText, let id = ids[record.timestamp] else { return }
         try? await store.updateEditedText(id: id, new: clean)
     }
 
     /// Fire-and-forget append sink for the orchestrator (`historyRecord`).
-    public nonisolated func recordSink() -> @Sendable (HistoryRecord, AudioClip) -> Void {
-        { record, clip in Task { await self.record(record, clip: clip) } }
+    /// `appInfo` is called once per dictation to stamp the frontmost app on
+    /// the row; it defaults to "unknown" (nil, nil) so the existing call site
+    /// (`historyHub?.recordSink()`) keeps compiling — the app layer wires a
+    /// real provider (e.g. from `FrontmostAppMonitor`) when it adopts this.
+    public nonisolated func recordSink(
+        appInfo: @escaping @Sendable () -> (bundleID: String?, name: String?) = { (nil, nil) }
+    ) -> @Sendable (HistoryRecord, AudioClip) -> Void {
+        { record, clip in
+            let info = appInfo()
+            Task { await self.record(record, clip: clip, appBundleID: info.bundleID, appName: info.name) }
+        }
     }
 
     /// Fire-and-forget clean-text update sink (`historyUpdate`).

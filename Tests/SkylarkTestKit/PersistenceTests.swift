@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import GRDB
 @testable import SkylarkCore
 
 @Suite("Persistence stores (in-memory GRDB)")
@@ -80,6 +81,127 @@ struct PersistenceTests {
         try await store.purgeAll()
         let remaining = try await store.recent(limit: 10)
         #expect(remaining.isEmpty)
+    }
+
+    @Test("History updateEditedText refreshes word_count from the new text")
+    func historyUpdateRefreshesWordCount() async throws {
+        let store = HistoryStore(db: try makeDB())
+        let inserted = try await store.append(HistoryRecord(
+            rawText: "one two three", engine: "parakeet", durationMs: 1, latencyMs: 1, wordCount: 3
+        ))
+        let id = try #require(inserted.id)
+
+        try await store.updateEditedText(id: id, new: "Cleaned up sentence here.")
+        let row = try #require(try await store.recent(limit: 1).first)
+        #expect(row.cleanText == "Cleaned up sentence here.")
+        #expect(row.wordCount == 4)
+    }
+
+    @Test("prune deletes rows older than the cutoff and their audio files, keeps recent rows")
+    func historyPruneDeletesOldRowsAndAudio() async throws {
+        let store = HistoryStore(db: try makeDB())
+        let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let oldAudioURL = tempDir.appendingPathComponent("old.wav")
+        try Data([0x00]).write(to: oldAudioURL)
+
+        let calendar = Calendar.current
+        let oldDate = try #require(calendar.date(byAdding: .day, value: -40, to: Date()))
+        let recentDate = try #require(calendar.date(byAdding: .day, value: -5, to: Date()))
+
+        try await store.append(HistoryRecord(
+            timestamp: oldDate, rawText: "old", engine: "parakeet", durationMs: 1, latencyMs: 1,
+            audioPath: oldAudioURL.path
+        ))
+        try await store.append(HistoryRecord(
+            timestamp: recentDate, rawText: "recent", engine: "parakeet", durationMs: 1, latencyMs: 1
+        ))
+
+        let deletedCount = try await store.prune(olderThanDays: 30)
+        #expect(deletedCount == 1)
+
+        let remaining = try await store.recent(limit: 10)
+        #expect(remaining.count == 1)
+        #expect(remaining.first?.rawText == "recent")
+        #expect(!FileManager.default.fileExists(atPath: oldAudioURL.path))
+    }
+
+    @Test("prune is a no-op when nothing is older than the cutoff")
+    func historyPruneNoOpWhenNothingOld() async throws {
+        let store = HistoryStore(db: try makeDB())
+        try await store.append(HistoryRecord(rawText: "now", engine: "parakeet", durationMs: 1, latencyMs: 1))
+
+        let deletedCount = try await store.prune(olderThanDays: 30)
+        #expect(deletedCount == 0)
+        let remaining = try await store.recent(limit: 10)
+        #expect(remaining.count == 1)
+    }
+
+    // MARK: - Migration v3 (word_count backfill, app columns, snippets table)
+
+    @Test("v3 migration backfills word_count from clean_text ?? raw_text on pre-existing rows")
+    func v3MigrationBackfillsWordCount() throws {
+        // `SkylarkDatabase.inMemory()` always ends up fully migrated (v1 through
+        // v3 run in one shot on an empty `history` table), so — same reasoning
+        // as the v2 dictionary migration test above — there's no way to observe
+        // the backfill's effect through that entry point. Drive the shared
+        // `migrator` directly: apply up through "v2", insert rows in that
+        // pre-"v3" shape, then run the rest of the chain and inspect what it did.
+        let dbQueue = try DatabaseQueue()
+        try SkylarkDatabase.migrator.migrate(dbQueue, upTo: "v2")
+
+        try dbQueue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO history (timestamp, raw_text, clean_text, engine, duration_ms, latency_ms)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [Date(), "hello world", nil, "parakeet", 100, 10]
+            )
+            try db.execute(
+                sql: """
+                INSERT INTO history (timestamp, raw_text, clean_text, engine, duration_ms, latency_ms)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                arguments: [Date(), "raw text is ignored here", "Cleaned  text   here.", "parakeet", 100, 10]
+            )
+        }
+
+        try SkylarkDatabase.migrator.migrate(dbQueue)
+
+        let counts = try dbQueue.read { db in
+            try Int.fetchAll(db, sql: "SELECT word_count FROM history ORDER BY id")
+        }
+        #expect(counts == [2, 3])
+
+        let historyColumns = try dbQueue.read { db in try db.columns(in: "history").map(\.name) }
+        #expect(historyColumns.contains("app_bundle_id"))
+        #expect(historyColumns.contains("app_name"))
+
+        let snippetColumns = try dbQueue.read { db in try db.columns(in: "snippets").map(\.name) }
+        #expect(snippetColumns.contains("trigger"))
+        #expect(snippetColumns.contains("replacement"))
+    }
+
+    @Test("Freshly migrated database already has the v3 history/snippets schema")
+    func freshDatabaseHasV3Schema() async throws {
+        let db = try makeDB()
+        let historyColumns = try await db.dbQueue.read { conn in
+            try conn.columns(in: "history").map(\.name)
+        }
+        #expect(historyColumns.contains("word_count"))
+        #expect(historyColumns.contains("app_bundle_id"))
+        #expect(historyColumns.contains("app_name"))
+
+        let snippetColumns = try await db.dbQueue.read { conn in
+            try conn.columns(in: "snippets").map(\.name)
+        }
+        #expect(snippetColumns.contains("id"))
+        #expect(snippetColumns.contains("trigger"))
+        #expect(snippetColumns.contains("replacement"))
+        #expect(snippetColumns.contains("created_at"))
     }
 
     // MARK: - DictionaryStore
@@ -178,6 +300,82 @@ struct PersistenceTests {
         #expect(all.count == 1)
         #expect(all.first?.label == "Renamed")
         #expect(all.first?.providerPin == "groq")
+    }
+
+    @Test("Registry syncSeed inserts every seed entry and is idempotent")
+    func registrySyncSeedInsertsMissing() async throws {
+        let store = RegistryStore(db: try makeDB())
+        try await store.syncSeed()
+
+        let stt = try await store.all(kind: .stt)
+        let cleanup = try await store.all(kind: .cleanup)
+        #expect(stt.count == ModelRegistryEntry.seed.filter { $0.kind == .stt }.count)
+        #expect(cleanup.count == ModelRegistryEntry.seed.filter { $0.kind == .cleanup }.count)
+
+        // Calling again must not duplicate rows.
+        try await store.syncSeed()
+        let sttAgain = try await store.all(kind: .stt)
+        #expect(sttAgain.count == stt.count)
+    }
+
+    @Test("Registry syncSeed never deletes rows outside the seed list")
+    func registrySyncSeedNeverDeletes() async throws {
+        let store = RegistryStore(db: try makeDB())
+        try await store.upsert(entry: ModelRegistryEntry(
+            slug: "custom/not-in-seed", label: "Mine", providerPin: nil, kind: .stt, sort: 50
+        ))
+
+        try await store.syncSeed()
+
+        let stt = try await store.all(kind: .stt)
+        #expect(stt.contains { $0.slug == "custom/not-in-seed" })
+    }
+
+    @Test("Registry syncSeed leaves a user's own row alone even if its slug collides with a seed slug")
+    func registrySyncSeedPreservesUserOwnedRow() async throws {
+        let store = RegistryStore(db: try makeDB())
+        let seedSlug = try #require(ModelRegistryEntry.seed.first { $0.kind == .cleanup }).slug
+
+        // A user hand-adds (or edits) an entry that happens to share a seed
+        // slug. `upsert` never marks a row `seeded`, so `syncSeed()` must
+        // leave it exactly as the user set it rather than overwriting it
+        // back to the catalog's label.
+        try await store.upsert(entry: ModelRegistryEntry(
+            slug: seedSlug, label: "My Custom Label", providerPin: "custom-pin", kind: .cleanup, sort: 99
+        ))
+
+        try await store.syncSeed()
+
+        let afterSync = try await store.all(kind: .cleanup)
+        let userRow = try #require(afterSync.first { $0.slug == seedSlug })
+        #expect(userRow.label == "My Custom Label")
+        #expect(userRow.providerPin == "custom-pin")
+    }
+
+    @Test("Registry syncSeed refreshes a stale row that it seeded itself")
+    func registrySyncSeedRefreshesStaleSeededRow() async throws {
+        let db = try makeDB()
+        let store = RegistryStore(db: db)
+        let seedEntry = try #require(ModelRegistryEntry.seed.first { $0.kind == .cleanup })
+
+        // First sync seeds the row for real (marks it `seeded`).
+        try await store.syncSeed()
+
+        // Simulate an older app version having seeded this row with
+        // different metadata (e.g. the catalog's label/pin changed since).
+        try await db.dbQueue.write { conn in
+            try conn.execute(
+                sql: "UPDATE model_registry SET label = ?, provider_pin = ? WHERE slug = ?",
+                arguments: ["Stale Seeded Label", "stale-pin", seedEntry.slug]
+            )
+        }
+
+        try await store.syncSeed()
+
+        let refreshed = try await store.all(kind: .cleanup)
+        let refreshedRow = try #require(refreshed.first { $0.slug == seedEntry.slug })
+        #expect(refreshedRow.label == seedEntry.label)
+        #expect(refreshedRow.providerPin == seedEntry.providerPin)
     }
 
     // MARK: - ModeStore

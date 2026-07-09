@@ -32,10 +32,95 @@ final class AppController {
     static let soundEffectsKey = "soundEffectsEnabled"
     static let soundStartKey = "soundStartID"
     static let soundStopKey = "soundStopID"
+    static let soundVolumeKey = "soundVolume"
     private(set) var soundEffectsEnabled: Bool
     private(set) var soundStartID: String
     private(set) var soundStopID: String
+    /// Cue volume 0…1 — Skylark's own cues only, never the system volume.
+    private(set) var soundVolume: Double
     @ObservationIgnored private let sounds: SoundEffects
+
+    // MARK: - Hotkey (Settings → General)
+
+    /// The dictation trigger key (default Fn) and optional simultaneous mouse
+    /// trigger. Persisted as `HotkeyBinding` raw strings; applied live.
+    private(set) var hotkeyKeyboard: HotkeyBinding
+    private(set) var hotkeyMouse: HotkeyBinding?
+
+    func setHotkeyKeyboard(_ binding: HotkeyBinding) {
+        hotkeyKeyboard = binding
+        UserDefaults.standard.set(binding.rawValue, forKey: HotkeyBinding.defaultsKeyKeyboard)
+        monitor.setBindings(keyboard: binding, mouse: hotkeyMouse)
+    }
+
+    /// nil = no mouse trigger.
+    func setHotkeyMouse(_ binding: HotkeyBinding?) {
+        hotkeyMouse = binding
+        if let binding {
+            UserDefaults.standard.set(binding.rawValue, forKey: HotkeyBinding.defaultsKeyMouse)
+        } else {
+            UserDefaults.standard.removeObject(forKey: HotkeyBinding.defaultsKeyMouse)
+        }
+        monitor.setBindings(keyboard: hotkeyKeyboard, mouse: binding)
+    }
+
+    // MARK: - Behavior toggles (Settings → General)
+
+    /// Spoken "press enter" command (off by default).
+    static let pressEnterKey = "pressEnterCommandEnabled"
+    private(set) var pressEnterEnabled: Bool
+
+    func setPressEnterEnabled(_ on: Bool) {
+        pressEnterEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.pressEnterKey)
+        Task { [orchestrator] in await orchestrator.setPressEnterEnabled(on) }
+    }
+
+    /// Pause Music/Spotify while dictating (off by default; needs an Automation
+    /// permission grant the first time it fires).
+    static let pauseMediaKey = "pauseMediaWhileDictating"
+    private(set) var pauseMediaEnabled: Bool
+
+    func setPauseMediaEnabled(_ on: Bool) {
+        pauseMediaEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.pauseMediaKey)
+    }
+
+    /// Auto-learn dictionary corrections from history edits (off = confirm chips).
+    static let dictionaryAutoLearnKey = "dictionary.autoLearn"
+    var dictionaryAutoLearn: Bool {
+        UserDefaults.standard.bool(forKey: Self.dictionaryAutoLearnKey)
+    }
+
+    func setDictionaryAutoLearn(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: Self.dictionaryAutoLearnKey)
+    }
+
+    // MARK: - HUD appearance (Settings → General)
+
+    static let hudStyleKey = "hud.style"
+    static let hudShowIdlePillKey = "hud.showIdlePill"
+
+    func setHUDStyle(_ style: HUDStyle) {
+        hud.style = style
+        UserDefaults.standard.set(style.rawValue, forKey: Self.hudStyleKey)
+        applyHUDVisibility()
+    }
+
+    func setHUDShowIdlePill(_ show: Bool) {
+        hud.showIdlePill = show
+        UserDefaults.standard.set(show, forKey: Self.hudShowIdlePillKey)
+        applyHUDVisibility()
+    }
+
+    private func applyHUDVisibility() {
+        if hud.style == .hidden {
+            hudPanel.hide()
+        } else if permissions.allGranted {
+            hudPanel.show()
+        }
+        hudPanel.refreshLayout()
+    }
 
     // MARK: - Model manager (Settings → Models)
 
@@ -108,6 +193,83 @@ final class AppController {
         Task { [historyHub] in await historyHub?.deleteAllAudio() }
     }
 
+    /// History retention window in days (0 = keep forever). Prunes immediately
+    /// on change and at every launch.
+    var retentionDays: Int {
+        UserDefaults.standard.integer(forKey: HistoryStore.retentionDefaultsKey)
+    }
+
+    func setRetentionDays(_ days: Int) {
+        UserDefaults.standard.set(days, forKey: HistoryStore.retentionDefaultsKey)
+        pruneHistory()
+    }
+
+    private func pruneHistory() {
+        let days = retentionDays
+        guard days > 0 else { return }
+        Task { [historyStore] in _ = try? await historyStore?.prune(olderThanDays: days) }
+    }
+
+    // MARK: - Insights (Settings → Insights)
+
+    /// Latest aggregate usage stats; refreshed at launch and after each
+    /// dictation (cheap SQL, always off the paste path).
+    private(set) var stats: StatsSummary?
+
+    func refreshStats() {
+        Task { [statsStore, weak self] in
+            guard let summary = try? await statsStore?.summary() else { return }
+            await MainActor.run { self?.stats = summary }
+        }
+    }
+
+    // MARK: - Updates (Settings → Account)
+
+    enum UpdateUIState: Equatable {
+        case idle            // not checked yet
+        case checking
+        case upToDate
+        case available(summary: String?)
+        case failed(reason: String)
+    }
+
+    private(set) var updateState: UpdateUIState = .idle
+    /// Build metadata stamped by bundle.sh; nil for unbundled dev runs.
+    let buildInfo = BuildInfo.current()
+
+    func checkForUpdates() {
+        guard let buildInfo, let commit = buildInfo.commit, let remote = buildInfo.repoRemote else {
+            updateState = .failed(reason: "Dev build — update by pulling the repo and re-running install.sh.")
+            return
+        }
+        updateState = .checking
+        Task { [weak self] in
+            let status = await UpdateChecker().check(localCommit: commit, repoRemote: remote)
+            await MainActor.run {
+                switch status.state {
+                case .upToDate:
+                    self?.updateState = .upToDate
+                case let .updateAvailable(_, summary, _):
+                    self?.updateState = .available(summary: summary)
+                case let .unknown(reason):
+                    self?.updateState = .failed(reason: reason)
+                }
+            }
+        }
+    }
+
+    /// Opens Terminal running `git pull --ff-only && Scripts/install.sh` from
+    /// the repo this build was made from.
+    func runUpdate() {
+        guard let path = buildInfo?.repoPath else { return }
+        do {
+            let script = try UpdateCommandWriter.makeUpdateScript(repoPath: path)
+            NSWorkspace.shared.open(script)
+        } catch {
+            showNote("Couldn't start the update: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Launch at login (Settings → General)
 
     /// `SMAppService.mainApp` operates on the built, signed `.app` bundle; when
@@ -170,6 +332,11 @@ final class AppController {
     let dictionaryStore: DictionaryStore?
     let historyStore: HistoryStore?
     let historyHub: HistoryHub?
+    let snippetStore: SnippetStore?
+    let statsStore: StatsStore?
+
+    /// Pauses Music/Spotify around dictations when `pauseMediaEnabled`.
+    @ObservationIgnored private let mediaPause = MediaPauseController()
 
     // Model-preparation states arrive on an arbitrary queue; funnel them through
     // a Sendable stream (tagged with which model) and apply them on the main
@@ -200,14 +367,26 @@ final class AppController {
         let stopID = UserDefaults.standard.string(forKey: Self.soundStopKey) ?? SoundEffects.defaultStopID
         soundStartID = startID
         soundStopID = stopID
-        sounds = SoundEffects(enabled: soundsEnabled, startID: startID, stopID: stopID)
+        let volume = UserDefaults.standard.object(forKey: Self.soundVolumeKey) as? Double ?? SoundEffects.defaultVolume
+        soundVolume = volume
+        sounds = SoundEffects(enabled: soundsEnabled, startID: startID, stopID: stopID, volume: volume)
         selectedDeviceUID = UserDefaults.standard.string(forKey: Self.inputDeviceKey)
+
+        // Hotkey bindings (default: Fn, no mouse trigger).
+        hotkeyKeyboard = UserDefaults.standard.string(forKey: HotkeyBinding.defaultsKeyKeyboard)
+            .flatMap(HotkeyBinding.init(rawValue:)) ?? .fn
+        hotkeyMouse = UserDefaults.standard.string(forKey: HotkeyBinding.defaultsKeyMouse)
+            .flatMap(HotkeyBinding.init(rawValue:))
+
+        pressEnterEnabled = UserDefaults.standard.bool(forKey: Self.pressEnterKey)
+        pauseMediaEnabled = UserDefaults.standard.bool(forKey: Self.pauseMediaKey)
 
         // Composition root: one on-disk database; fall back to in-memory
         // providers (no history/persisted modes) if it can't open.
         let modeProvider: any ModeProviding
         let dictionaryProvider: any DictionaryProviding
         var historyHub: HistoryHub?
+        var snippetStore: SnippetStore?
         if let db = try? SkylarkDatabase.onDisk() {
             let modeStore = ModeStore(db: db)
             self.modeStore = modeStore
@@ -222,11 +401,16 @@ final class AppController {
                 store: histStore,
                 audioRetentionEnabled: { UserDefaults.standard.bool(forKey: Self.historyAudioRetentionKey) }
             )
+            snippetStore = SnippetStore(db: db)
+            self.snippetStore = snippetStore
+            self.statsStore = StatsStore(db: db)
         } else {
             self.modeStore = nil
             self.registryStore = nil
             self.dictionaryStore = nil
             self.historyStore = nil
+            self.snippetStore = nil
+            self.statsStore = nil
             modeProvider = InMemoryModeProvider()
             dictionaryProvider = InMemoryDictionaryProvider()
             pendingStatusNote = "History disabled — storage unavailable"
@@ -247,6 +431,14 @@ final class AppController {
             )
         }
 
+        // Snippets load per session, off the paste path; nil store = feature off.
+        let snippetsProvider: (@Sendable () async -> [SnippetRecord])?
+        if let store = snippetStore {
+            snippetsProvider = { (try? await store.all()) ?? [] }
+        } else {
+            snippetsProvider = nil
+        }
+
         orchestrator = DictationOrchestrator(
             capture: capture,
             transcriber: parakeet,
@@ -256,7 +448,8 @@ final class AppController {
             modeProvider: modeProvider,
             dictionary: dictionaryProvider,
             frontmostBundleID: frontmost.snapshot,
-            historyRecord: historyHub?.recordSink(),
+            snippets: snippetsProvider,
+            historyRecord: historyHub?.recordSink(appInfo: frontmost.infoSnapshot),
             historyUpdate: historyHub?.updateSink()
         )
     }
@@ -276,17 +469,39 @@ final class AppController {
 
         permissions.refresh()
 
-        // Forward HUD snapshots from the orchestrator to the UI, and play the
-        // start/stop cues on the listening edge (enter listening → start; leave
-        // listening → stop).
-        Task { [orchestrator, hud, hudPanel, sounds] in
+        // Restore persisted HUD appearance before the panel first shows.
+        hud.style = UserDefaults.standard.string(forKey: Self.hudStyleKey)
+            .flatMap(HUDStyle.init(rawValue:)) ?? .standard
+        if UserDefaults.standard.object(forKey: Self.hudShowIdlePillKey) == nil {
+            UserDefaults.standard.set(true, forKey: Self.hudShowIdlePillKey)
+        }
+        hud.showIdlePill = UserDefaults.standard.bool(forKey: Self.hudShowIdlePillKey)
+
+        // Forward HUD snapshots from the orchestrator to the UI; on the listening
+        // edges play the start/stop cues and pause/resume media (both cue paths
+        // are fire-and-forget — never on the audio/paste path). Leaving a session
+        // (→ idle) also refreshes the Insights aggregates.
+        Task { [orchestrator, hud, hudPanel, sounds, mediaPause, weak self] in
             var wasListening = false
+            var wasIdle = true
             for await state in orchestrator.hudStates {
                 hud.state = state
                 let isListening: Bool = { if case .listening = state { return true } else { return false } }()
-                if isListening, !wasListening { sounds.playStart() }
-                if !isListening, wasListening { sounds.playStop() }
+                let isIdle: Bool = { if case .idle = state { return true } else { return false } }()
+                if isListening, !wasListening {
+                    sounds.playStart()
+                    if self?.pauseMediaEnabled == true {
+                        Task { await mediaPause.pauseIfPlaying() }
+                    }
+                }
+                if !isListening, wasListening {
+                    sounds.playStop()
+                    // Resume unconditionally: no-op unless we paused something.
+                    Task { await mediaPause.resumeIfPaused() }
+                }
+                if isIdle, !wasIdle { self?.refreshStats() }
                 wasListening = isListening
+                wasIdle = isIdle
                 if case let .listening(level) = state {
                     hud.pushLevel(level)
                 } else if case .idle = state {
@@ -355,11 +570,19 @@ final class AppController {
             pendingStatusNote = nil
         }
 
+        // Apply the persisted press-enter opt-in, prune history to the retention
+        // window, and warm the Insights aggregates.
+        Task { [orchestrator, pressEnterEnabled] in await orchestrator.setPressEnterEnabled(pressEnterEnabled) }
+        pruneHistory()
+        refreshStats()
+
         // The monitor self-gates on Accessibility, so starting it is always safe.
+        // Bindings are applied first so a non-default hotkey works from launch.
+        monitor.setBindings(keyboard: hotkeyKeyboard, mouse: hotkeyMouse)
         monitor.start()
 
         if permissions.allGranted {
-            hudPanel.show()
+            applyHUDVisibility()
         } else {
             showOnboarding()
         }
@@ -372,7 +595,9 @@ final class AppController {
     /// Seed the DB (idempotent), load registry lists, apply persisted selections.
     private func bootstrapSelection() async {
         if let registryStore {
-            try? await registryStore.seedIfEmpty()
+            // Insert-or-refresh the seed so registry additions reach existing
+            // installs on their next update (never touches user-created rows).
+            try? await registryStore.syncSeed()
             cleanupModels = (try? await registryStore.all(kind: .cleanup)) ?? []
             sttModels = (try? await registryStore.all(kind: .stt)) ?? []
         } else {
@@ -392,7 +617,7 @@ final class AppController {
                 if self.permissions.allGranted {
                     self.onboardingWindow?.close()
                     self.onboardingWindow = nil
-                    self.hudPanel.show()
+                    self.applyHUDVisibility()
                     return
                 }
                 try? await Task.sleep(for: .milliseconds(500))
@@ -646,6 +871,19 @@ final class AppController {
         sounds.preview(id)
     }
 
+    /// Cue volume (0…1); persisted and applied to all cached players. Applies
+    /// only to Skylark's cues — never the system output volume.
+    func setSoundVolume(_ value: Double) {
+        soundVolume = value
+        UserDefaults.standard.set(value, forKey: Self.soundVolumeKey)
+        sounds.setVolume(value)
+    }
+
+    /// Audition the start cue at the current volume (slider release).
+    func previewSoundVolume() {
+        sounds.preview(soundStartID)
+    }
+
     /// Push the current whisper-mode tuning to capture (gain), the engines'
     /// clip-skip floor, the VAD, and the HUD cue.
     private func applyWhisperTuning() {
@@ -816,11 +1054,15 @@ final class AppController {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let view = OnboardingView(permissions: permissions, apiKeyClient: openRouterClient) { [weak self] in
+        let view = OnboardingView(
+            permissions: permissions,
+            apiKeyClient: openRouterClient,
+            hotkeyName: hotkeyKeyboard.displayName
+        ) { [weak self] in
             self?.onboardingWindow?.close()
             self?.onboardingWindow = nil
         }
-        let window = Self.makeWindow(title: "Welcome to Skylark", content: view, width: 460, height: 560)
+        let window = Self.makeWindow(title: "Welcome to Skylark", content: view, width: 460, height: 640)
         onboardingWindow = window
         permissions.startPolling()
         window.makeKeyAndOrderFront(nil)

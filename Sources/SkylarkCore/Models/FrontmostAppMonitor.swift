@@ -8,14 +8,17 @@ import os
 /// snapshot readable from any actor.
 @MainActor
 public final class FrontmostAppMonitor {
-    private let current = OSAllocatedUnfairLock<String?>(initialState: nil)
+    /// (bundleID, localizedName) of the frontmost app — the name rides along
+    /// for history/stats rows so per-app usage doesn't need a reverse lookup.
+    private let current = OSAllocatedUnfairLock<(id: String?, name: String?)>(initialState: (nil, nil))
     private var observer: NSObjectProtocol?
 
     public init() {}
 
     /// Begin observing activation changes and seed the initial frontmost app.
     public func start() {
-        current.withLock { $0 = NSWorkspace.shared.frontmostApplication?.bundleIdentifier }
+        let front = NSWorkspace.shared.frontmostApplication
+        current.withLock { $0 = (front?.bundleIdentifier, front?.localizedName) }
         guard observer == nil else { return }
         observer = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
@@ -23,8 +26,8 @@ public final class FrontmostAppMonitor {
             queue: .main
         ) { [current] note in
             let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            let bundleID = app?.bundleIdentifier
-            current.withLock { $0 = bundleID }
+            let info = (app?.bundleIdentifier, app?.localizedName)
+            current.withLock { $0 = info }
         }
     }
 
@@ -37,11 +40,19 @@ public final class FrontmostAppMonitor {
 
     /// The last-known frontmost bundle ID, readable from any isolation domain.
     public nonisolated var currentBundleID: String? {
-        current.withLock { $0 }
+        current.withLock { $0.id }
     }
 
     /// A `Sendable` snapshot closure the orchestrator captures the value through.
     public nonisolated var snapshot: @Sendable () -> String? {
-        { [current] in current.withLock { $0 } }
+        { [current] in current.withLock { $0.id } }
+    }
+
+    /// Bundle ID + localized name snapshot, for the history/stats sink.
+    public nonisolated var infoSnapshot: @Sendable () -> (bundleID: String?, name: String?) {
+        { [current] in
+            let info = current.withLock { $0 }
+            return (bundleID: info.id, name: info.name)
+        }
     }
 }

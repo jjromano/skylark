@@ -289,7 +289,9 @@ private struct HistoryDetailView: View {
 
     /// Step 1 of the auto-learn loop: compute candidate dictionary pairs from
     /// raw→edited and show them as toggleable chips (default ON) before
-    /// persisting anything.
+    /// persisting anything. With "Learn corrections automatically" on
+    /// (Settings → History), the confirm step is skipped and every candidate
+    /// is learned immediately.
     private func proposeCandidates() {
         let pairs = CorrectionDiff.pairs(raw: record.rawText, edited: editedText)
         guard !pairs.isEmpty else {
@@ -297,6 +299,9 @@ private struct HistoryDetailView: View {
             return
         }
         candidates = pairs.map { DictionaryCandidate(from: $0.from, to: $0.to) }
+        if UserDefaults.standard.bool(forKey: AppController.dictionaryAutoLearnKey) {
+            Task { await applySave() }
+        }
     }
 
     /// Step 2: persist the edited text and upsert every accepted candidate pair

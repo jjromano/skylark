@@ -2,6 +2,21 @@ import Foundation
 import SkylarkCore
 import SwiftUI
 
+/// Recording-indicator style (Settings → General), à la Superwhisper's
+/// Classic/Mini/None. Persisted by raw value.
+enum HUDStyle: String, CaseIterable, Identifiable {
+    case standard, minimal, hidden
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .standard: return "Standard"
+        case .minimal: return "Minimal"
+        case .hidden: return "Hidden"
+        }
+    }
+}
+
 /// Observable snapshot the HUD SwiftUI view renders from.
 @MainActor
 @Observable
@@ -11,6 +26,10 @@ final class HUDModel {
 
     var state: HUDState = .idle
     var isHovering = false
+    /// Indicator style + whether the small idle pill stays visible between
+    /// dictations. Both persisted by AppController.
+    var style: HUDStyle = .standard
+    var showIdlePill = true
     /// True while global Whisper Mode is on — the listening dot goes hollow as a
     /// subtle cue (phase-4 spec §5).
     var isWhisperMode = false

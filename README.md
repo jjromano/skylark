@@ -78,20 +78,27 @@ download progress in the meantime.
 
 ## Usage
 
-- **Hold Fn, speak, release Fn** — push-to-talk. Text is inserted at your
-  cursor right after release; a lightly-cleaned version replaces it a
-  moment later (see Cleanup, below). Releasing before ~0.3 s of hold is
-  treated as a stray tap and discards the clip rather than pasting.
-- **Double-tap Fn** — hands-free mode: keeps recording until it detects
-  silence (Voice Activity Detection auto-stops it), or until you press Fn
-  again to stop it manually.
+- **Hold the dictation key, speak, release** — push-to-talk. The key is Fn
+  (Globe) by default and configurable in Settings → General (right ⌘/⌥/⌃ or
+  F13–F19), plus an optional mouse trigger (middle / button 4 / button 5).
+  Text is inserted at your cursor right after release; a lightly-cleaned
+  version replaces it a moment later (see Cleanup, below). Releasing before
+  ~0.3 s of hold is treated as a stray tap and discards the clip rather
+  than pasting.
+- **Double-tap the key** — hands-free mode: keeps recording until it detects
+  silence (Voice Activity Detection auto-stops it), or until you press the
+  key again to stop it manually.
 - **Esc** — cancels the current recording (push-to-talk or hands-free)
   without inserting anything.
+- **Say "… press enter"** (opt-in, Settings → General) — strips the command
+  and presses Return after the text lands, for firing off chat messages.
+- **Say a snippet trigger** (Settings → Snippets) — saying a saved trigger
+  phrase by itself ("my email address") types its replacement instead.
 
-The menu-bar icon (a mic glyph) opens a dropdown with:
+The menu-bar icon (a feather) opens a dropdown with:
 
-- **Status line** — Idle / Listening / Processing, plus the last dictation's
-  end-to-end latency in ms.
+- **Status line** — Idle / Listening / Processing, the last dictation's
+  end-to-end latency in ms, and today's dictated word count.
 - **Cleanup** — Auto / Raw / Local / Cloud, overriding the cleanup tier for
   every dictation until changed back.
 - **Cleanup Model** — pick which cloud cleanup model quick-switches to when
@@ -102,14 +109,28 @@ The menu-bar icon (a mic glyph) opens a dropdown with:
   sensitive VAD) for dictating at low volume in shared spaces.
 - **History…** — searchable browser for past dictations: view raw vs.
   cleaned text, copy, delete, or edit an entry. Edits are diffed against the
-  raw transcript and offered as custom-dictionary auto-adds, so correcting a
-  name once teaches Skylark to get it right next time.
-- **Settings…** — General (cleanup default, Whisper Mode, launch at login),
-  Models (download/delete local models), Audio (input device picker),
-  Dictionary, Modes (per-app profiles), History (audio retention, off by
-  default), and Account (API key).
-- **Onboarding…** — re-opens the permissions walkthrough.
+  raw transcript and offered as custom-dictionary auto-adds (or learned
+  automatically — Settings → History), so correcting a name once teaches
+  Skylark to get it right next time.
+- **Settings…** — General (dictation shortcut, recording-indicator style,
+  behavior toggles, cleanup default, sounds + volume, launch at login),
+  Insights (words dictated, WPM, time saved, streaks, activity heatmap),
+  Models (download/delete local models, cloud catalog with cost estimates),
+  Audio (input device picker, Whisper Mode), Dictionary, Snippets, Modes
+  (per-app profiles), History (retention, audio retention, auto-learn), and
+  Account (API key, version + Check for Updates).
+- **Onboarding…** — re-opens the permissions walkthrough and hotkey tutorial.
 - **Quit Skylark**.
+
+## Updating
+
+Settings → Account → **Check for Updates** compares your build against the
+GitHub repo and, on **Update Now**, opens Terminal to `git pull` and re-run
+`install.sh`. Or do the same by hand:
+
+```sh
+cd skylark && git pull && ./Scripts/install.sh
+```
 
 ## Cloud (optional)
 

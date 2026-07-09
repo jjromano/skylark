@@ -10,8 +10,10 @@ struct HUDView: View {
     var onOpenSettings: () -> Void
 
     private var size: CGSize {
-        HUDMetrics.size(for: model.state, hovering: model.isHovering)
+        HUDMetrics.size(for: model.state, hovering: model.isHovering, style: model.style)
     }
+
+    private var isMinimal: Bool { model.style == .minimal }
 
     var body: some View {
         content
@@ -97,16 +99,19 @@ struct HUDView: View {
     }
 
     private var listeningContent: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: isMinimal ? 6 : 8) {
             // Whisper mode: hollow dot (stroke only) as a subtle quiet-speech cue.
-            Group {
-                if model.isWhisperMode {
-                    Circle().strokeBorder(.red, lineWidth: 1.5)
-                } else {
-                    Circle().fill(.red)
+            // The minimal style drops the dot — the waveform alone is the cue.
+            if !isMinimal {
+                Group {
+                    if model.isWhisperMode {
+                        Circle().strokeBorder(.red, lineWidth: 1.5)
+                    } else {
+                        Circle().fill(.red)
+                    }
                 }
+                .frame(width: 8, height: 8)
             }
-            .frame(width: 8, height: 8)
             // Live waveform: newest level enters from the trailing edge. Driven
             // at the levels-stream cadence (~15–20 Hz) with eased height changes.
             HStack(spacing: 1) {
@@ -116,30 +121,34 @@ struct HUDView: View {
                         .frame(width: 2, height: barHeight(level))
                 }
             }
-            .frame(height: 16)
+            .frame(height: waveformBand)
             .animation(.easeOut(duration: 0.08), value: model.waveform)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, isMinimal ? 8 : 10)
     }
 
     private var processingContent: some View {
         HStack(spacing: 8) {
-            Circle().fill(.orange).frame(width: 8, height: 8)
+            if !isMinimal {
+                Circle().fill(.orange).frame(width: 8, height: 8)
+            }
             ProgressView()
                 .controlSize(.mini)
                 .progressViewStyle(.linear)
-                .frame(width: 56)
+                .frame(width: isMinimal ? 48 : 56)
                 .tint(.orange)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, isMinimal ? 10 : 12)
     }
 
+    private var waveformBand: CGFloat { isMinimal ? 12 : 16 }
+
     private func barHeight(_ level: Float) -> CGFloat {
-        // Map RMS (roughly 0…0.3 for speech) into a 2…16 pt bar. A steeper curve
+        // Map RMS (roughly 0…0.3 for speech) into the band. A steeper curve
         // (×3.4 on the sqrt) pushes normal speech well up the band so motion is
         // clearly visible rather than hugging the baseline. Clamped to the band.
         let minH: CGFloat = 2
-        let maxH: CGFloat = 16
+        let maxH: CGFloat = waveformBand
         let normalized = min(1, CGFloat(level.squareRoot()) * 3.4)
         return minH + (maxH - minH) * normalized
     }

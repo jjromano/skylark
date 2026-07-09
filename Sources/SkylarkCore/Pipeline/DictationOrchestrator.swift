@@ -35,9 +35,16 @@ public actor DictationOrchestrator {
     private let modeProvider: any ModeProviding
     private let dictionary: any DictionaryProviding
     private let frontmostBundleID: @Sendable () -> String?
+    /// Current snippets (loaded per session in `buildSetup`, off the paste
+    /// path). Nil = snippets feature not wired (tests/headless).
+    private let snippetProvider: (@Sendable () async -> [SnippetRecord])?
 
     /// Temporary global cleanup override from the menu bar (nil = auto/use mode).
     private var tierOverride: CleanupTier?
+    /// Spoken "press enter" command opt-in (Settings → General). When on, a
+    /// terminal "press enter"/"press return" is stripped from the transcript
+    /// and a Return keystroke is synthesized after the text lands.
+    private var pressEnterEnabled = false
 
     /// Resolved once per session at fn-down, consumed at paste time.
     private var sessionSetup: SessionSetup?
@@ -90,6 +97,7 @@ public actor DictationOrchestrator {
         modeProvider: any ModeProviding = InMemoryModeProvider(),
         dictionary: any DictionaryProviding = InMemoryDictionaryProvider(),
         frontmostBundleID: @escaping @Sendable () -> String? = { nil },
+        snippets: (@Sendable () async -> [SnippetRecord])? = nil,
         historyRecord: (@Sendable (HistoryRecord, AudioClip) -> Void)? = nil,
         historyUpdate: (@Sendable (HistoryRecord) -> Void)? = nil,
         replaceTimeout: Duration = .seconds(5),
@@ -104,6 +112,7 @@ public actor DictationOrchestrator {
         self.modeProvider = modeProvider
         self.dictionary = dictionary
         self.frontmostBundleID = frontmostBundleID
+        self.snippetProvider = snippets
         self.historyRecord = historyRecord
         self.historyUpdate = historyUpdate
         self.replaceTimeout = replaceTimeout
@@ -135,6 +144,11 @@ public actor DictationOrchestrator {
     /// resolved mode's tier); a value forces that tier for every dictation.
     public func setTierOverride(_ tier: CleanupTier?) {
         tierOverride = tier
+    }
+
+    /// Toggle the spoken "press enter" command (Settings → General).
+    public func setPressEnterEnabled(_ enabled: Bool) {
+        pressEnterEnabled = enabled
     }
 
     /// Consume hotkey events until the stream ends.
@@ -182,8 +196,8 @@ public actor DictationOrchestrator {
         let bundleID = frontmostBundleID()
         sessionSetup = nil
         setupTask?.cancel()
-        setupTask = Task { [modeProvider, dictionary] in
-            await Self.buildSetup(bundleID: bundleID, modeProvider: modeProvider, dictionary: dictionary)
+        setupTask = Task { [modeProvider, dictionary, snippetProvider] in
+            await Self.buildSetup(bundleID: bundleID, modeProvider: modeProvider, dictionary: dictionary, snippets: snippetProvider)
         }
         publish(.listening(level: 0))
         startLevelForwarding()
@@ -253,8 +267,20 @@ public actor DictationOrchestrator {
         // Dictionary correction is part of the raw text — always applied, even
         // Tier 0 (PRD §8). Off-path regex compile happened in setup; this is the
         // ≤5 ms apply.
-        let rawText = setup.corrector.apply(text)
+        let corrected = setup.corrector.apply(text)
         let effectiveTier = tierOverride ?? setup.mode.cleanupTier
+
+        // Spoken "press enter": strip the terminal command before injection and
+        // remember to synthesize Return after the final text lands. `rawText`
+        // stays a `let` — the detached AX-replace Task below captures it, and a
+        // `var` capture would make that closure non-Sendable.
+        let stripped = pressEnterEnabled ? PressEnterCommand.strip(corrected) : (text: corrected, pressEnter: false)
+        let rawText = stripped.text
+        let pressEnter = stripped.pressEnter
+
+        // Snippet expansion: a whole-utterance trigger inserts its saved text
+        // verbatim — no cleanup stage (the replacement is already final).
+        let snippetReplacement = SnippetMatcher.match(text: rawText, snippets: setup.snippets)
 
         phase = .injecting
 
@@ -265,9 +291,25 @@ public actor DictationOrchestrator {
         // path learns it later and updates the record then.
         var syncCleanText: String?
 
-        if effectiveTier == .raw {
+        if let snippetReplacement {
+            syncCleanText = snippetReplacement
+            await insertRaw(snippetReplacement)
+        } else if rawText.isEmpty {
+            // The whole utterance was the "press enter" command — nothing to
+            // insert; the Return below is the entire action.
+        } else if effectiveTier == .raw {
             // Tier 0: raw stands, no cleanup stage.
             await insertRaw(rawText)
+        } else if pressEnter {
+            // Return must land after the FINAL text: the detached AX replace
+            // would race the keystroke (a chat message would send, then get
+            // edited), so wait for clean here even on AX targets.
+            let cleaner = cleaners.cleaner(for: effectiveTier)
+            let cleaned = await cleanWithTimeout(
+                cleaner, rawText, context: setup.context, cap: waitForCleanTimeout
+            )
+            if let cleaned, cleaned != rawText { syncCleanText = cleaned }
+            await insertRaw(cleaned ?? rawText)
         } else if await injector.canInsertDirectly() {
             // AX target: paste raw now (latency bar), replace after cleanup
             // detached from the HUD state.
@@ -294,6 +336,10 @@ public actor DictationOrchestrator {
             await insertRaw(cleaned ?? rawText)
         }
 
+        if pressEnter {
+            await injector.pressReturn()
+        }
+
         let afterInject = ContinuousClock.now
         let summary = recordLatency(
             captureClose: t0.duration(to: afterCapture),
@@ -302,15 +348,19 @@ public actor DictationOrchestrator {
             total: t0.duration(to: afterInject)
         )
 
-        emitHistory(
-            timestamp: historyTimestamp,
-            rawText: rawText,
-            cleanText: syncCleanText,
-            modeID: setup.mode.id,
-            durationSec: clip.duration,
-            latencyMs: summary.totalMs,
-            clip: clip
-        )
+        // A bare "press enter" (no remaining text, no snippet) inserts nothing —
+        // don't record an empty history row for it.
+        if snippetReplacement != nil || !rawText.isEmpty {
+            emitHistory(
+                timestamp: historyTimestamp,
+                rawText: rawText,
+                cleanText: syncCleanText,
+                modeID: setup.mode.id,
+                durationSec: clip.duration,
+                latencyMs: summary.totalMs,
+                clip: clip
+            )
+        }
 
         phase = .idle
         publish(.idle)
@@ -381,14 +431,17 @@ public actor DictationOrchestrator {
         let mode: DictationMode
         let context: CleanupContext
         let corrector: DictionaryCorrector
+        let snippets: [SnippetRecord]
     }
 
-    /// Resolve mode + dictionary off the paste path (compiles correction regexes
-    /// here, not on the latency path). Runs during recording via `setupTask`.
+    /// Resolve mode + dictionary + snippets off the paste path (compiles
+    /// correction regexes here, not on the latency path). Runs during recording
+    /// via `setupTask`.
     private static func buildSetup(
         bundleID: String?,
         modeProvider: any ModeProviding,
-        dictionary: any DictionaryProviding
+        dictionary: any DictionaryProviding,
+        snippets snippetProvider: (@Sendable () async -> [SnippetRecord])?
     ) async -> SessionSetup {
         let modes = (try? await modeProvider.modes()) ?? []
         let mode = ModeResolver.resolve(bundleID: bundleID, modes: modes)
@@ -400,7 +453,8 @@ public actor DictationOrchestrator {
             dictionaryTerms: entries.map(\.phrase)
         )
         let corrector = DictionaryCorrector(entries: entries)
-        return SessionSetup(mode: mode, context: context, corrector: corrector)
+        let snippets = await snippetProvider?() ?? []
+        return SessionSetup(mode: mode, context: context, corrector: corrector, snippets: snippets)
     }
 
     /// The setup for the active session — the prepared one if ready, else built
@@ -411,7 +465,7 @@ public actor DictationOrchestrator {
         if let setupTask {
             setup = await setupTask.value
         } else {
-            setup = await Self.buildSetup(bundleID: frontmostBundleID(), modeProvider: modeProvider, dictionary: dictionary)
+            setup = await Self.buildSetup(bundleID: frontmostBundleID(), modeProvider: modeProvider, dictionary: dictionary, snippets: snippetProvider)
         }
         sessionSetup = setup
         return setup

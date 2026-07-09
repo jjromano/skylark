@@ -7,16 +7,30 @@ import os
 // Adapted from Hex (MIT): Clients/KeyEventMonitorClient.swift and
 // handy-keys (MIT): src/platform/macos/listener.rs (fn robustness, reconcile).
 
-/// Owns the active `CGEventTap` for the Fn chord, feeds raw events into a
-/// `HotkeyProcessor`, and emits `HotkeyEvent`s. All state is confined to the
-/// main run loop (the tap is added to `CFRunLoopGetMain`), hence
+/// Owns the active `CGEventTap` for the dictation trigger, feeds raw events into
+/// a `HotkeyProcessor`, and emits `HotkeyEvent`s. The trigger is configurable
+/// via `setBindings`: a primary keyboard binding (fn / right modifier / F13–F19)
+/// plus an optional mouse-button binding; both drive the same press-hold /
+/// double-tap-lock semantics.
+///
+/// All state is confined to the main run loop (the tap is added to
+/// `CFRunLoopGetMain`, and `start`/`stop`/`setBindings` are `@MainActor`), hence
 /// `@unchecked Sendable`.
 public final class HotkeyMonitor: @unchecked Sendable {
     private var processor = HotkeyProcessor()
-    /// Sticky Fn state — only ever updated from the Fn keycode's flagsChanged,
-    /// never inferred from `.maskSecondaryFn` on other keycodes (they carry it
-    /// spuriously on arrows/F-keys).
-    private var isFnPressed = false
+
+    // MARK: Bindings (main-actor confined)
+
+    private var keyboardBinding: HotkeyBinding = .fn
+    private var mouseBinding: HotkeyBinding?
+
+    /// Sticky pressed-state for the keyboard trigger. Only ever updated from the
+    /// bound keycode's own event (modifier flagsChanged keyed strictly on its
+    /// keycode, or F-key keyDown/keyUp) — never inferred from a flag carried
+    /// spuriously by another key.
+    private var keyboardPressed = false
+    /// Sticky pressed-state for the bound mouse button.
+    private var mousePressed = false
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -37,6 +51,24 @@ public final class HotkeyMonitor: @unchecked Sendable {
 
     deinit {
         continuation.finish()
+    }
+
+    // MARK: - Configuration (main-thread confined)
+
+    /// Set the active trigger bindings. The tap does not need rebuilding — the
+    /// mask already covers key/modifier/mouse up+down unconditionally, so this
+    /// only swaps which events are treated as the trigger. Any in-flight press
+    /// is released so a live session can't get stuck across a binding change.
+    @MainActor
+    public func setBindings(keyboard: HotkeyBinding, mouse: HotkeyBinding?) {
+        keyboardBinding = keyboard
+        mouseBinding = mouse
+        if keyboardPressed || mousePressed {
+            emit(processor.process(.triggerUp, at: ContinuousClock.now))
+        }
+        keyboardPressed = false
+        mousePressed = false
+        logger.info("hotkey bindings set: keyboard=\(keyboard.rawValue, privacy: .public) mouse=\(mouse?.rawValue ?? "none", privacy: .public)")
     }
 
     // MARK: - Lifecycle (main-thread confined)
@@ -81,6 +113,8 @@ public final class HotkeyMonitor: @unchecked Sendable {
 
     @MainActor
     private func buildTap() {
+        // Includes key/mouse up+down and flagsChanged unconditionally so binding
+        // changes never require rebuilding the tap.
         let mask: CGEventMask =
             (1 << CGEventType.keyDown.rawValue)
             | (1 << CGEventType.keyUp.rawValue)
@@ -88,6 +122,7 @@ public final class HotkeyMonitor: @unchecked Sendable {
             | (1 << CGEventType.leftMouseDown.rawValue)
             | (1 << CGEventType.rightMouseDown.rawValue)
             | (1 << CGEventType.otherMouseDown.rawValue)
+            | (1 << CGEventType.otherMouseUp.rawValue)
 
         let callback: CGEventTapCallBack = { _, type, cgEvent, userInfo in
             guard let userInfo else { return Unmanaged.passUnretained(cgEvent) }
@@ -114,9 +149,10 @@ public final class HotkeyMonitor: @unchecked Sendable {
         eventTap = tap
         runLoopSource = source
         tapIsBuilt = true
-        // Reset derived state on (re)build.
+        // Reset derived state on (re)build. Bindings persist across a rebuild.
         processor = HotkeyProcessor()
-        isFnPressed = false
+        keyboardPressed = false
+        mousePressed = false
         logger.info("hotkey tap active")
     }
 
@@ -134,49 +170,74 @@ public final class HotkeyMonitor: @unchecked Sendable {
     }
 
     /// After the OS disables and we re-enable the tap, we reconcile the sticky
-    /// Fn state from `CGEventSource.flagsState`. If that flips Fn pressed→released
-    /// (we missed the real key-up while disabled), a live recording would be
-    /// stuck — so feed a synthetic fnUp. Pure decision, unit-tested.
-    public static func reconcileNeedsSyntheticFnUp(wasPressed: Bool, nowPressed: Bool) -> Bool {
+    /// trigger state from the live `CGEventSource` state. If that flips the
+    /// trigger pressed→released (we missed the real key/button-up while
+    /// disabled), a live recording would be stuck — so feed a synthetic
+    /// triggerUp. Pure decision, unit-tested.
+    public static func reconcileNeedsSyntheticUp(wasPressed: Bool, nowPressed: Bool) -> Bool {
         wasPressed && !nowPressed
+    }
+
+    /// Legacy name retained for existing callers/tests; delegates to the
+    /// binding-agnostic `reconcileNeedsSyntheticUp`.
+    public static func reconcileNeedsSyntheticFnUp(wasPressed: Bool, nowPressed: Bool) -> Bool {
+        reconcileNeedsSyntheticUp(wasPressed: wasPressed, nowPressed: nowPressed)
+    }
+
+    // MARK: - Binding helpers
+
+    /// CGEventFlags mask for a modifier binding; `nil` for non-modifiers.
+    private func flagMask(for binding: HotkeyBinding) -> CGEventFlags? {
+        switch binding {
+        case .fn: return .maskSecondaryFn
+        case .rightCommand: return .maskCommand
+        case .rightOption: return .maskAlternate
+        case .rightControl: return .maskControl
+        case .functionKey, .mouseButton: return nil
+        }
     }
 
     // MARK: - Event handling (runs on the main run loop)
 
     /// Bridges a raw CG event through the processor. Returns nil to swallow the
-    /// event (used to suppress the system Globe action on bare Fn).
+    /// event (used to suppress the bound key/button from reaching the system).
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
         // Re-enable and reconcile after the OS disables the tap. If the reconcile
-        // flips fn pressed→released while a recording is live, feed a synthetic
-        // fnUp so the session can't get stuck recording forever.
+        // flips the trigger pressed→released while a recording is live, feed a
+        // synthetic triggerUp so the session can't get stuck recording forever.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
-            let flags = CGEventSource.flagsState(.combinedSessionState)
-            let wasPressed = isFnPressed
-            let nowPressed = flags.contains(.maskSecondaryFn)
-            isFnPressed = nowPressed
-            if Self.reconcileNeedsSyntheticFnUp(wasPressed: wasPressed, nowPressed: nowPressed) {
-                emit(processor.process(.fnUp, at: ContinuousClock.now))
-            }
+            reconcileTriggerState()
             return Unmanaged.passUnretained(event)
         }
 
         let keycode = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let now = ContinuousClock.now
         let passthrough = Unmanaged.passUnretained(event)
+        let kb = keyboardBinding
 
         switch type {
         case .flagsChanged:
-            if keycode == kVK_Function {
-                let fnDown = event.flags.contains(.maskSecondaryFn)
-                isFnPressed = fnDown
-                emit(processor.process(fnDown ? .fnDown : .fnUp, at: now))
-                // Swallow bare-Fn to suppress the system Globe action.
-                return nil
+            // Modifier trigger, keyed strictly on its own keycode so left-side
+            // counterparts (which set the same flag) never fire it.
+            if kb.isModifier, keycode == kb.keyCode, let mask = flagMask(for: kb) {
+                let down = event.flags.contains(mask)
+                keyboardPressed = down
+                emit(processor.process(down ? .triggerDown : .triggerUp, at: now))
+                return nil  // swallow the bound modifier
             }
             return passthrough
 
         case .keyDown:
+            // Function-key trigger: swallow both down/up; ignore auto-repeat.
+            if kb.isFunctionKey, keycode == kb.keyCode {
+                let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+                if !isRepeat {
+                    keyboardPressed = true
+                    emit(processor.process(.triggerDown, at: now))
+                }
+                return nil  // swallow
+            }
             // Skip unknown-keycode keyDowns carrying the fn flag (Fn+media keys).
             if event.flags.contains(.maskSecondaryFn), keycode >= 0x80 {
                 return passthrough
@@ -185,12 +246,76 @@ public final class HotkeyMonitor: @unchecked Sendable {
             emit(processor.process(.otherKeyDown(isEscape: isEscape), at: now))
             return passthrough
 
-        case .leftMouseDown, .rightMouseDown, .otherMouseDown:
+        case .keyUp:
+            if kb.isFunctionKey, keycode == kb.keyCode {
+                keyboardPressed = false
+                emit(processor.process(.triggerUp, at: now))
+                return nil  // swallow
+            }
+            return passthrough
+
+        case .otherMouseDown:
+            if let mouse = mouseBinding, let button = mouse.mouseButtonNumber,
+               Self.mouseButtonNumber(of: event) == button {
+                mousePressed = true
+                emit(processor.process(.triggerDown, at: now))
+                return nil  // swallow the bound mouse button (no discard)
+            }
+            // A non-bound mouse press feeds the "too-short hold" discard path.
+            emit(processor.process(.mouseDown, at: now))
+            return passthrough
+
+        case .otherMouseUp:
+            if let mouse = mouseBinding, let button = mouse.mouseButtonNumber,
+               Self.mouseButtonNumber(of: event) == button {
+                mousePressed = false
+                emit(processor.process(.triggerUp, at: now))
+                return nil  // swallow
+            }
+            return passthrough
+
+        case .leftMouseDown, .rightMouseDown:
+            // Left/right are never bindable; they only cancel too-short holds.
             emit(processor.process(.mouseDown, at: now))
             return passthrough
 
         default:
             return passthrough
+        }
+    }
+
+    private static func mouseButtonNumber(of event: CGEvent) -> Int {
+        Int(event.getIntegerValueField(.mouseEventButtonNumber))
+    }
+
+    /// Reconcile sticky trigger state against live hardware state after a tap
+    /// re-enable, synthesizing a triggerUp for any active binding that flipped
+    /// pressed→released while we were disabled.
+    private func reconcileTriggerState() {
+        let kb = keyboardBinding
+        let kbNow: Bool
+        if kb.isModifier, let mask = flagMask(for: kb) {
+            kbNow = CGEventSource.flagsState(.combinedSessionState).contains(mask)
+        } else if kb.isFunctionKey, let code = kb.keyCode {
+            kbNow = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
+        } else {
+            kbNow = keyboardPressed
+        }
+        let kbWas = keyboardPressed
+        keyboardPressed = kbNow
+        if Self.reconcileNeedsSyntheticUp(wasPressed: kbWas, nowPressed: kbNow) {
+            emit(processor.process(.triggerUp, at: ContinuousClock.now))
+            return
+        }
+
+        if let mouse = mouseBinding, let button = mouse.mouseButtonNumber,
+           let cgButton = CGMouseButton(rawValue: UInt32(button)) {
+            let msNow = CGEventSource.buttonState(.combinedSessionState, button: cgButton)
+            let msWas = mousePressed
+            mousePressed = msNow
+            if Self.reconcileNeedsSyntheticUp(wasPressed: msWas, nowPressed: msNow) {
+                emit(processor.process(.triggerUp, at: ContinuousClock.now))
+            }
         }
     }
 

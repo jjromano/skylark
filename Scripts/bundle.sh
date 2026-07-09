@@ -27,6 +27,47 @@ mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$CONTENTS/MacOS/$APP_NAME"
 cp "Resources/Info.plist" "$CONTENTS/Info.plist"
 
+echo "→ Stamping build metadata"
+PLIST="$CONTENTS/Info.plist"
+PLISTBUDDY="/usr/libexec/PlistBuddy"
+
+# Sets String key $2 to value $3 in $PLIST, adding it if absent (Info.plist is
+# freshly copied above, but Delete-then-Add keeps this safe to re-run).
+stamp_plist() {
+    local key="$1" value="$2"
+    "$PLISTBUDDY" -c "Delete :$key" "$PLIST" >/dev/null 2>&1 || true
+    "$PLISTBUDDY" -c "Add :$key string $value" "$PLIST"
+}
+
+if git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    BUILD_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+    if [[ -n "$BUILD_COMMIT" ]]; then
+        stamp_plist "SkylarkBuildCommit" "$BUILD_COMMIT"
+        echo "  • SkylarkBuildCommit = $BUILD_COMMIT"
+    fi
+
+    RAW_REMOTE="$(git -C "$REPO_ROOT" remote get-url origin 2>/dev/null || true)"
+    if [[ -n "$RAW_REMOTE" ]]; then
+        # Normalize both `git@github.com:owner/repo.git` and
+        # `https://github.com/owner/repo(.git)` to `https://github.com/owner/repo`.
+        NORMALIZED_REMOTE="$RAW_REMOTE"
+        if [[ "$NORMALIZED_REMOTE" =~ ^git@([^:]+):(.+)$ ]]; then
+            NORMALIZED_REMOTE="https://${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+        fi
+        NORMALIZED_REMOTE="${NORMALIZED_REMOTE%.git}"
+        stamp_plist "SkylarkRepoRemote" "$NORMALIZED_REMOTE"
+        echo "  • SkylarkRepoRemote = $NORMALIZED_REMOTE"
+    fi
+else
+    echo "  (not a git checkout — omitting SkylarkBuildCommit/SkylarkRepoRemote)"
+fi
+
+BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+stamp_plist "SkylarkBuildDate" "$BUILD_DATE"
+stamp_plist "SkylarkRepoPath" "$REPO_ROOT"
+echo "  • SkylarkBuildDate = $BUILD_DATE"
+echo "  • SkylarkRepoPath = $REPO_ROOT"
+
 if [[ -f "Resources/AppIcon.icns" ]]; then
     cp "Resources/AppIcon.icns" "$CONTENTS/Resources/AppIcon.icns"
 else
