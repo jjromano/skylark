@@ -5,8 +5,6 @@ Native Swift/SwiftUI macOS menu-bar dictation app. Read
 record) before working. Latency is the product: never add blocking work to the
 audio or paste path.
 
-> **CodeGraph:** this repo auto-indexes on Claude Code session start (global `~/.claude/hooks/codegraph-autoindex.sh`). Prefer the `codegraph_explore` MCP tool (or `codegraph explore "<question>"`) over grep/find for locating code and caller/blast-radius questions; the local index lives in gitignored `.codegraph/`.
-
 ## Machines
 
 - **Build/dev box:** JJ's always-on headless Mac Mini (M4, 24GB, macOS 26).
