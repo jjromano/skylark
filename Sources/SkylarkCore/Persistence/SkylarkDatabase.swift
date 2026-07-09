@@ -8,7 +8,7 @@ public enum PersistenceError: Error, Sendable, Equatable {
 }
 
 /// GRDB-backed database (ARCHITECTURE §5). Wraps one `DatabaseQueue`, applies
-/// the "v1" migration, and hands the queue to the stores. `DatabaseQueue` is
+/// the "v1"/"v2" migrations, and hands the queue to the stores. `DatabaseQueue` is
 /// GRDB's own thread-safe, `Sendable` serialized-access wrapper, so this type
 /// is safe to share across actors.
 public final class SkylarkDatabase: Sendable {
@@ -72,6 +72,45 @@ public final class SkylarkDatabase: Sendable {
                 t.column("sort", .integer).notNull()
             }
         }
+
+        migrator.registerMigration("v2") { db in
+            // Invert the dictionary model: `phrase` is now always the correct
+            // spelling, and `misspellings` (JSON array TEXT) lists mistakes
+            // that get rewritten to it, replacing the old `replacement` column.
+            try db.create(table: "dictionary_new") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("phrase", .text).notNull().unique().collate(.nocase)
+                t.column("misspellings", .text)
+                t.column("source", .text).notNull()
+                t.column("created_at", .datetime).notNull()
+            }
+
+            let oldRows = try Row.fetchAll(db, sql: "SELECT phrase, replacement, source, created_at FROM dictionary")
+            for row in oldRows {
+                let phrase: String = row["phrase"]
+                let replacement: String? = row["replacement"]
+                let source: String = row["source"]
+                let createdAt: Date = row["created_at"]
+
+                let (correctWord, misspellings) = DictionaryRecord.migrateLegacyRow(phrase: phrase, replacement: replacement)
+                let misspellingsJSON = DictionaryRecord.encodeMisspellings(misspellings)
+
+                // Two old rows can map to the same correct word (e.g. two
+                // distinct misspellings of it); tolerate that by keeping the
+                // first and ignoring the rest rather than failing the migration.
+                try db.execute(
+                    sql: """
+                    INSERT OR IGNORE INTO dictionary_new (phrase, misspellings, source, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    arguments: [correctWord, misspellingsJSON, source, createdAt]
+                )
+            }
+
+            try db.drop(table: "dictionary")
+            try db.rename(table: "dictionary_new", to: "dictionary")
+        }
+
         try migrator.migrate(dbQueue)
     }
 

@@ -396,8 +396,8 @@ public actor DictationOrchestrator {
         let context = CleanupContext(
             targetAppBundleID: bundleID,
             registerHint: mode.registerHint,
-            // Bias-only terms (replacement == nil) protect exact spellings.
-            dictionaryTerms: entries.filter { $0.replacement == nil }.map(\.phrase)
+            // Every correct-spelling phrase is protected during recognition.
+            dictionaryTerms: entries.map(\.phrase)
         )
         let corrector = DictionaryCorrector(entries: entries)
         return SessionSetup(mode: mode, context: context, corrector: corrector)

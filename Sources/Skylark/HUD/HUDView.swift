@@ -17,9 +17,13 @@ struct HUDView: View {
         content
             .frame(width: size.width, height: size.height)
             .background(
-                Capsule(style: .continuous)
-                    .fill(.black.opacity(0.78))
-                    .overlay(Capsule(style: .continuous).strokeBorder(.white.opacity(0.08)))
+                ZStack {
+                    // Frosted translucency: a blur of whatever's behind the HUD
+                    // plus a light dark tint (was a near-opaque black fill).
+                    Capsule(style: .continuous).fill(.ultraThinMaterial)
+                    Capsule(style: .continuous).fill(.black.opacity(0.30))
+                }
+                .overlay(Capsule(style: .continuous).strokeBorder(.white.opacity(0.10)))
             )
             .animation(.easeInOut(duration: 0.12), value: model.state)
             .animation(.easeInOut(duration: 0.12), value: model.isHovering)

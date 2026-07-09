@@ -58,6 +58,9 @@ struct SettingsView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 196, max: 220)
             .safeAreaInset(edge: .bottom) { sidebarFooter }
+            // The sidebar is fixed — there's no reason to collapse it, so drop
+            // the automatic toggle button from the toolbar.
+            .toolbar(removing: .sidebarToggle)
         } detail: {
             detail(for: selection ?? .general)
                 .navigationTitle((selection ?? .general).title)
@@ -108,6 +111,11 @@ struct SettingsView: View {
 private struct GeneralPane: View {
     @Bindable var controller: AppController
 
+    /// Sentinel selection for the Cleanup-model picker's local option (maps to
+    /// the "local" cleanup tier / Apple Intelligence). Won't collide with real
+    /// registry slugs.
+    private static let localCleanupTag = "skylark.local"
+
     var body: some View {
         Form {
             Section("Cleanup") {
@@ -120,10 +128,37 @@ private struct GeneralPane: View {
                     Text("Local").tag("local")
                     Text("Cloud").tag("cloud")
                 }
-                Toggle("Whisper Mode (boosts quiet speech)", isOn: Binding(
-                    get: { controller.whisperModeOn },
-                    set: { _ in controller.toggleWhisperMode() }
-                ))
+            }
+
+            Section("Speech & cleanup") {
+                Picker("Speech engine", selection: Binding(
+                    get: { controller.currentSTT },
+                    set: { controller.selectSTT($0) }
+                )) {
+                    Text("Local — Parakeet").tag(STTChoice.localParakeet)
+                    Text("Local — Whisper large-v3-turbo").tag(STTChoice.localWhisper)
+                    ForEach(controller.sttModels) { entry in
+                        Text(entry.label).tag(STTChoice.cloud(slug: entry.slug))
+                    }
+                }
+                Picker("Cleanup model", selection: Binding(
+                    get: { controller.cleanupOverride == "local" ? Self.localCleanupTag : controller.currentCleanupSlug },
+                    set: { selection in
+                        if selection == Self.localCleanupTag {
+                            controller.setCleanupOverride("local")
+                        } else {
+                            // Picking a cloud model routes cleanup to the cloud so
+                            // the choice actually takes effect.
+                            controller.setCleanupOverride("cloud")
+                            controller.selectCleanupSlug(selection)
+                        }
+                    }
+                )) {
+                    Text("Apple Intelligence (Local)").tag(Self.localCleanupTag)
+                    ForEach(controller.cleanupModels) { entry in
+                        Text(entry.label).tag(entry.slug)
+                    }
+                }
             }
 
             Section("Feedback") {
@@ -131,6 +166,20 @@ private struct GeneralPane: View {
                     get: { controller.soundEffectsEnabled },
                     set: { controller.setSoundEffectsEnabled($0) }
                 ))
+                Picker("Start sound", selection: Binding(
+                    get: { controller.soundStartID },
+                    set: { controller.setSoundStart($0) }
+                )) {
+                    ForEach(SoundEffects.catalog) { cue in Text(cue.label).tag(cue.id) }
+                }
+                .disabled(!controller.soundEffectsEnabled)
+                Picker("Stop sound", selection: Binding(
+                    get: { controller.soundStopID },
+                    set: { controller.setSoundStop($0) }
+                )) {
+                    ForEach(SoundEffects.catalog) { cue in Text(cue.label).tag(cue.id) }
+                }
+                .disabled(!controller.soundEffectsEnabled)
             }
 
             Section("Launch") {
@@ -187,18 +236,61 @@ private struct HistoryPane: View {
 private struct ModelsPane: View {
     @Bindable var controller: AppController
 
+    private static let costCaption = "Estimated cost assumes ~10 min of dictation/day (~5 hrs/month)."
+
     var body: some View {
         Form {
             Section {
-                ForEach(AppController.ManagedModel.allCases) { model in
-                    ModelRow(controller: controller, model: model)
-                }
+                ModelRow(controller: controller, model: .parakeet)
+                ModelRow(controller: controller, model: .whisper)
             } header: {
-                Text("On-device models")
+                Text("Speech engines · on device")
             } footer: {
-                Text("Downloaded once and stored locally under Application Support/Skylark. Local speech and cleanup run fully offline.")
+                Text("Downloaded once and stored locally under Application Support/Skylark. Runs fully offline.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Text(Self.costCaption)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                ForEach(controller.sttModels) { entry in
+                    InfoModelRow(label: entry.label, info: ModelInfo.cloudSTT[entry.slug], requiresAPIKey: true)
+                }
+            } header: {
+                Text("Speech engines · cloud")
+            } footer: {
+                Text("Cloud speech runs on OpenRouter, not on this Mac. Add an API key in Account to use it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                InfoModelRow(label: "Apple Intelligence", info: ModelInfo.appleIntelligence)
+            } header: {
+                Text("Cleanup · on device")
+            }
+
+            Section {
+                Text(Self.costCaption)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                ForEach(controller.cleanupModels) { entry in
+                    InfoModelRow(label: entry.label, info: ModelInfo.cloudCleanup[entry.slug], requiresAPIKey: true)
+                }
+            } header: {
+                Text("Cleanup · cloud")
+            } footer: {
+                Text("Cloud cleanup runs on OpenRouter, not on this Mac. Add an API key in Account to use it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                ModelRow(controller: controller, model: .vad)
+            } header: {
+                Text("Utility")
             }
         }
         .formStyle(.grouped)
@@ -213,11 +305,17 @@ private struct ModelRow: View {
         controller.modelStates[model] ?? .notDownloaded
     }
 
+    private var info: ModelInfo.Entry? { ModelInfo.onDevice[model] }
+
     var body: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.label).font(.system(size: 13, weight: .medium))
                 Text(statusText).font(.caption).foregroundStyle(.secondary)
+                if let info {
+                    Text(info.description).font(.caption).foregroundStyle(.secondary)
+                    ScoreRow(info: info)
+                }
             }
             Spacer(minLength: 8)
             actions
@@ -234,7 +332,10 @@ private struct ModelRow: View {
         case .preparing:
             return "Preparing…"
         case let .ready(bytes):
-            return "Ready · \(SettingsFormat.bytes(bytes))"
+            // Some engines (FluidAudio Parakeet) install to a path we can't
+            // measure precisely; fall back to the approximate size rather than
+            // showing a misleading "Zero KB".
+            return bytes > 0 ? "Ready · \(SettingsFormat.bytes(bytes))" : "Ready · \(model.approxSize)"
         }
     }
 
@@ -250,6 +351,84 @@ private struct ModelRow: View {
                 .disabled(controller.isModelInUse(model))
                 .help(controller.isModelInUse(model) ? "In use by the current speech engine" : "")
         }
+    }
+}
+
+/// Read-only informational row for a model that isn't downloadable/deletable
+/// here — either a cloud (OpenRouter) model or an OS-provided one like Apple
+/// Intelligence. No download/delete affordances.
+private struct InfoModelRow: View {
+    let label: String
+    let info: ModelInfo.Entry?
+    var requiresAPIKey: Bool = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(label).font(.system(size: 13, weight: .medium))
+                if let info {
+                    Text(info.description).font(.caption).foregroundStyle(.secondary)
+                    ScoreRow(info: info)
+                }
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 2) {
+                if let cost = info?.costPerMonth {
+                    Text(cost).font(.caption).foregroundStyle(.secondary)
+                }
+                if requiresAPIKey {
+                    Text("Requires API key").font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// Compact "Label 4.5/5" pair for a model's two scores (Accuracy/Latency or
+/// Quality/Speed), rendered as filled/half/empty dots.
+private struct ScoreRow: View {
+    let info: ModelInfo.Entry
+
+    var body: some View {
+        HStack(spacing: 14) {
+            if let score = info.primaryScore {
+                ScoreDots(label: info.primaryLabel, score: score)
+            }
+            if let score = info.secondaryScore {
+                ScoreDots(label: info.secondaryLabel, score: score)
+            }
+        }
+    }
+}
+
+private struct ScoreDots: View {
+    let label: String
+    let score: Double
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Text("\(label):")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 1) {
+                ForEach(0..<5, id: \.self) { index in
+                    Image(systemName: symbolName(forDotAt: index))
+                        .font(.system(size: 7))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text(String(format: "%.1f", score))
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private func symbolName(forDotAt index: Int) -> String {
+        let fill = score - Double(index)
+        if fill >= 1 { return "circle.fill" }
+        if fill >= 0.5 { return "circle.lefthalf.filled" }
+        return "circle"
     }
 }
 
@@ -284,6 +463,16 @@ private struct AudioPane: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                 }
+            }
+
+            Section("Whisper Mode") {
+                Toggle("Whisper Mode (boosts quiet speech)", isOn: Binding(
+                    get: { controller.whisperModeOn },
+                    set: { _ in controller.toggleWhisperMode() }
+                ))
+                Text("Boosts gain and tunes endpointing for quiet or whispered speech — useful in shared spaces where you don't want to talk at normal volume.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

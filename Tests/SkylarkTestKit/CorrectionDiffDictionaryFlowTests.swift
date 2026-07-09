@@ -4,7 +4,8 @@ import SkylarkCore
 
 /// The History window's edit → auto-learn loop (phase-5a spec §1): editing a
 /// history entry's final text runs `CorrectionDiff.diff(raw:edited:)` and the
-/// UI upserts accepted pairs as `.autoCorrection` dictionary entries. This
+/// UI upserts accepted pairs as `.autoCorrection` dictionary entries — phrase
+/// = the corrected (edited) word, misspellings = [the raw mistake]. This
 /// exercises that pipeline end-to-end against a real (in-memory) `DictionaryStore`.
 @Suite("CorrectionDiff -> dictionary auto-learn flow")
 struct CorrectionDiffDictionaryFlowTests {
@@ -19,13 +20,13 @@ struct CorrectionDiffDictionaryFlowTests {
         #expect(pairs == [CorrectionDiff.Pair(from: "gitub", to: "github")])
 
         for pair in pairs {
-            _ = try await store.upsert(DictionaryEntry(phrase: pair.from, replacement: pair.to, source: .autoCorrection))
+            _ = try await store.upsert(DictionaryEntry(phrase: pair.to, misspellings: [pair.from], source: .autoCorrection))
         }
 
         let entries = try await store.entries()
         #expect(entries.count == 1)
-        #expect(entries.first?.phrase == "gitub")
-        #expect(entries.first?.replacement == "github")
+        #expect(entries.first?.phrase == "github")
+        #expect(entries.first?.misspellings == ["gitub"])
         #expect(entries.first?.source == .autoCorrection)
     }
 
@@ -36,24 +37,24 @@ struct CorrectionDiffDictionaryFlowTests {
         let editB = CorrectionDiff.pairs(raw: "push to gitub now", edited: "push to github now")
 
         for pair in editA + editB {
-            _ = try await store.upsert(DictionaryEntry(phrase: pair.from, replacement: pair.to, source: .autoCorrection))
+            _ = try await store.upsert(DictionaryEntry(phrase: pair.to, misspellings: [pair.from], source: .autoCorrection))
         }
 
         let entries = try await store.entries()
         #expect(entries.count == 2)
-        #expect(entries.contains { $0.phrase == "realtime" && $0.replacement == "real time" })
-        #expect(entries.contains { $0.phrase == "gitub" && $0.replacement == "github" })
+        #expect(entries.contains { $0.phrase == "real time" && $0.misspellings == ["realtime"] })
+        #expect(entries.contains { $0.phrase == "github" && $0.misspellings == ["gitub"] })
     }
 
     @Test("Re-editing the same phrase upserts in place rather than duplicating")
     func repeatedEditUpsertsInPlace() async throws {
         let store = try makeStore()
-        _ = try await store.upsert(DictionaryEntry(phrase: "realtime", replacement: "real time", source: .autoCorrection))
-        _ = try await store.upsert(DictionaryEntry(phrase: "realtime", replacement: "real-time", source: .autoCorrection))
+        _ = try await store.upsert(DictionaryEntry(phrase: "real time", misspellings: ["realtime"], source: .autoCorrection))
+        _ = try await store.upsert(DictionaryEntry(phrase: "real time", misspellings: ["real-time"], source: .autoCorrection))
 
         let entries = try await store.entries()
         #expect(entries.count == 1)
-        #expect(entries.first?.replacement == "real-time")
+        #expect(entries.first?.misspellings == ["real-time"])
     }
 
     @Test("A candidate toggled off by the user is never upserted")
@@ -64,7 +65,7 @@ struct CorrectionDiffDictionaryFlowTests {
         // toggles this one off before confirming — the caller filters it out.
         let accepted = pairs.filter { _ in false }
         for pair in accepted {
-            _ = try await store.upsert(DictionaryEntry(phrase: pair.from, replacement: pair.to, source: .autoCorrection))
+            _ = try await store.upsert(DictionaryEntry(phrase: pair.to, misspellings: [pair.from], source: .autoCorrection))
         }
 
         let entries = try await store.entries()

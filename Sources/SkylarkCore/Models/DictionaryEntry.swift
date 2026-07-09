@@ -1,7 +1,8 @@
 import Foundation
 
-/// A custom-dictionary term (PRD §8): bias recognition toward `phrase`, and when
-/// `replacement` is set, rewrite matches post-transcription.
+/// A custom-dictionary term (PRD §8): `phrase` is always the correct spelling
+/// (biased/protected during recognition), and `misspellings` lists common
+/// mistakes that get rewritten to `phrase` post-transcription.
 public struct DictionaryEntry: Sendable, Equatable, Codable, Identifiable {
     public enum Source: String, Sendable, Codable {
         case manual
@@ -9,17 +10,24 @@ public struct DictionaryEntry: Sendable, Equatable, Codable, Identifiable {
     }
 
     public var id: Int64?
-    /// What the transcript tends to contain (or the term to protect).
+    /// The correct word/phrase; always biased/protected during recognition.
     public let phrase: String
-    /// Corrected spelling; nil means "phrase is already correct, just prefer it".
-    public let replacement: String?
+    /// Common misspellings/mistakes that get rewritten to `phrase`. Empty
+    /// means "just bias recognition toward this spelling, nothing to rewrite".
+    public let misspellings: [String]
     public let source: Source
     public let createdAt: Date
 
-    public init(id: Int64? = nil, phrase: String, replacement: String?, source: Source, createdAt: Date = .init()) {
+    public init(
+        id: Int64? = nil,
+        phrase: String,
+        misspellings: [String] = [],
+        source: Source,
+        createdAt: Date = .init()
+    ) {
         self.id = id
         self.phrase = phrase
-        self.replacement = replacement
+        self.misspellings = misspellings
         self.source = source
         self.createdAt = createdAt
     }

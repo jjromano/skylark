@@ -87,6 +87,28 @@ public struct KeychainStore: Sendable {
         }
     }
 
+    /// Whether a key is currently stored.
+    public func exists() -> Bool {
+        SecItemCopyMatching(baseQuery as CFDictionary, nil) == errSecSuccess
+    }
+
+    /// When the stored key was first added (Keychain creation date), or nil if
+    /// none is stored / the attribute is unavailable. Used to show "Added …" in
+    /// Settings without keeping any extra copy of key metadata.
+    public func createdAt() -> Date? {
+        var query = baseQuery
+        query[kSecReturnAttributes as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
+              let attrs = result as? [String: Any],
+              let date = attrs[kSecAttrCreationDate as String] as? Date
+        else {
+            return nil
+        }
+        return date
+    }
+
     /// Removes the key. Succeeds silently if none was set.
     public func delete() throws {
         let status = SecItemDelete(baseQuery as CFDictionary)

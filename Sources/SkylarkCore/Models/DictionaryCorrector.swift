@@ -1,9 +1,10 @@
 import Foundation
 
 /// Applies the custom-dictionary correction map to a raw transcript (PRD §8).
-/// Only entries with a non-nil `replacement` rewrite text; case-insensitive,
-/// word-boundary matching, preserving the leading capitalization of the matched
-/// token when the replacement is lowercase ("Realtime" → "real-time" keeps
+/// One rewrite rule is compiled per `(misspelling → phrase)` pair; entries with
+/// no misspellings produce no rules. Case-insensitive, word-boundary matching,
+/// preserving the leading capitalization of the matched token when the
+/// replacement (`phrase`) is lowercase ("Realtime" → "real-time" keeps
 /// "Real-time" at a sentence start).
 ///
 /// Regexes are compiled once per dictionary change (`update(entries:)`) so the
@@ -29,7 +30,7 @@ public final class DictionaryCorrector: @unchecked Sendable {
         lock.unlock()
     }
 
-    /// Apply every rule to `text`, longest phrases first.
+    /// Apply every rule to `text`, longest misspellings first.
     public func apply(_ text: String) -> String {
         lock.lock()
         let rules = self.rules
@@ -47,18 +48,20 @@ public final class DictionaryCorrector: @unchecked Sendable {
 
     private static func compile(_ entries: [DictionaryEntry]) -> [Rule] {
         entries
-            // Longest phrase first so multi-word entries win over their prefixes.
-            .sorted { $0.phrase.count > $1.phrase.count }
-            .compactMap { entry -> Rule? in
-                guard let replacement = entry.replacement,
-                      !entry.phrase.isEmpty else { return nil }
-                let escaped = NSRegularExpression.escapedPattern(for: entry.phrase)
+            .flatMap { entry in
+                entry.misspellings.map { (misspelling: $0, phrase: entry.phrase) }
+            }
+            // Longest misspelling first so multi-word entries win over their prefixes.
+            .sorted { $0.misspelling.count > $1.misspelling.count }
+            .compactMap { pair -> Rule? in
+                guard !pair.misspelling.isEmpty, !pair.phrase.isEmpty else { return nil }
+                let escaped = NSRegularExpression.escapedPattern(for: pair.misspelling)
                 // \b anchors on word boundaries; phrases may span multiple words.
                 let pattern = "\\b\(escaped)\\b"
                 guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
                     return nil
                 }
-                return Rule(regex: regex, replacement: replacement)
+                return Rule(regex: regex, replacement: pair.phrase)
             }
     }
 

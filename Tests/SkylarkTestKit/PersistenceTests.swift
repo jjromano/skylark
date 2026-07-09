@@ -87,27 +87,67 @@ struct PersistenceTests {
     @Test("Dictionary upsert inserts then updates the same phrase (case-insensitive)")
     func dictionaryUpsertByPhrase() async throws {
         let store = DictionaryStore(db: try makeDB())
-        let first = try await store.upsert(DictionaryEntry(phrase: "Skylark", replacement: nil, source: .manual))
+        let first = try await store.upsert(DictionaryEntry(phrase: "Skylark", source: .manual))
         #expect(first.id != nil)
 
-        // Re-adding with different case + a replacement should update, not duplicate.
-        let second = try await store.upsert(DictionaryEntry(phrase: "skylark", replacement: "Skylark™", source: .autoCorrection))
+        // Re-adding with different case + misspellings should update, not duplicate.
+        let second = try await store.upsert(DictionaryEntry(phrase: "skylark", misspellings: ["Skylerk"], source: .autoCorrection))
         #expect(second.id == first.id)
 
         let all = try await store.entries()
         #expect(all.count == 1)
-        #expect(all.first?.replacement == "Skylark™")
+        #expect(all.first?.misspellings == ["Skylerk"])
         #expect(all.first?.source == .autoCorrection)
+    }
+
+    @Test("Dictionary upsert/round-trip preserves multiple misspellings")
+    func dictionaryUpsertRoundTripsMisspellings() async throws {
+        let store = DictionaryStore(db: try makeDB())
+        _ = try await store.upsert(DictionaryEntry(phrase: "GitHub", misspellings: ["gitub", "guthub"], source: .manual))
+
+        let all = try await store.entries()
+        #expect(all.count == 1)
+        #expect(all.first?.phrase == "GitHub")
+        #expect(all.first?.misspellings == ["gitub", "guthub"])
     }
 
     @Test("Dictionary delete removes the entry")
     func dictionaryDelete() async throws {
         let store = DictionaryStore(db: try makeDB())
-        let entry = try await store.upsert(DictionaryEntry(phrase: "term", replacement: nil, source: .manual))
+        let entry = try await store.upsert(DictionaryEntry(phrase: "term", source: .manual))
         let id = try #require(entry.id)
         try await store.delete(id: id)
         let all = try await store.entries()
         #expect(all.isEmpty)
+    }
+
+    @Test("v2 migration maps an old (phrase, replacement) row to (correctWord, [misspelling])")
+    func v2MigrationMapsOldRowsToNewSchema() throws {
+        // SkylarkDatabase's "v2" migration uses this exact helper to convert
+        // each legacy `dictionary` row (phrase = mistake, replacement =
+        // correction or nil) into the new shape (phrase = correction,
+        // misspellings = [mistake]). Exercise it directly since a fresh
+        // `SkylarkDatabase` always starts fully migrated (v1 -> v2 in one
+        // shot), leaving no way to observe an intermediate v1-only state.
+        let withReplacement = DictionaryRecord.migrateLegacyRow(phrase: "gitub", replacement: "github")
+        #expect(withReplacement.phrase == "github")
+        #expect(withReplacement.misspellings == ["gitub"])
+
+        // A bias-only row (replacement == nil) keeps its phrase as the
+        // correct word and has no misspellings to learn.
+        let biasOnly = DictionaryRecord.migrateLegacyRow(phrase: "Skylark", replacement: nil)
+        #expect(biasOnly.phrase == "Skylark")
+        #expect(biasOnly.misspellings.isEmpty)
+    }
+
+    @Test("Freshly migrated database has the v2 dictionary schema (misspellings, no replacement)")
+    func freshDatabaseHasV2Schema() async throws {
+        let db = try makeDB()
+        let columns = try await db.dbQueue.read { conn in
+            try conn.columns(in: "dictionary").map(\.name)
+        }
+        #expect(columns.contains("misspellings"))
+        #expect(!columns.contains("replacement"))
     }
 
     // MARK: - RegistryStore

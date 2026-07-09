@@ -1,104 +1,159 @@
 import AVFoundation
+import AppKit
 import SkylarkCore
 
-/// Subtle start/stop dictation cues, synthesized as soft sine blips rather than
-/// any recognizable macOS system sound (and never third-party audio files). The
-/// tones are rendered once to in-memory WAV and played asynchronously, so they
-/// stay off the audio-capture and paste latency paths.
+/// Start/stop dictation cues. The user picks from the built-in macOS system
+/// sounds (played via `NSSound`) plus a couple of Skylark-synthesized options.
+/// Sounds are cached/prewarmed and played asynchronously, off the audio-capture
+/// and paste latency paths. No third-party audio files are bundled.
 @MainActor
 final class SoundEffects {
-    private let startPlayer: AVAudioPlayer?
-    private let stopPlayer: AVAudioPlayer?
+    /// One selectable cue. `id` is persisted; it's either a macOS system-sound
+    /// name (e.g. "Tink") or a `skylark.*` key for a synthesized cue.
+    struct Cue: Identifiable, Hashable {
+        let id: String
+        let label: String
+    }
 
-    /// Gates playback without tearing down the prewarmed players.
+    /// The classic macOS system sounds, in a friendly order (Tink/Pop first).
+    static let systemSoundNames = [
+        "Tink", "Pop", "Bottle", "Purr", "Glass", "Blow", "Frog", "Funk",
+        "Hero", "Morse", "Ping", "Sosumi", "Submarine", "Basso",
+    ]
+
+    /// Everything selectable in the Settings dropdowns.
+    static let catalog: [Cue] =
+        systemSoundNames.map { Cue(id: $0, label: $0) }
+            + [Cue(id: "skylark.twotone", label: "Two-tone (Skylark)"),
+               Cue(id: "skylark.chirp", label: "Chirp (Skylark)")]
+
+    static let defaultStartID = "Tink"
+    static let defaultStopID = "Pop"
+
     var enabled: Bool
+    private var startID: String
+    private var stopID: String
 
-    init(enabled: Bool) {
+    // Caches so playback never allocates/decodes on the hot path.
+    private var systemSounds: [String: NSSound] = [:]
+    private var synthPlayers: [String: AVAudioPlayer] = [:]
+
+    init(enabled: Bool, startID: String, stopID: String) {
         self.enabled = enabled
-        startPlayer = Self.player(for: ToneSynth.startCue())
-        stopPlayer = Self.player(for: ToneSynth.stopCue())
-        startPlayer?.prepareToPlay()
-        stopPlayer?.prepareToPlay()
+        self.startID = startID
+        self.stopID = stopID
+        prewarm(startID)
+        prewarm(stopID)
     }
 
-    private static func player(for samples: [Float]) -> AVAudioPlayer? {
+    func setStart(_ id: String) { startID = id; prewarm(id) }
+    func setStop(_ id: String) { stopID = id; prewarm(id) }
+
+    func playStart() { guard enabled else { return }; play(startID) }
+    func playStop() { guard enabled else { return }; play(stopID) }
+
+    /// Play a cue regardless of `enabled` — for auditioning a selection in Settings.
+    func preview(_ id: String) { play(id) }
+
+    // MARK: - Playback
+
+    private func play(_ id: String) {
+        if id.hasPrefix("skylark.") {
+            guard let player = synthPlayers[id] else { return }
+            player.currentTime = 0
+            player.play()
+        } else {
+            let sound = systemSound(id)
+            sound?.stop()
+            sound?.play()
+        }
+    }
+
+    private func prewarm(_ id: String) {
+        if id.hasPrefix("skylark.") {
+            if synthPlayers[id] == nil, let player = Self.synthPlayer(for: id) {
+                player.volume = 0.5
+                player.prepareToPlay()
+                synthPlayers[id] = player
+            }
+        } else {
+            _ = systemSound(id)
+        }
+    }
+
+    private func systemSound(_ name: String) -> NSSound? {
+        if let cached = systemSounds[name] { return cached }
+        let sound = NSSound(named: NSSound.Name(name))
+        if let sound { systemSounds[name] = sound }
+        return sound
+    }
+
+    private static func synthPlayer(for id: String) -> AVAudioPlayer? {
+        let samples: [Float]
+        switch id {
+        case "skylark.chirp": samples = ToneSynth.startCue()
+        case "skylark.twotone": samples = ToneSynth.stopCue()
+        default: return nil
+        }
         let data = WavEncoder.encode(samples: samples, sampleRate: ToneSynth.sampleRate)
-        let player = try? AVAudioPlayer(data: data)
-        player?.volume = 0.5
-        return player
-    }
-
-    /// Play the recording-start cue (restart from the top if still ringing).
-    func playStart() {
-        guard enabled, let startPlayer else { return }
-        startPlayer.currentTime = 0
-        startPlayer.play()
-    }
-
-    /// Play the recording-stop cue.
-    func playStop() {
-        guard enabled, let stopPlayer else { return }
-        stopPlayer.currentTime = 0
-        stopPlayer.play()
+        return try? AVAudioPlayer(data: data)
     }
 }
 
-/// Tiny physically-inspired synthesizer for the dictation cues. Rather than a
-/// static harmonic stack (which reads as "synthy"), each note is struck: a brief
-/// contact transient, then partials that **decay at different rates** — the
-/// upper overtones fade fast while the fundamental rings on, so the tone is
-/// bright at onset and mellows like a mallet/plucked instrument or a water drop.
-/// Two notes keep the liked pitch contour: ascending to open, descending to close.
+/// Synthesizer for the two built-in Skylark cues (used only when the user picks
+/// them from the dropdown): an upward-glided chirp and a soft descending two-tone.
 enum ToneSynth {
     static let sampleRate: Double = 44_100
 
-    /// Rising cue — "listening".
     static func startCue() -> [Float] {
-        note(freq: 294, ms: 130, amp: 0.30) + note(freq: 392, ms: 190, amp: 0.30)
+        chirp(from: 740, to: 1500, ms: 105, amp: 0.26, attackMs: 2, releaseMs: 16, odd3: 0.20, odd5: 0.07)
     }
 
-    /// Falling cue — "done".
     static func stopCue() -> [Float] {
-        note(freq: 294, ms: 130, amp: 0.28) + note(freq: 196, ms: 210, amp: 0.28)
+        softTone(freq: 466, ms: 85, amp: 0.24, decay: 9, even2: 0.28)
+            + softTone(freq: 349, ms: 150, amp: 0.24, decay: 6, even2: 0.28)
     }
 
-    /// Partials as (frequency ratio, amplitude, decay rate). Higher partials
-    /// decay faster → the natural "brightness fades to warmth" of a struck note.
-    /// A touch of inharmonicity on the top partial adds woody realism.
-    private static let partials: [(ratio: Double, amp: Double, decay: Double)] = [
-        (1.00, 1.00, 3.5),
-        (2.00, 0.40, 8.0),
-        (3.00, 0.18, 15.0),
-        (4.02, 0.09, 24.0),
-    ]
-
-    private static func note(freq: Double, ms: Double, amp: Float) -> [Float] {
+    private static func chirp(
+        from f0: Double, to f1: Double, ms: Double, amp: Float,
+        attackMs: Double, releaseMs: Double, odd3: Double, odd5: Double
+    ) -> [Float] {
         let n = max(1, Int(sampleRate * ms / 1000))
-        let attack = max(1, min(n, Int(sampleRate * 0.004)))    // 4 ms soft onset
-        let release = max(1, min(n, Int(sampleRate * 0.014)))   // 14 ms fade-out
-        let contactN = min(n, Int(sampleRate * 0.007))          // ~7 ms "tap"
-        let norm = partials.reduce(0) { $0 + $1.amp }
+        let attack = max(1, Int(sampleRate * attackMs / 1000))
+        let release = max(1, min(n, Int(sampleRate * releaseMs / 1000)))
+        let norm = 1 + odd3 + odd5
+        var out = [Float](repeating: 0, count: n)
+        var phase = 0.0
+        for i in 0..<n {
+            let frac = Double(i) / Double(max(1, n - 1))
+            let f = f0 * pow(f1 / f0, frac)
+            phase += 2 * Double.pi * f / sampleRate
+            var s = sin(phase) + odd3 * sin(3 * phase) + odd5 * sin(5 * phase)
+            s /= norm
+            var env = 1.0
+            if i < attack { env = Double(i) / Double(attack) }
+            let fromEnd = n - 1 - i
+            if fromEnd < release { env *= Double(fromEnd) / Double(release) }
+            out[i] = Float(s * env) * amp
+        }
+        return out
+    }
+
+    private static func softTone(freq: Double, ms: Double, amp: Float, decay: Double, even2: Double) -> [Float] {
+        let n = max(1, Int(sampleRate * ms / 1000))
+        let attack = max(1, min(n, Int(sampleRate * 0.004)))
+        let release = max(1, min(n, Int(sampleRate * 0.030)))
+        let norm = 1 + even2
         var out = [Float](repeating: 0, count: n)
         for i in 0..<n {
             let t = Double(i) / sampleRate
-            var s = 0.0
-            for p in partials {
-                s += p.amp * exp(-t * p.decay) * sin(2 * Double.pi * freq * p.ratio * t)
-            }
+            var s = sin(2 * Double.pi * freq * t) + even2 * sin(2 * Double.pi * 2 * freq * t)
             s /= norm
-
-            // Contact transient: a quick high blip that decays in ~2 ms, giving an
-            // organic "tap"/"drop" onset instead of a clean synthetic attack.
-            if i < contactN {
-                s += sin(2 * Double.pi * freq * 6.0 * t) * exp(-t * 520) * 0.16
-            }
-
-            // Attack swell + short release fade (decay itself lives in the partials).
+            s *= exp(-t * decay)
             var env = 1.0
             if i < attack { env = 0.5 - 0.5 * cos(Double.pi * Double(i) / Double(attack)) }
             let fromEnd = n - 1 - i
             if fromEnd < release { env *= Double(fromEnd) / Double(release) }
-
             out[i] = Float(s * env) * amp
         }
         return out

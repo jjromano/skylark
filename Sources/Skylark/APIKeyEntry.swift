@@ -13,6 +13,10 @@ struct APIKeyCard: View {
     @State private var status: String?
     @State private var isError = false
     @State private var validating = false
+    /// Non-nil when a key is stored (its added date); drives the "stored" view.
+    @State private var storedSince: Date?
+    /// True while the user is entering a replacement for an already-stored key.
+    @State private var isReplacing = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -22,14 +26,10 @@ struct APIKeyCard: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
-            HStack {
-                SecureField("sk-or-…", text: $key)
-                    .textFieldStyle(.roundedBorder)
-                Button("Save", action: save)
-                    .disabled(key.isEmpty || validating)
-                if showRemove {
-                    Button("Remove key", action: remove)
-                }
+            if let storedSince, !isReplacing {
+                storedView(since: storedSince)
+            } else {
+                entryView
             }
 
             if validating {
@@ -40,6 +40,40 @@ struct APIKeyCard: View {
                     .foregroundStyle(isError ? .red : .green)
             }
         }
+        .task { refreshStored() }
+    }
+
+    private func storedView(since: Date) -> some View {
+        HStack(spacing: 10) {
+            Label {
+                Text("Key stored — added \(since.formatted(date: .abbreviated, time: .omitted))")
+            } icon: {
+                Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+            }
+            .font(.callout)
+            Spacer(minLength: 8)
+            Button("Replace…") { isReplacing = true; status = nil }
+            if showRemove {
+                Button("Remove key", role: .destructive, action: remove)
+            }
+        }
+    }
+
+    private var entryView: some View {
+        HStack {
+            SecureField("sk-or-…", text: $key)
+                .textFieldStyle(.roundedBorder)
+            Button("Save", action: save)
+                .disabled(key.isEmpty || validating)
+            if storedSince != nil {
+                Button("Cancel") { isReplacing = false; key = ""; status = nil }
+            }
+        }
+    }
+
+    private func refreshStored() {
+        let store = KeychainStore()
+        storedSince = store.exists() ? (store.createdAt() ?? Date()) : nil
     }
 
     private func save() {
@@ -58,6 +92,8 @@ struct APIKeyCard: View {
             }
             validating = false
             key = "" // never keep the key in view state
+            isReplacing = false
+            refreshStored()
         }
     }
 
@@ -66,6 +102,8 @@ struct APIKeyCard: View {
         status = "Key removed."
         isError = false
         key = ""
+        isReplacing = false
+        refreshStored()
     }
 
     private static func describe(_ info: KeyInfo) -> String {

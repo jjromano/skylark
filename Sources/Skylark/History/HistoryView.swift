@@ -304,8 +304,10 @@ private struct HistoryDetailView: View {
     private func applySave() async {
         guard let id = record.id else { return }
         for candidate in candidates where candidate.accepted {
+            // candidate.from was misspelled as candidate.to in the edited text,
+            // so the correct phrase is `to` and the misspelling to learn is `from`.
             _ = try? await dictionaryStore?.upsert(
-                DictionaryEntry(phrase: candidate.from, replacement: candidate.to, source: .autoCorrection)
+                DictionaryEntry(phrase: candidate.to, misspellings: [candidate.from], source: .autoCorrection)
             )
         }
         try? await store.updateEditedText(id: id, new: editedText)

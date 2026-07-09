@@ -30,7 +30,11 @@ final class AppController {
     /// Play subtle start/stop sounds around each dictation — persisted, on by
     /// default. Built from macOS system sounds (`SoundEffects`), off the paste path.
     static let soundEffectsKey = "soundEffectsEnabled"
+    static let soundStartKey = "soundStartID"
+    static let soundStopKey = "soundStopID"
     private(set) var soundEffectsEnabled: Bool
+    private(set) var soundStartID: String
+    private(set) var soundStopID: String
     @ObservationIgnored private let sounds: SoundEffects
 
     // MARK: - Model manager (Settings → Models)
@@ -192,7 +196,11 @@ final class AppController {
         }
         let soundsEnabled = UserDefaults.standard.bool(forKey: Self.soundEffectsKey)
         soundEffectsEnabled = soundsEnabled
-        sounds = SoundEffects(enabled: soundsEnabled)
+        let startID = UserDefaults.standard.string(forKey: Self.soundStartKey) ?? SoundEffects.defaultStartID
+        let stopID = UserDefaults.standard.string(forKey: Self.soundStopKey) ?? SoundEffects.defaultStopID
+        soundStartID = startID
+        soundStopID = stopID
+        sounds = SoundEffects(enabled: soundsEnabled, startID: startID, stopID: stopID)
         selectedDeviceUID = UserDefaults.standard.string(forKey: Self.inputDeviceKey)
 
         // Composition root: one on-disk database; fall back to in-memory
@@ -612,6 +620,22 @@ final class AppController {
         soundEffectsEnabled = on
         UserDefaults.standard.set(on, forKey: Self.soundEffectsKey)
         sounds.enabled = on
+    }
+
+    /// Select the recording-start cue; persisted, and auditioned immediately.
+    func setSoundStart(_ id: String) {
+        soundStartID = id
+        UserDefaults.standard.set(id, forKey: Self.soundStartKey)
+        sounds.setStart(id)
+        sounds.preview(id)
+    }
+
+    /// Select the recording-stop cue; persisted, and auditioned immediately.
+    func setSoundStop(_ id: String) {
+        soundStopID = id
+        UserDefaults.standard.set(id, forKey: Self.soundStopKey)
+        sounds.setStop(id)
+        sounds.preview(id)
     }
 
     /// Push the current whisper-mode tuning to capture (gain), the engines'

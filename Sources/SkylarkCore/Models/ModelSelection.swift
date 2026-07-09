@@ -1,7 +1,7 @@
 import Foundation
 
 /// Which speech-to-text engine the user has selected.
-public enum STTChoice: Sendable, Equatable {
+public enum STTChoice: Sendable, Equatable, Hashable {
     /// Local Parakeet (default, fully offline).
     case localParakeet
     /// Local WhisperKit large-v3-turbo (offline fallback engine, phase-4).
