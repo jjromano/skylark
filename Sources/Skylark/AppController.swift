@@ -27,6 +27,12 @@ final class AppController {
     static let whisperModeKey = "whisperMode"
     private(set) var whisperModeOn: Bool
 
+    /// Play subtle start/stop sounds around each dictation — persisted, on by
+    /// default. Built from macOS system sounds (`SoundEffects`), off the paste path.
+    static let soundEffectsKey = "soundEffectsEnabled"
+    private(set) var soundEffectsEnabled: Bool
+    @ObservationIgnored private let sounds: SoundEffects
+
     // MARK: - Model manager (Settings → Models)
 
     /// A local model the settings model-manager can download/delete.
@@ -180,6 +186,13 @@ final class AppController {
         parakeet = FluidAudioParakeet(progress: { state in cont.yield((.parakeet, state)) })
         whisper = WhisperKitWhisper(progress: { state in cont.yield((.whisper, state)) })
         whisperModeOn = UserDefaults.standard.bool(forKey: Self.whisperModeKey)
+        // Sound effects default ON (register the default before the first read).
+        if UserDefaults.standard.object(forKey: Self.soundEffectsKey) == nil {
+            UserDefaults.standard.set(true, forKey: Self.soundEffectsKey)
+        }
+        let soundsEnabled = UserDefaults.standard.bool(forKey: Self.soundEffectsKey)
+        soundEffectsEnabled = soundsEnabled
+        sounds = SoundEffects(enabled: soundsEnabled)
         selectedDeviceUID = UserDefaults.standard.string(forKey: Self.inputDeviceKey)
 
         // Composition root: one on-disk database; fall back to in-memory
@@ -255,10 +268,17 @@ final class AppController {
 
         permissions.refresh()
 
-        // Forward HUD snapshots from the orchestrator to the UI.
-        Task { [orchestrator, hud, hudPanel] in
+        // Forward HUD snapshots from the orchestrator to the UI, and play the
+        // start/stop cues on the listening edge (enter listening → start; leave
+        // listening → stop).
+        Task { [orchestrator, hud, hudPanel, sounds] in
+            var wasListening = false
             for await state in orchestrator.hudStates {
                 hud.state = state
+                let isListening: Bool = { if case .listening = state { return true } else { return false } }()
+                if isListening, !wasListening { sounds.playStart() }
+                if !isListening, wasListening { sounds.playStop() }
+                wasListening = isListening
                 if case let .listening(level) = state {
                     hud.pushLevel(level)
                 } else if case .idle = state {
@@ -585,6 +605,13 @@ final class AppController {
         UserDefaults.standard.set(whisperModeOn, forKey: Self.whisperModeKey)
         applyWhisperTuning()
         showNote(whisperModeOn ? "Whisper Mode on" : "Whisper Mode off")
+    }
+
+    /// Enable/disable the dictation start/stop sounds; persisted.
+    func setSoundEffectsEnabled(_ on: Bool) {
+        soundEffectsEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.soundEffectsKey)
+        sounds.enabled = on
     }
 
     /// Push the current whisper-mode tuning to capture (gain), the engines'

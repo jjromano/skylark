@@ -10,9 +10,10 @@ enum HUDMetrics {
     static func size(for state: HUDState, hovering: Bool) -> CGSize {
         switch state {
         case .idle:
-            return hovering ? CGSize(width: 180, height: 28) : CGSize(width: 64, height: 12)
+            // Idle-ready is a deliberately small, minimal black pill (no dot).
+            return hovering ? CGSize(width: 180, height: 28) : CGSize(width: 40, height: 10)
         case .listening:
-            return CGSize(width: 120, height: 22)
+            return CGSize(width: 120, height: 24)
         case .processing:
             return CGSize(width: 96, height: 20)
         }

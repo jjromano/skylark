@@ -212,7 +212,6 @@ public actor DictationOrchestrator {
 
     private func finishRecording() async {
         guard phase == .recording else { return }
-        stopLevelForwarding()
         stopHandsFree()
 
         // Fn-up → text-inserted is THE latency metric.
@@ -366,7 +365,6 @@ public actor DictationOrchestrator {
 
     private func cancelRecording() {
         guard phase == .recording else { return }
-        stopLevelForwarding()
         stopHandsFree()
         setupTask?.cancel()
         setupTask = nil
@@ -511,19 +509,19 @@ public actor DictationOrchestrator {
 
     // MARK: - Levels
 
+    /// Start the single, long-lived levels consumer. `capture.levels` is an
+    /// `AsyncStream` (single-consumer): re-iterating it per dictation left the
+    /// 2nd+ attempts with no waveform (the fresh iterator received nothing).
+    /// We consume it once for the app's lifetime and gate forwarding by phase in
+    /// `forwardLevel`, so idle levels are simply dropped.
     private func startLevelForwarding() {
-        levelsTask?.cancel()
+        guard levelsTask == nil else { return }
         levelsTask = Task { [capture, weak self] in
             for await level in capture.levels {
                 if Task.isCancelled { break }
                 await self?.forwardLevel(level)
             }
         }
-    }
-
-    private func stopLevelForwarding() {
-        levelsTask?.cancel()
-        levelsTask = nil
     }
 
     private func forwardLevel(_ level: Float) {

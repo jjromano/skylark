@@ -1,73 +1,111 @@
 import SkylarkCore
 import SwiftUI
 
-/// Settings window (phase-5a spec §5): a plain, native `TabView` — General,
-/// Models, Audio, Dictionary, Modes, History, Account. Dictionary/Modes tabs
-/// are omitted (not hidden-and-disabled — just absent) when persistence
-/// couldn't open, matching the same graceful degradation the rest of the app
-/// uses for a missing on-disk database.
+/// Settings window — a sidebar (`NavigationSplitView`) of sections with grouped
+/// "cards" in the detail pane, matching the modern macOS System-Settings look.
+/// Dictionary/Modes are absent (not disabled) when persistence couldn't open,
+/// matching the graceful degradation the rest of the app uses for a missing DB.
 struct SettingsView: View {
     @Bindable var controller: AppController
     let client: OpenRouterClient
+    @State private var selection: Pane? = .general
+
+    enum Pane: String, Hashable, Identifiable, CaseIterable {
+        case general, models, audio, dictionary, modes, history, account
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .general: return "General"
+            case .models: return "Models"
+            case .audio: return "Audio"
+            case .dictionary: return "Dictionary"
+            case .modes: return "Modes"
+            case .history: return "History"
+            case .account: return "Account"
+            }
+        }
+
+        var icon: String {
+            switch self {
+            case .general: return "gearshape"
+            case .models: return "cpu"
+            case .audio: return "waveform"
+            case .dictionary: return "character.book.closed"
+            case .modes: return "switch.2"
+            case .history: return "clock"
+            case .account: return "person.crop.circle"
+            }
+        }
+    }
+
+    private var panes: [Pane] {
+        Pane.allCases.filter { pane in
+            switch pane {
+            case .dictionary: return controller.dictionaryStore != nil
+            case .modes: return controller.modeStore != nil
+            default: return true
+            }
+        }
+    }
 
     var body: some View {
-        TabView {
-            GeneralTab(controller: controller)
-                .tabItem { Label("General", systemImage: "gearshape") }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    ModelsSection(controller: controller)
+        NavigationSplitView {
+            List(selection: $selection) {
+                ForEach(panes) { pane in
+                    Label(pane.title, systemImage: pane.icon).tag(pane)
                 }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(20)
             }
-            .tabItem { Label("Models", systemImage: "cpu") }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    AudioSection(controller: controller)
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(20)
-            }
-            .tabItem { Label("Audio", systemImage: "waveform") }
-
-            if let dictionaryStore = controller.dictionaryStore {
-                ScrollView {
-                    DictionaryView(store: dictionaryStore)
-                        .padding(20)
-                }
-                .tabItem { Label("Dictionary", systemImage: "character.book.closed") }
-            }
-
-            if let modeStore = controller.modeStore {
-                ScrollView {
-                    ModesView(store: modeStore, cleanupModels: controller.cleanupModels)
-                        .padding(20)
-                }
-                .tabItem { Label("Modes", systemImage: "switch.2") }
-            }
-
-            HistorySettingsTab(controller: controller)
-                .tabItem { Label("History", systemImage: "clock") }
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    APIKeyCard(client: client, showRemove: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(20)
-            }
-            .tabItem { Label("Account", systemImage: "person.crop.circle") }
+            .navigationSplitViewColumnWidth(min: 180, ideal: 196, max: 220)
+            .safeAreaInset(edge: .bottom) { sidebarFooter }
+        } detail: {
+            detail(for: selection ?? .general)
+                .navigationTitle((selection ?? .general).title)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: 560, height: 640)
+        .frame(width: 740, height: 560)
+    }
+
+    private var sidebarFooter: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "bird.fill").foregroundStyle(.secondary)
+            Text("Skylark \(Bundle.main.shortVersion)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func detail(for pane: Pane) -> some View {
+        switch pane {
+        case .general:
+            GeneralPane(controller: controller)
+        case .models:
+            ModelsPane(controller: controller)
+        case .audio:
+            AudioPane(controller: controller)
+        case .dictionary:
+            if let store = controller.dictionaryStore {
+                ScrollView { DictionaryView(store: store).padding(20) }
+            }
+        case .modes:
+            if let store = controller.modeStore {
+                ScrollView { ModesView(store: store, cleanupModels: controller.cleanupModels).padding(20) }
+            }
+        case .history:
+            HistoryPane(controller: controller)
+        case .account:
+            AccountPane(client: client)
+        }
     }
 }
 
 // MARK: - General
 
-private struct GeneralTab: View {
+private struct GeneralPane: View {
     @Bindable var controller: AppController
 
     var body: some View {
@@ -88,6 +126,13 @@ private struct GeneralTab: View {
                 ))
             }
 
+            Section("Feedback") {
+                Toggle("Play start/stop sounds", isOn: Binding(
+                    get: { controller.soundEffectsEnabled },
+                    set: { controller.setSoundEffectsEnabled($0) }
+                ))
+            }
+
             Section("Launch") {
                 Toggle("Launch Skylark at login", isOn: Binding(
                     get: { controller.launchAtLoginStatus == .enabled },
@@ -100,14 +145,13 @@ private struct GeneralTab: View {
                 }
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .formStyle(.grouped)
     }
 }
 
 // MARK: - History
 
-private struct HistorySettingsTab: View {
+private struct HistoryPane: View {
     @Bindable var controller: AppController
     @State private var confirmDeleteAudio = false
 
@@ -134,29 +178,30 @@ private struct HistorySettingsTab: View {
                     }
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .formStyle(.grouped)
     }
 }
 
 // MARK: - Models
 
-private struct ModelsSection: View {
+private struct ModelsPane: View {
     @Bindable var controller: AppController
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Models")
-                .font(.headline)
-            ForEach(AppController.ManagedModel.allCases) { model in
-                ModelRow(controller: controller, model: model)
-                if model != AppController.ManagedModel.allCases.last {
-                    Divider()
+        Form {
+            Section {
+                ForEach(AppController.ManagedModel.allCases) { model in
+                    ModelRow(controller: controller, model: model)
                 }
+            } header: {
+                Text("On-device models")
+            } footer: {
+                Text("Downloaded once and stored locally under Application Support/Skylark. Local speech and cleanup run fully offline.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
+        .formStyle(.grouped)
     }
 }
 
@@ -210,7 +255,7 @@ private struct ModelRow: View {
 
 // MARK: - Audio
 
-private struct AudioSection: View {
+private struct AudioPane: View {
     @Bindable var controller: AppController
 
     private var selectedDevice: AudioInputDevice? {
@@ -218,33 +263,46 @@ private struct AudioSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Audio")
-                .font(.headline)
+        Form {
+            Section("Input device") {
+                Picker("Microphone", selection: Binding(
+                    get: { controller.selectedDeviceUID ?? "" },
+                    set: { controller.selectInputDevice($0.isEmpty ? nil : $0) }
+                )) {
+                    Text("System default").tag("")
+                    ForEach(controller.inputDevices) { device in
+                        Text(device.isBluetooth ? "\(device.name) (Bluetooth)" : device.name)
+                            .tag(device.uid)
+                    }
+                }
 
-            Picker("Input device", selection: Binding(
-                get: { controller.selectedDeviceUID ?? "" },
-                set: { controller.selectInputDevice($0.isEmpty ? nil : $0) }
-            )) {
-                Text("System default").tag("")
-                ForEach(controller.inputDevices) { device in
-                    Text(device.isBluetooth ? "\(device.name) (Bluetooth)" : device.name)
-                        .tag(device.uid)
+                if let device = selectedDevice, device.isBluetooth {
+                    Label(
+                        "Bluetooth mics reduce recognition quality (HFP). Consider the built-in mic.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
                 }
             }
-            .pickerStyle(.menu)
-
-            if let device = selectedDevice, device.isBluetooth {
-                Label(
-                    "Bluetooth mics reduce recognition quality (HFP). Consider the built-in mic.",
-                    systemImage: "exclamationmark.triangle"
-                )
-                .font(.caption)
-                .foregroundStyle(.orange)
-            }
         }
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Account
+
+private struct AccountPane: View {
+    let client: OpenRouterClient
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                APIKeyCard(client: client, showRemove: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(20)
+        }
     }
 }
 
@@ -255,5 +313,11 @@ private enum SettingsFormat {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: count)
+    }
+}
+
+private extension Bundle {
+    var shortVersion: String {
+        (infoDictionary?["CFBundleShortVersionString"] as? String) ?? "—"
     }
 }

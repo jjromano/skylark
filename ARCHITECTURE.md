@@ -102,9 +102,12 @@ latency bar is proven.
 
 **Injection strategy (AX-first — deliberate inversion of Hex's order):**
 1. Probe `kAXFocusedUIElement`; if it answers `kAXValue`/`kAXSelectedText`
-   reads, set `kAXSelectedTextAttribute` — clipboard untouched, and we get a
-   real success/failure signal.
-2. On any AX failure: full multi-item `NSPasteboard` snapshot (all types) →
+   reads, set `kAXSelectedTextAttribute` — clipboard untouched. The write is
+   **verified by read-back**: Chrome/Electron/web fields return `.success` on
+   the set yet silently drop it, so we read the inserted range back and only
+   trust the AX path when the text matches (`axInsertLanded`). Unconfirmed
+   inserts fall through to the paste path below.
+2. On any AX failure **or unconfirmed insert**: full multi-item `NSPasteboard` snapshot (all types) →
    write text → poll `changeCount` until committed (5 ms poll, 150 ms cap) →
    synthesized Cmd-V (explicit Cmd down, layout-resolved V, Cmd up, posted to
    `.cghidEventTap`) → 500 ms grace → restore snapshot. If the paste itself

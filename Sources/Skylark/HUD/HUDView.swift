@@ -41,8 +41,12 @@ struct HUDView: View {
         case .idle:
             if model.isHovering {
                 expandedControls
-            } else {
+            } else if model.isPreparing {
+                // Only surfaces while the speech model is still loading; a steady
+                // idle HUD is just the minimal black pill (no dot).
                 statusDot
+            } else {
+                Color.clear
             }
         case .listening:
             listeningContent
@@ -54,17 +58,13 @@ struct HUDView: View {
     // MARK: - Pieces
 
     private var statusDot: some View {
-        // Pulses while the speech model is preparing; steady grey once ready.
+        // Shown only while the speech model is preparing (pulsing orange). Once
+        // ready the idle HUD drops the dot entirely for a minimal black pill.
         Circle()
-            .fill(model.isPreparing ? Color.orange : Color.secondary)
+            .fill(Color.orange)
             .frame(width: 6, height: 6)
-            .opacity(model.isPreparing ? 0.35 : 1)
-            .animation(
-                model.isPreparing
-                    ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
-                    : .default,
-                value: model.isPreparing
-            )
+            .opacity(0.35)
+            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: model.isPreparing)
     }
 
     private var expandedControls: some View {
@@ -112,7 +112,7 @@ struct HUDView: View {
                         .frame(width: 2, height: barHeight(level))
                 }
             }
-            .frame(height: 14)
+            .frame(height: 16)
             .animation(.easeOut(duration: 0.08), value: model.waveform)
         }
         .padding(.horizontal, 10)
@@ -131,11 +131,12 @@ struct HUDView: View {
     }
 
     private func barHeight(_ level: Float) -> CGFloat {
-        // Map RMS (roughly 0…0.3 for speech) into a 3…14 pt bar with a mild
-        // curve so quiet speech is still visible. Clamped to the band height.
-        let minH: CGFloat = 3
-        let maxH: CGFloat = 14
-        let normalized = min(1, CGFloat((level).squareRoot()) * 2.2)
+        // Map RMS (roughly 0…0.3 for speech) into a 2…16 pt bar. A steeper curve
+        // (×3.4 on the sqrt) pushes normal speech well up the band so motion is
+        // clearly visible rather than hugging the baseline. Clamped to the band.
+        let minH: CGFloat = 2
+        let maxH: CGFloat = 16
+        let normalized = min(1, CGFloat(level.squareRoot()) * 3.4)
         return minH + (maxH - minH) * normalized
     }
 }

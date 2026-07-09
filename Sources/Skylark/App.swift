@@ -7,7 +7,7 @@ struct SkylarkApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra("Skylark", systemImage: "mic") {
+        MenuBarExtra("Skylark", systemImage: "bird.fill") {
             MenuContent(controller: appDelegate.controller)
         }
     }
