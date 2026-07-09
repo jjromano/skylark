@@ -423,20 +423,20 @@ final class AppController {
         let isActiveEngine = (model == activeSpeechModel)
         switch prep {
         case .checking:
-            modelStatus = "Preparing \(model.label)…"
+            setModelStatus("Preparing \(model.label)…")
         case let .downloading(progress):
-            modelStatus = "Downloading \(model.label)… \(Int((progress * 100).rounded()))%"
+            setModelStatus("Downloading \(model.label)… \(Int((progress * 100).rounded()))%")
         case .loading:
-            modelStatus = "Loading \(model.label)…"
+            setModelStatus("Loading \(model.label)…")
         case .ready:
             if isActiveEngine {
-                modelStatus = nil
+                setModelStatus(nil)
                 Task { [orchestrator] in await orchestrator.setTranscriberReady(true) }
             } else if modelStatus?.contains(model.label) == true {
-                modelStatus = nil
+                setModelStatus(nil)
             }
         case .failed:
-            modelStatus = "\(model.label) failed to load"
+            setModelStatus("\(model.label) failed to load")
             if isActiveEngine {
                 Task { [orchestrator] in await orchestrator.setTranscriberReady(false) }
             }
@@ -444,6 +444,14 @@ final class AppController {
         if isActiveEngine {
             hud.isPreparing = prep.isPreparing
         }
+    }
+
+    /// Assign `modelStatus` only when the displayed string actually changes.
+    /// The download-progress stream fires many times per second and `@Observable`
+    /// notifies on every set (no equality check), so writing the same string
+    /// repeatedly rebuilds the menu-bar dropdown and makes it visibly flicker.
+    private func setModelStatus(_ new: String?) {
+        if modelStatus != new { modelStatus = new }
     }
 
     /// The model backing the active speech engine (the warm local engine, or the
