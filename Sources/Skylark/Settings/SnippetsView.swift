@@ -103,54 +103,88 @@ struct SnippetsView: View {
     }
 }
 
+/// One saved snippet: a single display line with pencil (edit-in-place) and
+/// trash actions. Editing swaps in two stacked fields + confirm/cancel.
 private struct SnippetRow: View {
     let snippet: SnippetRecord
     var onSave: (String, String) -> Void
     var onDelete: () -> Void
 
+    @State private var isEditing = false
     @State private var trigger = ""
     @State private var replacement = ""
-    @FocusState private var focused: Bool
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
-            TextField("Trigger", text: $trigger)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12, weight: .medium))
-                .frame(width: 160, alignment: .leading)
-                .focused($focused)
-            Image(systemName: "arrow.right")
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-            TextField("Replacement", text: $replacement, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .lineLimit(1...3)
-                .focused($focused)
-            Spacer(minLength: 4)
-            Button {
-                onDelete()
-            } label: {
-                Image(systemName: "trash")
-                    .font(.system(size: 11))
+            if isEditing {
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField("Trigger", text: $trigger)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .onSubmit(commit)
+                    TextField("Replacement", text: $replacement, axis: .vertical)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .lineLimit(1...4)
+                }
+                Button(action: commit) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                .buttonStyle(.plain)
+                .help("Save changes")
+                Button {
+                    isEditing = false
+                } label: {
+                    Image(systemName: "xmark.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel")
+            } else {
+                Text(snippet.trigger)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Text(snippet.replacement)
+                    .font(.system(size: 12))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 4)
+
+                Button {
+                    trigger = snippet.trigger
+                    replacement = snippet.replacement
+                    isEditing = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Edit snippet")
+
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Delete snippet")
             }
-            .buttonStyle(.plain)
-            .help("Delete snippet")
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .onAppear {
-            trigger = snippet.trigger
-            replacement = snippet.replacement
-        }
-        .onChange(of: focused) { _, isFocused in
-            guard !isFocused else { return }
-            let t = trigger.trimmingCharacters(in: .whitespaces)
-            let r = replacement.trimmingCharacters(in: .whitespaces)
-            if !t.isEmpty, !r.isEmpty, t != snippet.trigger || r != snippet.replacement {
-                onSave(t, r)
-            }
-        }
+    }
+
+    private func commit() {
+        let t = trigger.trimmingCharacters(in: .whitespaces)
+        let r = replacement.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty, !r.isEmpty else { return }
+        onSave(t, r)
+        isEditing = false
     }
 }

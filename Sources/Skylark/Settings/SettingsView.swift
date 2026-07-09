@@ -169,18 +169,7 @@ private struct GeneralPane: View {
     var body: some View {
         Form {
             Section {
-                Picker("Keyboard", selection: Binding(
-                    get: { controller.hotkeyKeyboard.rawValue },
-                    set: { raw in
-                        if let binding = HotkeyBinding(rawValue: raw) {
-                            controller.setHotkeyKeyboard(binding)
-                        }
-                    }
-                )) {
-                    ForEach(HotkeyBinding.keyboardOptions, id: \.rawValue) { option in
-                        Text(option.displayName).tag(option.rawValue)
-                    }
-                }
+                ShortcutRecorderRow(controller: controller)
                 Picker("Mouse (optional)", selection: Binding(
                     get: { controller.hotkeyMouse?.rawValue ?? Self.mouseOffTag },
                     set: { raw in

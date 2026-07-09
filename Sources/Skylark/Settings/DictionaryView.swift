@@ -13,23 +13,31 @@ struct DictionaryView: View {
     @State private var newMisspellings = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Dictionary").font(.title2.bold())
-            Text("Add the correct spelling of a word or name so Skylark prefers it during recognition. Optionally list common misspellings (comma-separated) that should be auto-corrected to it.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Dictionary").font(.title3.bold())
+                Text("Add the correct spelling of a word or name so Skylark prefers it during recognition. Optionally list common misspellings (comma-separated) that should be auto-corrected to it.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
 
-            HStack {
-                TextField("Word or phrase", text: $newPhrase)
-                    .textFieldStyle(.roundedBorder)
-                TextField("Common misspellings (comma-separated)", text: $newMisspellings)
-                    .textFieldStyle(.roundedBorder)
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 6) {
+                    TextField("Word or phrase — e.g. Skylark", text: $newPhrase)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Common misspellings (comma-separated) — e.g. sky lark, skylock", text: $newMisspellings)
+                        .textFieldStyle(.roundedBorder)
+                }
                 Button("Add") { add() }
                     .disabled(newPhrase.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
             if entries.isEmpty {
-                Text("No entries yet.").font(.caption).foregroundStyle(.secondary)
+                Text("No entries yet.")
+                    .font(.callout)
+                    .foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 24)
             } else {
                 VStack(spacing: 0) {
                     ForEach(entries) { entry in
@@ -43,8 +51,7 @@ struct DictionaryView: View {
                         }
                     }
                 }
-                .padding(8)
-                .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
+                .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
             }
         }
         .task { await reload() }
@@ -93,52 +100,99 @@ struct DictionaryView: View {
     }
 }
 
+/// One saved entry: a single display line with pencil (edit-in-place) and
+/// trash actions. Editing swaps in two stacked fields + confirm/cancel.
 private struct DictionaryRow: View {
     let entry: DictionaryEntry
     let onUpdate: (String, [String]) -> Void
     let onDelete: () -> Void
 
-    @State private var phrase: String
-    @State private var misspellings: String
-
-    init(entry: DictionaryEntry, onUpdate: @escaping (String, [String]) -> Void, onDelete: @escaping () -> Void) {
-        self.entry = entry
-        self.onUpdate = onUpdate
-        self.onDelete = onDelete
-        _phrase = State(initialValue: entry.phrase)
-        _misspellings = State(initialValue: entry.misspellings.joined(separator: ", "))
-    }
+    @State private var isEditing = false
+    @State private var phrase = ""
+    @State private var misspellings = ""
 
     var body: some View {
-        HStack {
-            TextField("Word or phrase", text: $phrase)
-                .textFieldStyle(.plain)
-                .onSubmit(commit)
-            TextField("Common misspellings", text: $misspellings)
-                .textFieldStyle(.plain)
-                .onSubmit(commit)
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            if isEditing {
+                VStack(alignment: .leading, spacing: 4) {
+                    TextField("Word or phrase", text: $phrase)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .onSubmit(commit)
+                    TextField("Common misspellings (comma-separated)", text: $misspellings)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12))
+                        .onSubmit(commit)
+                }
+                Button(action: commit) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                .buttonStyle(.plain)
+                .help("Save changes")
+                Button {
+                    isEditing = false
+                } label: {
+                    Image(systemName: "xmark.circle")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel")
+            } else {
+                Text(entry.phrase)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                if !entry.misspellings.isEmpty {
+                    Image(systemName: "arrow.left")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                    Text(entry.misspellings.joined(separator: ", "))
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
 
-            Text(entry.source == .manual ? "manual" : "auto")
-                .font(.caption2)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Capsule().fill(.secondary.opacity(0.2)))
+                Spacer(minLength: 4)
 
-            Text(entry.createdAt, style: .date)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                Text(entry.source == .manual ? "manual" : "auto")
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(.secondary.opacity(0.2)))
 
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash")
+                Text(entry.createdAt, style: .date)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    phrase = entry.phrase
+                    misspellings = entry.misspellings.joined(separator: ", ")
+                    isEditing = true
+                } label: {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Edit entry")
+
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Delete entry")
             }
-            .buttonStyle(.borderless)
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private func commit() {
         let trimmedPhrase = phrase.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedPhrase.isEmpty else { return }
         onUpdate(trimmedPhrase, DictionaryView.parseMisspellings(misspellings))
+        isEditing = false
     }
 }

@@ -184,6 +184,22 @@ public final class HotkeyMonitor: @unchecked Sendable {
         reconcileNeedsSyntheticUp(wasPressed: wasPressed, nowPressed: nowPressed)
     }
 
+    /// The four device-independent modifier bits (shift/control/option/command)
+    /// used for exact chord matching. Other flag bits — Fn, numeric-pad and the
+    /// function bit that arrow keys carry — are masked off so they can't defeat
+    /// the comparison.
+    static let chordModifierMask: UInt64 = (1 << 17) | (1 << 18) | (1 << 19) | (1 << 20)
+
+    /// Exact-match test for a chord keyDown: the event's four modifier bits must
+    /// equal the chord's modifier set *exactly* (⌥Space must not fire on
+    /// ⌥⇧Space). Pure so the decision is unit-tested without a live tap.
+    /// `eventFlagsRawValue` is `CGEventFlags.rawValue`.
+    public static func chordModifiersMatch(
+        eventFlagsRawValue: UInt64, chord: ChordModifiers
+    ) -> Bool {
+        (eventFlagsRawValue & chordModifierMask) == chord.cgEventFlagBits
+    }
+
     // MARK: - Binding helpers
 
     /// CGEventFlags mask for a modifier binding; `nil` for non-modifiers.
@@ -193,7 +209,7 @@ public final class HotkeyMonitor: @unchecked Sendable {
         case .rightCommand: return .maskCommand
         case .rightOption: return .maskAlternate
         case .rightControl: return .maskControl
-        case .functionKey, .mouseButton: return nil
+        case .functionKey, .chord, .mouseButton: return nil
         }
     }
 
@@ -238,6 +254,20 @@ public final class HotkeyMonitor: @unchecked Sendable {
                 }
                 return nil  // swallow
             }
+            // Chord trigger: keycode must match AND the four modifier bits must
+            // match exactly. On an exact match, swallow the down (and any
+            // auto-repeat) but only trigger once. A keycode match with the wrong
+            // modifiers (e.g. ⌥⇧Space when bound to ⌥Space) is NOT our trigger —
+            // it falls through and passes through as an ordinary key.
+            if case let .chord(mods, code) = kb, keycode == code,
+               Self.chordModifiersMatch(eventFlagsRawValue: event.flags.rawValue, chord: mods) {
+                let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+                if !isRepeat {
+                    keyboardPressed = true
+                    emit(processor.process(.triggerDown, at: now))
+                }
+                return nil  // swallow (down + auto-repeat)
+            }
             // Skip unknown-keycode keyDowns carrying the fn flag (Fn+media keys).
             if event.flags.contains(.maskSecondaryFn), keycode >= 0x80 {
                 return passthrough
@@ -248,6 +278,15 @@ public final class HotkeyMonitor: @unchecked Sendable {
 
         case .keyUp:
             if kb.isFunctionKey, keycode == kb.keyCode {
+                keyboardPressed = false
+                emit(processor.process(.triggerUp, at: now))
+                return nil  // swallow
+            }
+            // Chord release: the keyUp of the chord's key ends the press even if
+            // the modifier was already released (users often let go of ⌥ before
+            // Space). Only swallow while a chord-press is actually active — a
+            // bare key whose down passed through must keep its keyUp.
+            if kb.isChord, keycode == kb.keyCode, keyboardPressed {
                 keyboardPressed = false
                 emit(processor.process(.triggerUp, at: now))
                 return nil  // swallow
@@ -296,7 +335,9 @@ public final class HotkeyMonitor: @unchecked Sendable {
         let kbNow: Bool
         if kb.isModifier, let mask = flagMask(for: kb) {
             kbNow = CGEventSource.flagsState(.combinedSessionState).contains(mask)
-        } else if kb.isFunctionKey, let code = kb.keyCode {
+        } else if (kb.isFunctionKey || kb.isChord), let code = kb.keyCode {
+            // Chords reconcile on the physical key state only (same as F-keys);
+            // the modifier state is irrelevant to whether the press is still held.
             kbNow = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
         } else {
             kbNow = keyboardPressed

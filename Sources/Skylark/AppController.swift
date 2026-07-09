@@ -53,6 +53,19 @@ final class AppController {
         monitor.setBindings(keyboard: binding, mouse: hotkeyMouse)
     }
 
+    /// Pause the global hotkey tap while the Settings shortcut recorder is
+    /// active — the tap swallows bound keys at the HID level, so the recorder
+    /// could never re-capture the current binding (and a stray press would
+    /// start a dictation mid-recording).
+    func pauseHotkeyMonitoring() {
+        monitor.stop()
+    }
+
+    func resumeHotkeyMonitoring() {
+        monitor.setBindings(keyboard: hotkeyKeyboard, mouse: hotkeyMouse)
+        monitor.start()
+    }
+
     /// nil = no mouse trigger.
     func setHotkeyMouse(_ binding: HotkeyBinding?) {
         hotkeyMouse = binding

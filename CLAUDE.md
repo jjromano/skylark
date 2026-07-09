@@ -40,6 +40,20 @@ in `.claude/agents/` (`opus-implementer` for latency/system-API work,
 `sonnet-implementer` for views/stores/tests/docs). Specs come from the
 orchestrator; implementers report deviations rather than silently redesigning.
 
+## Versioning (v0.1.0 is complete — bump on every change)
+
+Any change that lands on `main` after v0.1.0 and alters app behavior or UI
+MUST, in the same commit or PR:
+
+1. Bump `CFBundleShortVersionString` in `Resources/Info.plist` (MINOR for
+   features, PATCH for fixes/polish) and increment `CFBundleVersion`.
+2. Add a matching entry to `CHANGELOG.md`.
+
+Users update via Settings → Account → Check for Updates (compares the
+build's stamped git commit against GitHub `main`); the version string is the
+human-readable label for what they're getting, so never ship behavior
+changes under an unchanged version.
+
 ## Hard rules
 
 - MIT repo: never copy GPL code (VoiceInk is reference-only). Hex/Handy/

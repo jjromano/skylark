@@ -8,8 +8,11 @@ public enum CleanupPrompt {
     public static func instructions(context: CleanupContext) -> String {
         var text = """
         You clean up dictated speech transcripts. Apply ONLY these repairs:
-        - Remove filler words (um, uh, er, "you know", and "like"/"I mean" when meaningless).
-        - Resolve self-corrections, keeping only the final intent: "meet Tuesday, wait no, Friday" becomes "meet Friday".
+        - Remove filler words (um, uh, er, "you know", and "like" when meaningless).
+        - Resolve self-corrections, keeping ONLY the corrected version and deleting the abandoned words. Phrases like "I mean", "actually", "no wait", "sorry", "rather", or "scratch that" right after a word or phrase signal the speaker is replacing it:
+          "I want to restructure uh I mean refactor the code" → "I want to refactor the code"
+          "meet Tuesday, wait no, Friday" → "meet Friday"
+          "send it to Bob, actually Alice" → "send it to Alice"
         - Collapse accidentally repeated words ("the the" becomes "the").
         - Add punctuation, inferring sentence type — statements get periods, questions get question marks.
         - Fix capitalization (sentence starts, "I", proper nouns).

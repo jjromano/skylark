@@ -103,25 +103,49 @@ struct InsightsView: View {
         }
     }
 
-    /// GitHub-style 12-week activity heatmap from `dailyWords` (last 84 days).
+    /// GitHub-style 12-week activity heatmap from `dailyWords`. Columns are
+    /// calendar weeks (Sunday-first) ending in the current week; rows carry
+    /// S/M/T/W/T/F/S labels. Days after today render empty.
     private func activity(_ stats: StatsSummary) -> some View {
         Card(title: "Last 12 weeks", icon: "calendar") {
+            let calendar = Calendar.current
             let byDay = Dictionary(uniqueKeysWithValues: stats.dailyWords.map {
-                (Calendar.current.startOfDay(for: $0.day), $0.words)
+                (calendar.startOfDay(for: $0.day), $0.words)
             })
             let maxWords = max(1, byDay.values.max() ?? 1)
-            let today = Calendar.current.startOfDay(for: Date())
-            HStack(spacing: 3) {
-                ForEach(0..<12, id: \.self) { week in
-                    VStack(spacing: 3) {
-                        ForEach(0..<7, id: \.self) { day in
-                            let offset = (11 - week) * 7 + (6 - day)
-                            let date = Calendar.current.date(byAdding: .day, value: -offset, to: today)!
-                            let words = byDay[date] ?? 0
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(cellColor(words: words, max: maxWords))
-                                .frame(width: 13, height: 13)
-                                .help(words > 0 ? "\(Format.count(words)) words" : "No dictation")
+            let today = calendar.startOfDay(for: Date())
+            // The Sunday on/before today anchors the rightmost column.
+            let weekday = calendar.component(.weekday, from: today) // 1 = Sunday
+            let currentWeekSunday = calendar.date(byAdding: .day, value: -(weekday - 1), to: today)!
+
+            HStack(alignment: .top, spacing: 6) {
+                VStack(spacing: 3) {
+                    ForEach(Array("SMTWTFS".enumerated()), id: \.offset) { _, letter in
+                        Text(String(letter))
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 10, height: 13)
+                    }
+                }
+                HStack(spacing: 3) {
+                    ForEach(0..<12, id: \.self) { week in
+                        VStack(spacing: 3) {
+                            ForEach(0..<7, id: \.self) { day in
+                                let date = calendar.date(
+                                    byAdding: .day,
+                                    value: -(11 - week) * 7 + day,
+                                    to: currentWeekSunday
+                                )!
+                                if date > today {
+                                    Color.clear.frame(width: 13, height: 13)
+                                } else {
+                                    let words = byDay[date] ?? 0
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(cellColor(words: words, max: maxWords))
+                                        .frame(width: 13, height: 13)
+                                        .help(words > 0 ? "\(Format.count(words)) words" : "No dictation")
+                                }
+                            }
                         }
                     }
                 }
