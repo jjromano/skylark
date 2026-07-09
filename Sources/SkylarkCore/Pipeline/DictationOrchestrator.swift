@@ -327,11 +327,14 @@ public actor DictationOrchestrator {
         } else {
             // Paste target: wait-for-clean before inserting (deliberate PRD
             // deviation; select-back is unsafe here). Race the cleaner against a
-            // 2 s clock; on timeout/failure inject raw.
+            // 2 s clock; on timeout/failure inject raw — and say so.
             let cleaner = cleaners.cleaner(for: effectiveTier)
             let cleaned = await cleanWithTimeout(
                 cleaner, rawText, context: setup.context, cap: waitForCleanTimeout
             )
+            if cleaned == nil {
+                noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
+            }
             if let cleaned, cleaned != rawText { syncCleanText = cleaned }
             await insertRaw(cleaned ?? rawText)
         }
@@ -491,6 +494,9 @@ public actor DictationOrchestrator {
             emitHistoryUpdate(timestamp: historyTimestamp, cleanText: cleaned)
         } catch {
             logger.notice("cleanup replace skipped: \(error.localizedDescription, privacy: .public)")
+            // The cleaned text exists but can't be applied here — say so
+            // instead of silently leaving raw (the user picked a cleanup tier).
+            noteContinuation.yield("This app doesn't support in-place cleanup — raw text kept")
         }
     }
 

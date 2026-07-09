@@ -59,14 +59,23 @@ public final class AudioDeviceManager {
         installListener()
     }
 
-    /// Re-read the input device list.
+    /// Re-read the input device list OFF the main actor: HAL property reads
+    /// block indefinitely when coreaudiod is wedged, and enumeration must
+    /// never take the app's main actor (menu bar, HUD, Settings) down with
+    /// it. `onChange` fires on the main actor once the list lands.
     public func refresh() {
-        devices = Self.inputDevices()
+        Task.detached { [weak self] in
+            let found = Self.inputDevices()
+            await MainActor.run {
+                guard let self else { return }
+                self.devices = found
+                self.onChange?()
+            }
+        }
     }
 
     private func handleDeviceListChanged() {
-        refresh()
-        onChange?()
+        refresh() // onChange fires when the async enumeration completes
     }
 
     private func installListener() {

@@ -92,7 +92,7 @@ struct SettingsView: View {
 
     private var sidebarFooter: some View {
         HStack(spacing: 6) {
-            Image(nsImage: MenuBarIcon.image)
+            Image(systemName: "bird.fill").foregroundStyle(.secondary)
             Text("Skylark \(Bundle.main.shortVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -166,6 +166,13 @@ private struct GeneralPane: View {
     /// Sentinel for the mouse-trigger picker's "None" row (no binding).
     private static let mouseOffTag = "off"
 
+    /// Whether the current configuration routes anything through OpenRouter.
+    private var usesCloud: Bool {
+        if controller.cleanupOverride == "cloud" { return true }
+        if case .cloud = controller.currentSTT { return true }
+        return false
+    }
+
     var body: some View {
         Form {
             Section {
@@ -232,6 +239,14 @@ private struct GeneralPane: View {
                     Text("Raw").tag("raw")
                     Text("Local").tag("local")
                     Text("Cloud").tag("cloud")
+                }
+                if usesCloud, !controller.hasAPIKey {
+                    Label(
+                        "No API key stored — cloud selections fall back to local. Add a key in Account.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
                 }
             }
 
@@ -641,7 +656,9 @@ private struct AccountPane: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                APIKeyCard(client: client, showRemove: true)
+                APIKeyCard(client: client, showRemove: true) {
+                    controller.apiKeyDidChange()
+                }
                 updatesCard
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)

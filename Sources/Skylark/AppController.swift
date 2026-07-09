@@ -351,6 +351,9 @@ final class AppController {
     /// Pauses Music/Spotify around dictations when `pauseMediaEnabled`.
     @ObservationIgnored private let mediaPause = MediaPauseController()
 
+    /// Bridges @Sendable notice callbacks built during init to `showNote`.
+    @ObservationIgnored private let noticeRelay = NoticeRelay()
+
     // Model-preparation states arrive on an arbitrary queue; funnel them through
     // a Sendable stream (tagged with which model) and apply them on the main
     // actor (see start()).
@@ -452,12 +455,21 @@ final class AppController {
             snippetsProvider = nil
         }
 
+        // Degrades (cloud cleanup falling back to local/raw) surface as
+        // menu-bar notes — a tier the user picked failing must never be silent.
+        // The relay exists because `self` can't be captured in an escaping
+        // closure this early in init; `start()` points it back at us.
+        let relay = noticeRelay
+        let cleanupNotice: @Sendable (String) -> Void = { message in
+            Task { @MainActor in relay.post(message) }
+        }
+
         orchestrator = DictationOrchestrator(
             capture: capture,
             transcriber: parakeet,
             injector: injector,
             endpointer: endpointer,
-            cleaners: CleanerRegistry(local: LocalCleaner(), cloudFactory: cloudFactory),
+            cleaners: CleanerRegistry(local: LocalCleaner(), cloudFactory: cloudFactory, notice: cleanupNotice),
             modeProvider: modeProvider,
             dictionary: dictionaryProvider,
             frontmostBundleID: frontmost.snapshot,
@@ -480,6 +492,7 @@ final class AppController {
         guard !started else { return }
         started = true
 
+        noticeRelay.controller = self
         permissions.refresh()
 
         // Restore persisted HUD appearance before the panel first shows.
@@ -547,7 +560,16 @@ final class AppController {
             }
         }
 
-        capture.prepare()
+        // Warm the audio engine OFF the main thread. Binding the input device
+        // (`AVAudioEngine.inputNode`) can stall for seconds — or hang forever
+        // when coreaudiod is wedged — and blocking here keeps
+        // `applicationDidFinishLaunching` from returning, which prevents the
+        // MenuBarExtra scene from ever materializing (no menu-bar icon at all).
+        // First-dictation capture start performs the same setup on demand, so
+        // this stays purely a warm-up.
+        Task.detached(priority: .userInitiated) { [capture] in
+            capture.prepare()
+        }
 
         // Seed model-manager state from disk, then apply persisted whisper mode
         // (gain/floor/VAD/HUD) and the selected input device before first press.
@@ -698,7 +720,7 @@ final class AppController {
         activeLocal == .localWhisper ? .whisper : .parakeet
     }
 
-    private func showNote(_ note: String) {
+    func showNote(_ note: String) {
         statusNote = note
         noteClearTask?.cancel()
         noteClearTask = Task { [weak self] in
@@ -737,9 +759,14 @@ final class AppController {
     }
 
     /// Set from the menu; persists and pushes the tier into mode resolution.
+    /// Choosing Cloud without a stored key warns immediately instead of
+    /// letting every dictation degrade in silence.
     func setCleanupOverride(_ raw: String) {
         UserDefaults.standard.set(raw, forKey: Self.cleanupOverrideKey)
         applyCleanupOverride(raw)
+        if raw == "cloud", !hasAPIKey {
+            showNote("No API key — cloud cleanup will fall back to local. Add one in Settings → Account.")
+        }
     }
 
     private func applyCleanupOverride(_ raw: String) {
@@ -798,27 +825,39 @@ final class AppController {
         case .localWhisper:
             switchLocalEngine(to: .localWhisper)
         case .cloud(let slug):
-            guard KeychainStore().get() != nil else {
-                showNote("No API key — using local engine")
-                switchLocalEngine(to: activeLocal)
-                return
+            // Read the key OFF the main actor: with a self-signed dev build,
+            // `SecItemCopyMatching` can raise a keychain authorization prompt
+            // and block until it's answered — on the main actor at launch that
+            // froze the entire app (no menu-bar icon, no UI) until the dialog
+            // was dismissed.
+            Task.detached { [weak self] in
+                let hasKey = KeychainStore().get() != nil
+                await MainActor.run { self?.finishCloudRebuild(slug: slug, hasKey: hasKey) }
             }
-            let entry = sttModels.first { $0.slug == slug }
-                ?? ModelRegistryEntry(slug: slug, label: slug, providerPin: nil, kind: .stt, sort: 0)
-            let cloud = OpenRouterCloud(client: openRouterClient, entry: entry)
-            let notice: @Sendable (String) -> Void = { [weak self] message in
-                Task { @MainActor in self?.showNote(message) }
-            }
-            // Fallback = whichever local engine is currently active (stays warm).
-            let localFallback: any Transcriber = (activeLocal == .localWhisper) ? whisper : parakeet
-            let idle: any Transcriber = (activeLocal == .localWhisper) ? parakeet : whisper
-            let fallback = FallbackTranscriber(primary: cloud, fallback: localFallback, notice: notice)
-            Task { [orchestrator] in
-                try? await fallback.warmUp()
-                await orchestrator.setTranscriber(fallback)
-                await orchestrator.setTranscriberReady(true)
-                await Self.shutdownEngine(idle) // free the non-fallback local engine
-            }
+        }
+    }
+
+    private func finishCloudRebuild(slug: String, hasKey: Bool) {
+        guard hasKey else {
+            showNote("No API key — using local engine")
+            switchLocalEngine(to: activeLocal)
+            return
+        }
+        let entry = sttModels.first { $0.slug == slug }
+            ?? ModelRegistryEntry(slug: slug, label: slug, providerPin: nil, kind: .stt, sort: 0)
+        let cloud = OpenRouterCloud(client: openRouterClient, entry: entry)
+        let notice: @Sendable (String) -> Void = { [weak self] message in
+            Task { @MainActor in self?.showNote(message) }
+        }
+        // Fallback = whichever local engine is currently active (stays warm).
+        let localFallback: any Transcriber = (activeLocal == .localWhisper) ? whisper : parakeet
+        let idle: any Transcriber = (activeLocal == .localWhisper) ? parakeet : whisper
+        let fallback = FallbackTranscriber(primary: cloud, fallback: localFallback, notice: notice)
+        Task { [orchestrator] in
+            try? await fallback.warmUp()
+            await orchestrator.setTranscriber(fallback)
+            await orchestrator.setTranscriberReady(true)
+            await Self.shutdownEngine(idle) // free the non-fallback local engine
         }
     }
 
@@ -1120,6 +1159,19 @@ final class AppController {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// Whether an OpenRouter key is currently stored (drives cloud warnings).
+    var hasAPIKey: Bool { KeychainStore().exists() }
+
+    /// Called when the stored API key changes (added/replaced/removed). The
+    /// transcriber was built against the OLD key state — a cloud STT selection
+    /// made while keyless silently ran local until now, so rebuild it.
+    func apiKeyDidChange() {
+        rebuildTranscriber()
+        if case .cloud = modelSelection.sttChoice {
+            showNote(hasAPIKey ? "Cloud speech engine active" : "Key removed — using local speech engine")
+        }
+    }
+
     private static func makeWindow(title: String, content: some View, width: CGFloat, height: CGFloat) -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
@@ -1133,4 +1185,12 @@ final class AppController {
         window.center()
         return window
     }
+}
+
+/// Bridges @Sendable notice callbacks created during `AppController.init`
+/// (before `self` is available to capture) back to `showNote`.
+@MainActor
+final class NoticeRelay {
+    weak var controller: AppController?
+    func post(_ message: String) { controller?.showNote(message) }
 }

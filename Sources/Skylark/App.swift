@@ -7,10 +7,12 @@ struct SkylarkApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
+        // The user's preferred mark — the stock SF Symbols bird, rendered by
+        // MenuBarExtra itself so it templates correctly in every menu-bar
+        // appearance. (A custom feather and a custom bird silhouette were both
+        // tried and rejected.)
+        MenuBarExtra("Skylark", systemImage: "bird.fill") {
             MenuContent(controller: appDelegate.controller)
-        } label: {
-            Image(nsImage: MenuBarIcon.image)
         }
     }
 }

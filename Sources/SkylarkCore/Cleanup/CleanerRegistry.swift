@@ -10,17 +10,22 @@ public struct CleanerRegistry: Sendable {
     private let local: (any Cleaner)?
     private let cloud: [String: any Cleaner]
     private let cloudFactory: (@Sendable (String) -> (any Cleaner)?)?
+    /// Surface degrade events to the user (menu-bar note) — a cloud tier
+    /// falling back must never be invisible. Never receives transcript content.
+    private let notice: (@Sendable (String) -> Void)?
 
     public init(
         raw: any Cleaner = RawPassthrough(),
         local: (any Cleaner)? = nil,
         cloud: [String: any Cleaner] = [:],
-        cloudFactory: (@Sendable (String) -> (any Cleaner)?)? = nil
+        cloudFactory: (@Sendable (String) -> (any Cleaner)?)? = nil,
+        notice: (@Sendable (String) -> Void)? = nil
     ) {
         self.raw = raw
         self.local = local
         self.cloud = cloud
         self.cloudFactory = cloudFactory
+        self.notice = notice
     }
 
     /// Returns the cleaner for `tier`, degrading gracefully so a request never
@@ -47,23 +52,40 @@ public struct CleanerRegistry: Sendable {
     private func degrading(_ cloud: any Cleaner) -> any Cleaner {
         var chain: [any Cleaner] = [cloud]
         if let local { chain.append(local) }
-        return DegradingCleaner(tier: cloud.tier, chain: chain)
+        return DegradingCleaner(tier: cloud.tier, chain: chain, notice: notice)
     }
 }
 
 /// Tries each cleaner in order, returning the first usable output; if all throw,
 /// returns the input verbatim (raw). Never throws — the caller keeps raw either
-/// way, and this preserves the "cloud → local → raw" degradation silently.
+/// way — but every degrade is REPORTED via `notice` so the user knows the tier
+/// they picked isn't the one that ran (error reason only, never content).
 struct DegradingCleaner: Cleaner {
     let tier: CleanupTier
     let chain: [any Cleaner]
+    var notice: (@Sendable (String) -> Void)?
 
     func clean(_ transcript: String, context: CleanupContext) async throws -> String {
-        for cleaner in chain {
-            if let output = try? await cleaner.clean(transcript, context: context) {
+        var firstError: (any Error)?
+        for (index, cleaner) in chain.enumerated() {
+            do {
+                let output = try await cleaner.clean(transcript, context: context)
+                if index > 0 {
+                    notice?("Cloud cleanup failed — used local instead (\(Self.reason(firstError)))")
+                }
                 return output
+            } catch {
+                if firstError == nil { firstError = error }
             }
         }
+        notice?("Cleanup unavailable — kept raw text (\(Self.reason(firstError)))")
         return transcript
+    }
+
+    /// Short human-readable failure reason; never transcript content.
+    private static func reason(_ error: (any Error)?) -> String {
+        guard let error else { return "unknown error" }
+        let text = error.localizedDescription
+        return text.count > 80 ? String(text.prefix(77)) + "…" : text
     }
 }

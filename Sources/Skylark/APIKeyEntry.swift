@@ -8,6 +8,10 @@ import SwiftUI
 struct APIKeyCard: View {
     let client: OpenRouterClient
     var showRemove: Bool = false
+    /// Fired after the stored key changes (saved or removed) so the app can
+    /// rebuild anything that was configured for cloud but degraded while no
+    /// key existed (e.g. the speech engine).
+    var onKeyChange: (() -> Void)?
 
     @State private var key = ""
     @State private var status: String?
@@ -94,6 +98,7 @@ struct APIKeyCard: View {
             key = "" // never keep the key in view state
             isReplacing = false
             refreshStored()
+            onKeyChange?()
         }
     }
 
@@ -104,6 +109,7 @@ struct APIKeyCard: View {
         key = ""
         isReplacing = false
         refreshStored()
+        onKeyChange?()
     }
 
     private static func describe(_ info: KeyInfo) -> String {

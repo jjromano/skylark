@@ -206,9 +206,13 @@ public final class TextInjector: TextInjecting {
         Self.focusedInPlaceElement() != nil
     }
 
-    /// The focused element only if it supports the parameterized range read that
-    /// verify/replace require (`kAXStringForRange`). This distinguishes native
-    /// text views (which do) from web/Electron fields (which don't).
+    /// The focused element only if it supports BOTH the parameterized range read
+    /// that verify/replace require (`kAXStringForRange`) AND writable selection
+    /// attributes. Readability alone is not enough: Terminal exposes its text
+    /// for reading but rejects AX writes, so an insert there lands via the
+    /// paste fallback and the later in-place replace is impossible — the
+    /// orchestrator must treat such targets as paste targets (wait-for-clean)
+    /// or the cleaned text is silently dropped.
     static func focusedInPlaceElement() -> AXUIElement? {
         guard let focused = focusedEditableElement() else { return nil }
         var namesRef: CFArray?
@@ -218,6 +222,11 @@ public final class TextInjector: TextInjecting {
         else {
             return nil
         }
+        var selectedTextSettable = DarwinBoolean(false)
+        var rangeSettable = DarwinBoolean(false)
+        AXUIElementIsAttributeSettable(focused, kAXSelectedTextAttribute as CFString, &selectedTextSettable)
+        AXUIElementIsAttributeSettable(focused, kAXSelectedTextRangeAttribute as CFString, &rangeSettable)
+        guard selectedTextSettable.boolValue, rangeSettable.boolValue else { return nil }
         return focused
     }
 
