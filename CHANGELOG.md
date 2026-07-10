@@ -6,6 +6,13 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.2.0 — 2026-07-09
+
+- Cleanup now formats explicitly dictated structure: spoken enumerations
+  ("one, bananas. Two, apples…") become numbered/bulleted lists on separate
+  lines, and "new line" / "new paragraph" work as layout commands. Numbers
+  inside ordinary sentences are left alone.
+
 ## 0.1.0 — 2026-07-09
 
 First complete release.
