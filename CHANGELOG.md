@@ -6,6 +6,20 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.2.1 — 2026-07-11
+
+- Cleanup faithfulness: the transcript is now fenced and the model is told it
+  is data, never instructions — so a dictated command ("please rewrite this…")
+  is cleaned verbatim instead of being answered. Shared output hygiene (local +
+  cloud) now rejects chatbot meta-commentary ("Sure, here's the cleaned
+  version:", "should be rewritten as…") and, critically, refuses any cleanup
+  that drops a negation present in the raw text ("I can't see" never becomes
+  "I can see"); rejected output falls back to the faithful raw transcript.
+- History window opens correctly: it's now resizable and always shows the list
+  and detail panes instead of collapsing to just the search box. Selecting a
+  different entry now also refreshes the editable "Final text" field, which
+  previously stayed stuck on the first entry viewed.
+
 ## 0.2.0 — 2026-07-09
 
 - Cleanup now formats explicitly dictated structure: spoken enumerations

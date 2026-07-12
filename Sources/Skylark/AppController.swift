@@ -1175,7 +1175,7 @@ final class AppController {
     private static func makeWindow(title: String, content: some View, width: CGFloat, height: CGFloat) -> NSWindow {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )

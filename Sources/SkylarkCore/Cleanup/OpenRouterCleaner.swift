@@ -47,21 +47,9 @@ public struct OpenRouterCleaner: Cleaner {
             throw CleanerError.unavailable(reason: "OpenRouter cleanup request failed")
         }
 
-        return try Self.hygiene(output: output, inputLength: transcript.count)
-    }
-
-    /// Same output hygiene as `LocalCleaner`: trim whitespace, strip a single
-    /// pair of wrapping quotes if the model added them, and reject empty or
-    /// wildly-inflated output (caller keeps the raw text either way).
-    private static func hygiene(output: String, inputLength: Int) throws -> String {
-        var trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.count >= 2, trimmed.hasPrefix("\""), trimmed.hasSuffix("\"") {
-            trimmed = String(trimmed.dropFirst().dropLast())
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        guard !trimmed.isEmpty, trimmed.count <= inputLength * 3 else {
-            throw CleanerError.unusableOutput
-        }
-        return trimmed
+        // Shared hygiene with LocalCleaner: trim/unquote, and reject empty,
+        // runaway, meta-commentary, or negation-dropping output so the caller
+        // keeps the raw transcript.
+        return try CleanupHygiene.validate(output, transcript: transcript)
     }
 }

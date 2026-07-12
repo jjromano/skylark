@@ -77,14 +77,11 @@ public struct LocalCleaner: Cleaner {
         )
 
         // Prewarm the next session off the paste path (this whole call already
-        // runs detached from the HUD state), then apply output hygiene.
+        // runs detached from the HUD state), then apply the shared output
+        // hygiene (empty/runaway/meta-commentary/negation-drop → keep raw).
         await backend.prewarm(instructions: instructions)
 
-        let cleaned = Self.sanitize(raw)
-        guard !cleaned.isEmpty, cleaned.count <= transcript.count * 3 else {
-            throw CleanerError.unusableOutput
-        }
-        return cleaned
+        return try CleanupHygiene.validate(raw, transcript: transcript)
     }
 
     // MARK: - Pure helpers (unit-tested)
@@ -98,20 +95,11 @@ public struct LocalCleaner: Cleaner {
         min(responseTokenCap, max(responseTokenFloor, transcriptTokens * 2))
     }
 
-    /// Trim surrounding whitespace and a single layer of wrapping quotes the
-    /// model sometimes adds.
+    /// Trim surrounding whitespace and a single layer of wrapping quotes.
+    /// Delegates to the shared `CleanupHygiene` so local and cloud tiers share
+    /// one implementation.
     public static func sanitize(_ output: String) -> String {
-        let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        return stripSurroundingQuotes(trimmed).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func stripSurroundingQuotes(_ s: String) -> String {
-        guard let first = s.first, let last = s.last, s.count >= 2 else { return s }
-        let quotePairs: [(Character, Character)] = [("\"", "\""), ("'", "'"), ("\u{201C}", "\u{201D}"), ("\u{2018}", "\u{2019}")]
-        for (open, close) in quotePairs where first == open && last == close {
-            return String(s.dropFirst().dropLast())
-        }
-        return s
+        CleanupHygiene.sanitize(output)
     }
 }
 

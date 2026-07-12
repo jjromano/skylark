@@ -18,13 +18,17 @@ struct HistoryView: View {
     @State private var modeNames: [String: String] = [:]
     @State private var selectedID: Int64?
     @State private var confirmClearAll = false
+    // Pin both columns visible: a plain NavigationSplitView can initialize
+    // collapsed to just the sidebar (the .searchable field), which read as a
+    // window "stuck" at a search box with no list or detail.
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     private var selected: HistoryRecord? {
         records.first { $0.id == selectedID }
     }
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             List(records, selection: $selectedID) { record in
                 HistoryRow(record: record)
             }
@@ -65,10 +69,18 @@ struct HistoryView: View {
                         selectedID = nil
                     }
                 )
+                // Parent-applied identity: forces the detail view (and its
+                // @State editedText seed) to re-initialize when the selected
+                // record changes. Applying .id INSIDE the detail view only
+                // resets its body subtree, leaving editedText stuck on the
+                // first-viewed record.
+                .id(selected.id)
             } else {
                 ContentUnavailableView("No entry selected", systemImage: "clock")
             }
         }
+        .navigationSplitViewStyle(.balanced)
+        .frame(minWidth: 640, minHeight: 420)
         .task { await loadModeNames() }
         .task(id: query) { await reload() }
     }
@@ -231,7 +243,6 @@ private struct HistoryDetailView: View {
             Button("Delete", role: .destructive) { Task { await onDelete() } }
             Button("Cancel", role: .cancel) {}
         }
-        .id(record.id)
     }
 
     private var metadataGrid: some View {

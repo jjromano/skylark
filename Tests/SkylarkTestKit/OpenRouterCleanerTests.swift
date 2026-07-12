@@ -74,6 +74,60 @@ struct OpenRouterCleanerTests {
         }
     }
 
+    @Test("Meta-commentary (chatbot reply) is rejected, keeping raw")
+    func metaCommentaryRejected() async throws {
+        try await withCompletionContent("Sure! Here's the cleaned version: Hello there.") { cleaner in
+            await #expect(throws: CleanerError.self) {
+                _ = try await cleaner.clean("hello there", context: CleanupContext())
+            }
+        }
+        try await withCompletionContent("This should be rewritten as: Hello there.") { cleaner in
+            await #expect(throws: CleanerError.self) {
+                _ = try await cleaner.clean("hello there", context: CleanupContext())
+            }
+        }
+    }
+
+    @Test("An executed imperative (model obeyed the transcript) is rejected")
+    func executedImperativeRejected() async throws {
+        // Transcript reads like a command; a model that OBEYS returns a reply,
+        // not the cleaned transcript. Hygiene catches the leading tell.
+        try await withCompletionContent("Here is a shorter version of the paragraph you asked for.") { cleaner in
+            await #expect(throws: CleanerError.self) {
+                _ = try await cleaner.clean("please rewrite this paragraph to be shorter", context: CleanupContext())
+            }
+        }
+    }
+
+    @Test("Dropping a negation present in raw is rejected (meaning inversion)")
+    func negationDropRejected() async throws {
+        try await withCompletionContent("I can see anything besides a little search box.") { cleaner in
+            await #expect(throws: CleanerError.self) {
+                _ = try await cleaner.clean("i can't see anything besides a little search box", context: CleanupContext())
+            }
+        }
+    }
+
+    @Test("A faithful negation-preserving clean passes")
+    func negationPreservedPasses() async throws {
+        try await withCompletionContent("I can't see anything besides a little search box.") { cleaner in
+            let out = try await cleaner.clean("i can't see anything besides a little search box", context: CleanupContext())
+            #expect(out == "I can't see anything besides a little search box.")
+        }
+    }
+
+    @Test("A legitimately-spoken \"here is a list\" is NOT treated as meta-commentary")
+    func spokenHereIsListPasses() async throws {
+        let cleaned = "Here is a list of three items:\n1. Bananas\n2. Apples\n3. Lemons"
+        try await withCompletionContent(cleaned) { cleaner in
+            let out = try await cleaner.clean(
+                "here is a list of three items one bananas two apples three lemons",
+                context: CleanupContext()
+            )
+            #expect(out == cleaned)
+        }
+    }
+
     @Test("No API key surfaces unavailable, not a raw network error")
     func noKeySurfacesUnavailable() async throws {
         // No stub needed — the client short-circuits on a missing key before
