@@ -184,6 +184,49 @@ struct OpenRouterClientTests {
         }
     }
 
+    // MARK: - Reasoning effort (gpt-oss)
+
+    @Test("complete() sends reasoning: {effort: low} for gpt-oss model slugs")
+    func completeGptOssReasoningEffort() async throws {
+        try await withStubbedClient({ _ in
+            .init(status: 200, headers: [:], body: Data("data: [DONE]\n".utf8))
+        }) { client, host in
+            _ = try await client.complete(
+                messages: [ChatMessage(role: .user, content: "hi")],
+                model: "openai/gpt-oss-20b",
+                providerPin: "groq",
+                stream: true,
+                temperature: nil,
+                maxTokens: nil
+            )
+
+            let bodyData = try #require(OpenRouterStubURLProtocol.lastRequestBody(host: host))
+            let json = try #require(try JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+            let reasoning = try #require(json["reasoning"] as? [String: Any])
+            #expect(reasoning["effort"] as? String == "low")
+        }
+    }
+
+    @Test("complete() omits reasoning field for non-gpt-oss model slugs")
+    func completeNonGptOssOmitsReasoningEffort() async throws {
+        try await withStubbedClient({ _ in
+            .init(status: 200, headers: [:], body: Data("data: [DONE]\n".utf8))
+        }) { client, host in
+            _ = try await client.complete(
+                messages: [ChatMessage(role: .user, content: "hi")],
+                model: "meta-llama/llama-3.1-8b-instruct",
+                providerPin: "groq",
+                stream: true,
+                temperature: nil,
+                maxTokens: nil
+            )
+
+            let bodyData = try #require(OpenRouterStubURLProtocol.lastRequestBody(host: host))
+            let json = try #require(try JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
+            #expect(json["reasoning"] == nil)
+        }
+    }
+
     // MARK: - SSE streaming
 
     @Test("complete() streaming parses chunks, ignores keep-alive comments, and stops at [DONE]")

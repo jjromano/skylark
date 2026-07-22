@@ -47,7 +47,7 @@ public enum STTChoice: Sendable, Equatable, Hashable {
 @MainActor
 @Observable
 public final class ModelSelection {
-    public static let defaultCleanupSlug = "meta-llama/llama-3.1-8b-instruct"
+    public static let defaultCleanupSlug = "openai/gpt-oss-20b"
 
     private enum Key {
         static let cleanupSlug = "modelSelection.cleanupSlug"

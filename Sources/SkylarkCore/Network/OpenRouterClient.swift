@@ -123,6 +123,12 @@ public struct OpenRouterClient: Sendable {
         if let maxTokens {
             body["max_tokens"] = maxTokens
         }
+        if model.hasPrefix("openai/gpt-oss") {
+            // gpt-oss models are reasoning models; default effort inflates
+            // time-to-first-answer-token ~5x (4.88s vs 0.85s measured on Groq
+            // gpt-oss-120b). Force low effort for latency.
+            body["reasoning"] = ["effort": "low"]
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         if stream {

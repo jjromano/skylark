@@ -10,10 +10,10 @@ struct ModelSelectionTests {
         return UserDefaults(suiteName: suite)!
     }
 
-    @Test("Defaults: llama-3.1-8b cleanup slug + local Parakeet STT")
+    @Test("Defaults: gpt-oss-20b cleanup slug + local Parakeet STT")
     func defaults() {
         let selection = ModelSelection(defaults: freshDefaults())
-        #expect(selection.cleanupSlug == "meta-llama/llama-3.1-8b-instruct")
+        #expect(selection.cleanupSlug == "openai/gpt-oss-20b")
         #expect(selection.sttChoice == .localParakeet)
     }
 

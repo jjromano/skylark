@@ -6,6 +6,15 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.3.1 — 2026-07-22
+
+- Faster cloud cleanup with GPT-OSS models: requests now ask for low
+  reasoning effort, cutting several seconds of hidden "thinking" before the
+  cleaned text starts streaming.
+- New installs default to **GPT-OSS 20B (Groq)** for cloud cleanup (Groq
+  retires the previous Llama default on 2026-08-16). Existing selections are
+  unchanged.
+
 ## 0.3.0 — 2026-07-22
 
 - New cloud STT choices in the model registry: **Deepgram Nova-3**
