@@ -109,6 +109,19 @@ final class AppController {
         UserDefaults.standard.set(on, forKey: Self.dictionaryAutoLearnKey)
     }
 
+    /// Learn words from in-place corrections after a dictation (Settings →
+    /// Dictionary). Off by default — watching a field via Accessibility is
+    /// opt-in. `nonisolated` so the orchestrator settle handler can read it off
+    /// the main actor without hopping.
+    nonisolated static let learnFromCorrectionsKey = "dictionary.learnFromCorrections"
+    var learnFromCorrectionsEnabled: Bool {
+        UserDefaults.standard.bool(forKey: Self.learnFromCorrectionsKey)
+    }
+
+    func setLearnFromCorrections(_ on: Bool) {
+        UserDefaults.standard.set(on, forKey: Self.learnFromCorrectionsKey)
+    }
+
     // MARK: - HUD appearance (Settings → General)
 
     static let hudStyleKey = "hud.style"
@@ -368,6 +381,12 @@ final class AppController {
 
     /// Pauses Music/Spotify around dictations when `pauseMediaEnabled`.
     @ObservationIgnored private let mediaPause = MediaPauseController()
+
+    /// Correction auto-learn (opt-in). The reader re-reads AX-inserted fields;
+    /// the watcher (built in `start()`, needs `self`) runs the bounded poll +
+    /// filter. nil until `start()` when persistence is available.
+    @ObservationIgnored private let correctionReader = AXCorrectionFieldReader()
+    @ObservationIgnored private var correctionWatcher: CorrectionWatcher?
 
     /// Bridges @Sendable notice callbacks built during init to `showNote`.
     @ObservationIgnored private let noticeRelay = NoticeRelay()
@@ -632,6 +651,12 @@ final class AppController {
         pruneHistory()
         refreshStats()
 
+        // Build the correction auto-learn watcher (needs a dictionary store) and
+        // wire the orchestrator's AX-settle signal to it. The toggle is checked
+        // per-utterance in `handleCorrectionSettled`, so this is safe to wire
+        // unconditionally.
+        setUpCorrectionLearning()
+
         // The monitor self-gates on Accessibility, so starting it is always safe.
         // Bindings are applied first so a non-default hotkey works from launch.
         monitor.setBindings(keyboard: hotkeyKeyboard, mouse: hotkeyMouse)
@@ -769,6 +794,44 @@ final class AppController {
             try? await Task.sleep(for: .seconds(4))
             if !Task.isCancelled { self?.statusNote = nil }
         }
+    }
+
+    // MARK: - Correction auto-learn (Settings → Dictionary)
+
+    /// Build the bounded correction watcher and route the orchestrator's
+    /// AX-settle signal to it. Requires a dictionary store; without one the
+    /// feature stays dark (nothing to learn into).
+    private func setUpCorrectionLearning() {
+        guard let dictionaryStore else { return }
+        let checker = SystemCommonWordChecker()
+        correctionWatcher = CorrectionWatcher(
+            reader: correctionReader,
+            dictionary: dictionaryStore,
+            isCommonWord: { checker.isCommonWord($0) },
+            learn: { [weak self] entry in
+                // Upsert off the main actor, then surface a transient note.
+                _ = try? await self?.dictionaryStore?.upsert(entry)
+                await MainActor.run { self?.showNote("Learned “\(entry.phrase)” from your correction") }
+            }
+        )
+        Task { [orchestrator, weak self] in
+            await orchestrator.setCorrectionSettled { token, finalText in
+                Task { @MainActor in self?.handleCorrectionSettled(token: token, finalText: finalText) }
+            }
+        }
+    }
+
+    /// An AX insertion settled. If auto-learn is on and the target is watchable
+    /// (still focused, not secure, not a password manager), start the bounded
+    /// watcher. All the AX work happens here on the main actor, off the paste
+    /// path (this runs after the pipeline finished the utterance).
+    private func handleCorrectionSettled(token: InsertionToken, finalText: String) {
+        guard learnFromCorrectionsEnabled else { return }
+        let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        guard let watch = correctionReader.makeWatch(token: token, finalText: finalText, bundleID: bundleID) else {
+            return
+        }
+        correctionWatcher?.start(watch)
     }
 
     // MARK: - HUD-driven actions

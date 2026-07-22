@@ -115,7 +115,16 @@ struct SettingsView: View {
             AudioPane(controller: controller)
         case .dictionary:
             if let store = controller.dictionaryStore {
-                ScrollView { DictionaryView(store: store).padding(20) }
+                ScrollView {
+                    DictionaryView(
+                        store: store,
+                        learnFromCorrections: Binding(
+                            get: { controller.learnFromCorrectionsEnabled },
+                            set: { controller.setLearnFromCorrections($0) }
+                        )
+                    )
+                    .padding(20)
+                }
             }
         case .snippets:
             if let store = controller.snippetStore {

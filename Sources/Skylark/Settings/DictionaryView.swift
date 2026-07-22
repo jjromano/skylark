@@ -7,6 +7,9 @@ import SwiftUI
 /// orphan the old row.
 struct DictionaryView: View {
     let store: DictionaryStore
+    /// Opt-in for learning words from in-place corrections (nil hides the toggle,
+    /// e.g. in previews). Wired to `AppController.learnFromCorrectionsEnabled`.
+    var learnFromCorrections: Binding<Bool>? = nil
 
     @State private var entries: [DictionaryEntry] = []
     @State private var newPhrase = ""
@@ -19,6 +22,18 @@ struct DictionaryView: View {
                 Text("Add the correct spelling of a word or name so Skylark prefers it during recognition. Optionally list common misspellings (comma-separated) that should be auto-corrected to it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+            }
+
+            if let learnFromCorrections {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Learn words from your corrections", isOn: learnFromCorrections)
+                    Text("After a dictation, if you fix a word Skylark misheard, the correction is added here automatically. Watching happens on-device via Accessibility and nothing but the corrected word is stored.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
             }
 
             HStack(alignment: .top, spacing: 8) {
@@ -154,11 +169,24 @@ private struct DictionaryRow: View {
 
                 Spacer(minLength: 4)
 
-                Text(entry.source == .manual ? "manual" : "auto")
+                if entry.source == .autoCorrection {
+                    HStack(spacing: 3) {
+                        Image(systemName: "sparkles").font(.system(size: 8))
+                        Text("Auto")
+                    }
                     .font(.caption2)
+                    .foregroundStyle(.tint)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(Capsule().fill(.secondary.opacity(0.2)))
+                    .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                    .help("Learned automatically from a correction you made")
+                } else {
+                    Text("manual")
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(.secondary.opacity(0.2)))
+                }
 
                 Text(entry.createdAt, style: .date)
                     .font(.caption2)

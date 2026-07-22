@@ -46,6 +46,13 @@ public actor DictationOrchestrator {
     /// and a Return keystroke is synthesized after the text lands.
     private var pressEnterEnabled = false
 
+    /// Fired when an utterance settles into an AX-verified field (raw stands, or
+    /// cleanup replaced it): `(token, finalText)` where `finalText` is what now
+    /// sits on screen. The app layer starts the bounded correction watcher off
+    /// this signal (opt-in auto-learn). nil = feature not wired. Never called for
+    /// paste-fallback insertions (no AX signal to re-read).
+    private var correctionSettled: (@Sendable (InsertionToken, String) -> Void)?
+
     /// Resolved once per session at fn-down, consumed at paste time.
     private var sessionSetup: SessionSetup?
     private var setupTask: Task<SessionSetup, Never>?
@@ -149,6 +156,20 @@ public actor DictationOrchestrator {
     /// Toggle the spoken "press enter" command (Settings → General).
     public func setPressEnterEnabled(_ enabled: Bool) {
         pressEnterEnabled = enabled
+    }
+
+    /// Wire (or clear) the AX-settle signal that drives correction auto-learn.
+    /// Set once by the app layer after launch; nil in tests/headless callers.
+    public func setCorrectionSettled(_ handler: (@Sendable (InsertionToken, String) -> Void)?) {
+        correctionSettled = handler
+    }
+
+    /// Notify the app layer that an AX insertion settled, so it can start the
+    /// bounded correction watcher. Paste tokens carry no AX re-read signal and
+    /// are ignored. Cheap and non-blocking (the handler just schedules work).
+    private func fireCorrectionSettled(_ token: InsertionToken, finalText: String) {
+        guard let correctionSettled, case .ax = token.method else { return }
+        correctionSettled(token, finalText)
     }
 
     /// Consume hotkey events until the stream ends.
@@ -293,6 +314,13 @@ public actor DictationOrchestrator {
         // Which cleanup engine produced the final text ("raw"/"local"/slug/
         // "snippet"); nil on the AX path until the detached replace lands.
         var syncCleanupEngine: String?
+        // If a synchronous insertion landed in an AX-verified field, remember it
+        // so the correction watcher can start after the latency measurement (off
+        // the paste path). The async AX-cleanup path fires its own settle signal
+        // from `runCleanupAndReplace`. Snippets (verbatim expansions) aren't
+        // watched — a user edit there isn't a dictation correction.
+        var settledToken: InsertionToken?
+        var settledFinalText: String?
 
         if let snippetReplacement {
             syncCleanText = snippetReplacement
@@ -304,7 +332,10 @@ public actor DictationOrchestrator {
         } else if effectiveTier == .raw {
             // Tier 0: raw stands, no cleanup stage.
             syncCleanupEngine = "raw"
-            await insertRaw(rawText)
+            if let token = await insertRaw(rawText) {
+                settledToken = token
+                settledFinalText = token.text
+            }
         } else if pressEnter {
             // Return must land after the FINAL text: the detached AX replace
             // would race the keystroke (a chat message would send, then get
@@ -317,7 +348,11 @@ public actor DictationOrchestrator {
                 syncCleanupEngine = outcome.engine
                 if outcome.text != rawText { syncCleanText = outcome.text }
             }
-            await insertRaw(outcome?.text ?? rawText)
+            let final = outcome?.text ?? rawText
+            if let token = await insertRaw(final) {
+                settledToken = token
+                settledFinalText = token.text
+            }
         } else if let token = await insertDirectRaw(rawText) {
             // The AX write landed VERIFIED — raw is on screen (latency bar);
             // replace with cleaned text after cleanup, detached from the HUD
@@ -347,7 +382,11 @@ public actor DictationOrchestrator {
             } else {
                 noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
             }
-            await insertRaw(outcome?.text ?? rawText)
+            let final = outcome?.text ?? rawText
+            if let token = await insertRaw(final) {
+                settledToken = token
+                settledFinalText = token.text
+            }
         }
 
         if pressEnter {
@@ -375,6 +414,13 @@ public actor DictationOrchestrator {
                 latencyMs: summary.totalMs,
                 clip: clip
             )
+        }
+
+        // Off the latency path now: let the app layer start the correction
+        // watcher for a synchronous AX-verified insertion. No-op unless the
+        // feature is wired and the insertion landed via AX.
+        if let settledToken, let settledFinalText {
+            fireCorrectionSettled(settledToken, finalText: settledFinalText)
         }
 
         phase = .idle
@@ -513,18 +559,29 @@ public actor DictationOrchestrator {
         historyTimestamp: Date
     ) async {
         guard let outcome = await cleanWithTimeout(cleaner, rawText, context: context, cap: replaceTimeout) else {
+            // Timeout/failure: raw stands on screen — watch that.
+            fireCorrectionSettled(token, finalText: token.text)
             return
         }
-        guard outcome.text != rawText else { return }
+        guard outcome.text != rawText else {
+            // Cleanup was a no-op: raw stands on screen — watch that.
+            fireCorrectionSettled(token, finalText: token.text)
+            return
+        }
         do {
             try await injector.replace(token, with: outcome.text)
             // Replace succeeded — record the clean text against this dictation.
             emitHistoryUpdate(timestamp: historyTimestamp, cleanText: outcome.text, cleanupEngine: outcome.engine)
+            // The cleaned text (with the same leading separator the replace
+            // re-applied) is what now sits on screen — watch that.
+            fireCorrectionSettled(token, finalText: token.leadingSeparator + outcome.text)
         } catch {
             logger.notice("cleanup replace skipped: \(error.localizedDescription, privacy: .public)")
             // The cleaned text exists but can't be applied here — say so
             // instead of silently leaving raw (the user picked a cleanup tier).
             noteContinuation.yield("This app doesn't support in-place cleanup — raw text kept")
+            // Raw still stands on screen — watch that.
+            fireCorrectionSettled(token, finalText: token.text)
         }
     }
 

@@ -6,6 +6,17 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.6.0 — 2026-07-22
+
+- New (opt-in, off by default): **learn words from your corrections**. When
+  enabled in Settings → Dictionary, if you fix a word Skylark misheard right
+  after a dictation (in the field it typed into), the correction is added to
+  your dictionary automatically — with a transient menu-bar note and an
+  "Auto" badge on learned entries. Entirely on-device: Skylark re-checks the
+  field it wrote into twice within ~25 seconds via Accessibility, learns at
+  most two distinctive words per dictation, never watches password fields or
+  password managers, and stores nothing but the corrected word pair.
+
 ## 0.5.0 — 2026-07-22
 
 - New local speech engine: **Apple Speech (macOS)** — Apple's on-device
