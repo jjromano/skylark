@@ -26,6 +26,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         controller.start()
     }
+
+    /// `skylark://` deep links (registered via `CFBundleURLTypes`), delivered
+    /// here whether the app is already running or just launched by the URL.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            controller.handleDeepLink(url)
+        }
+    }
 }
 
 /// The menu-bar dropdown.

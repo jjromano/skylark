@@ -29,6 +29,19 @@ private struct ThrowingTranscriber: Transcriber {
     }
 }
 
+/// Records whether/how many times it was asked to transcribe — used to prove
+/// the silent-clip short-circuit never reaches the transcriber.
+private actor CountingTranscriber: Transcriber {
+    nonisolated let id: TranscriberID = .stub
+    private(set) var callCount = 0
+    func warmUp() async throws {}
+    func transcribe(_ clip: AudioClip, hint: TranscriptionHint) async throws -> String {
+        callCount += 1
+        return StubTranscriber.output
+    }
+    func timesCalled() -> Int { callCount }
+}
+
 private actor SpyInjector: TextInjecting {
     private(set) var inserted: [String] = []
     private(set) var replaced: [String] = []
@@ -168,6 +181,60 @@ struct DictationOrchestratorTests {
         await orchestrator.handle(.stopRecording)
         await #expect(orchestrator.phase == .idle)
         await #expect(spy.count() == 0)
+    }
+
+    // MARK: - Silent-clip detection (push-to-talk only)
+
+    private func silentClip(duration: TimeInterval = 0.5, sampleRate: Double = 16_000) -> AudioClip {
+        AudioClip(samples: [Float](repeating: 0, count: Int(duration * sampleRate)), sampleRate: sampleRate, duration: duration)
+    }
+
+    @Test("Silent push-to-talk clip skips transcription and insertion entirely")
+    func silentClipSkipsInsert() async {
+        let spy = SpyInjector()
+        let transcriber = CountingTranscriber()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: silentClip()),
+            transcriber: transcriber,
+            injector: spy
+        )
+        await orchestrator.handle(.startRecording) // push-to-talk: no engageHandsFree
+        await orchestrator.handle(.stopRecording)
+        await #expect(orchestrator.phase == .idle)
+        await #expect(spy.count() == 0)
+        await #expect(transcriber.timesCalled() == 0)
+    }
+
+    @Test("Silent push-to-talk clip surfaces a 'No speech detected' status note")
+    func silentClipSurfacesNote() async {
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: silentClip()),
+            transcriber: CountingTranscriber(),
+            injector: spy
+        )
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        var iterator = orchestrator.statusNotes.makeAsyncIterator()
+        let note = await iterator.next()
+        #expect(note == "No speech detected")
+    }
+
+    @Test("Hands-free silent clip still transcribes (VAD already gated on speech)")
+    func handsFreeSilentClipStillTranscribes() async {
+        let spy = SpyInjector()
+        let transcriber = CountingTranscriber()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: silentClip()),
+            transcriber: transcriber,
+            injector: spy
+        )
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.engageHandsFree) // no endpointer wired, but marks the session hands-free
+        await orchestrator.handle(.stopRecording)
+        await #expect(orchestrator.phase == .idle)
+        await #expect(spy.count() == 1)
+        await #expect(transcriber.timesCalled() == 1)
     }
 }
 

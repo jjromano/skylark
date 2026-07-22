@@ -41,6 +41,7 @@ public actor DictationOrchestrator {
 
     /// Temporary global cleanup override from the menu bar (nil = auto/use mode).
     private var tierOverride: CleanupTier?
+    private var silencePeakThreshold: Float = SilenceDetector.peakThreshold
     /// Spoken "press enter" command opt-in (Settings → General). When on, a
     /// terminal "press enter"/"press return" is stripped from the transcript
     /// and a Return keystroke is synthesized after the text lands.
@@ -158,6 +159,12 @@ public actor DictationOrchestrator {
         pressEnterEnabled = enabled
     }
 
+    /// Whisper-mode-aware silence floor for the push-to-talk no-speech guard;
+    /// pushed by `applyWhisperTuning` alongside the engines' clip-skip floors.
+    public func setSilencePeakThreshold(_ threshold: Float) {
+        silencePeakThreshold = threshold
+    }
+
     /// Wire (or clear) the AX-settle signal that drives correction auto-learn.
     /// Set once by the app layer after launch; nil in tests/headless callers.
     public func setCorrectionSettled(_ handler: (@Sendable (InsertionToken, String) -> Void)?) {
@@ -247,6 +254,10 @@ public actor DictationOrchestrator {
 
     private func finishRecording() async {
         guard phase == .recording else { return }
+        // Snapshot before stopHandsFree() resets it — the silence check below
+        // only applies to push-to-talk clips (hands-free is VAD-endpointed,
+        // speech by construction).
+        let wasHandsFree = isHandsFree
         stopHandsFree()
 
         // Fn-up → text-inserted is THE latency metric.
@@ -262,6 +273,18 @@ public actor DictationOrchestrator {
         guard !clip.isEmpty else {
             phase = .idle
             publish(.idle)
+            return
+        }
+
+        // Push-to-talk only: a mic that heard nothing must never reach the
+        // transcriber (never mind paste whatever it hallucinates from
+        // silence). Cheap O(n) pass over samples already in memory, off the
+        // audio thread (this actor). Quiet-but-real speech and too-short
+        // clips both fall through to transcription (false-negative bias).
+        if !wasHandsFree, SilenceDetector.isSilent(clip, threshold: silencePeakThreshold) {
+            phase = .idle
+            publish(.idle)
+            noteContinuation.yield("No speech detected")
             return
         }
 

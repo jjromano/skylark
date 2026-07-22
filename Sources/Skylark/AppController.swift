@@ -1,4 +1,5 @@
 import AppKit
+import os
 import ServiceManagement
 import SkylarkCore
 import SwiftUI
@@ -856,6 +857,35 @@ final class AppController {
         Task { [orchestrator] in await orchestrator.handle(.cancel) }
     }
 
+    // MARK: - Deep links (skylark://)
+
+    private static let deepLinkLogger = Logger(subsystem: "com.jjromano.skylark", category: "deeplink")
+
+    /// Route a `skylark://` URL (Raycast/Shortcuts/terminal automation).
+    /// Unknown routes are logged (no content) and otherwise ignored.
+    func handleDeepLink(_ url: URL) {
+        guard let route = DeepLink.parse(url) else {
+            Self.deepLinkLogger.notice("unrecognized deep link route")
+            return
+        }
+        switch route {
+        case .recordStart:
+            // Exactly like the HUD record button: start + arm hands-free.
+            Task { [orchestrator] in
+                await orchestrator.handle(.startRecording)
+                await orchestrator.handle(.engageHandsFree)
+            }
+        case .recordStop:
+            Task { [orchestrator] in await orchestrator.handle(.stopRecording) }
+        case .recordToggle:
+            toggleHandsFree()
+        case .recordCancel:
+            cancelRecording()
+        case .settings:
+            showSettings()
+        }
+    }
+
     // MARK: - Cleanup override (menu bar)
 
     /// Set from the menu; persists and pushes the tier into mode resolution.
@@ -1047,11 +1077,14 @@ final class AppController {
         let tuning = WhisperModeTuning.forWhisperMode(whisperModeOn)
         capture.setGain(tuning.captureGain)
         hud.isWhisperMode = whisperModeOn
-        Task { [parakeet, whisper, appleSpeech, endpointer] in
+        Task { [parakeet, whisper, appleSpeech, endpointer, orchestrator, whisperModeOn] in
             await parakeet.setSilenceFloor(tuning.silenceFloor)
             await whisper.setSilenceFloor(tuning.silenceFloor)
             await appleSpeech.setSilenceFloor(tuning.silenceFloor)
             await endpointer.setTuning(tuning)
+            await orchestrator.setSilencePeakThreshold(
+                whisperModeOn ? SilenceDetector.whisperPeakThreshold : SilenceDetector.peakThreshold
+            )
         }
     }
 
