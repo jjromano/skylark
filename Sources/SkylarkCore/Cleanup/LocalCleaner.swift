@@ -35,12 +35,18 @@ public struct LocalCleaner: Cleaner {
     /// Rough token estimate — 4 chars/token (ARCHITECTURE §1 heuristic).
     static let charsPerToken = 4
     /// Above this many estimated transcript tokens, clean in sentence-window
-    /// chunks (≈2–3 sentences each) instead of one generation. The small
-    /// on-device model follows instructions far more faithfully on a short
-    /// window, and chunking runs off the paste path (cleanup is async
-    /// post-insert), so the extra sequential latency is acceptable. At or below
-    /// the threshold we keep today's single-generation behavior.
-    public static let chunkTokenThreshold = 120
+    /// chunks instead of one generation. Set high enough that an ordinary
+    /// single dictation utterance (up to ~130 words) is cleaned in ONE
+    /// generation: the on-device model punctuates a whole unpunctuated run into
+    /// real sentences perfectly well, whereas chunking an unpunctuated run cuts
+    /// it at arbitrary word boundaries — which made the model reformat fragments
+    /// as bogus lists and produced mid-sentence capitals at the window seams
+    /// (the v0.2.1 "stray capital" bug). Chunking is retained only as a safety
+    /// valve for genuinely huge dictation, where a single generation would risk
+    /// the response-token cap; the seam join (`joinChunks`) repairs continuation
+    /// capitalization for that path. The model's 4096-token context makes a
+    /// 200-token input + its output trivially safe in one shot.
+    public static let chunkTokenThreshold = 200
     /// Hard cap on requested response tokens regardless of input size.
     static let responseTokenCap = 1024
     /// Floor so very short transcripts still get room to breathe.
@@ -126,9 +132,40 @@ public struct LocalCleaner: Cleaner {
             }
         }
         await backend.prewarm(instructions: instructions)
-        // Join with a space; any newlines the model produced inside a chunk are
-        // preserved (list formatting, "new paragraph").
-        return parts.joined(separator: " ")
+        return Self.joinChunks(parts)
+    }
+
+    /// Reassemble cleaned chunks. Each chunk was cleaned in isolation, so the
+    /// model capitalized its first word even when the chunk merely *continues*
+    /// the previous chunk's sentence (window seams fall mid-thought for
+    /// unpunctuated dictation). Join with a space, but when the accumulated text
+    /// does NOT already end a sentence (no terminal `.`/`!`/`?`/`:`/newline),
+    /// lowercase the continuation chunk's first word so the seam reads as one
+    /// sentence — unless that word is "I"/"I'…" or looks like a proper noun
+    /// (all-caps acronym, or a longer capitalized word we leave alone rather
+    /// than risk down-casing a name). Newlines the model produced inside a chunk
+    /// (list formatting, "new paragraph") are preserved.
+    public static func joinChunks(_ parts: [String]) -> String {
+        var result = ""
+        for part in parts {
+            let p = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !p.isEmpty else { continue }
+            guard !result.isEmpty else { result = p; continue }
+            let endsSentence = result.last.map { ".!?:\n".contains($0) } ?? true
+            result += " " + (endsSentence ? p : lowercasedContinuation(p))
+        }
+        return result
+    }
+
+    /// Lowercase the first letter of a continuation chunk unless it's a word we
+    /// must not down-case: "I"/"I'm"/"I'll"…, or an all-caps token (acronym).
+    private static func lowercasedContinuation(_ chunk: String) -> String {
+        let firstWord = chunk.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? chunk
+        if firstWord == "I" || firstWord.hasPrefix("I'") || firstWord.hasPrefix("I\u{2019}") { return chunk }
+        // All-caps acronym (e.g. "API", "SQL") — leave it.
+        let letters = firstWord.filter { $0.isLetter }
+        if letters.count >= 2, letters == letters.uppercased() { return chunk }
+        return chunk.prefix(1).lowercased() + chunk.dropFirst()
     }
 
     // MARK: - Pure helpers (unit-tested)

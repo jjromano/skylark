@@ -176,12 +176,43 @@ public enum CleanupHygiene {
         "actually", "wait", "mean", "sorry", "rather", "scratch", "no",
     ]
 
+    /// Spoken-number words. A faithful cleanup rewrites spoken numbers as digits
+    /// and symbols ("ninety nine point nine percent" → "99.9%", "twenty three"
+    /// → "23"), which deletes several *words* and emits a numeric token that
+    /// matches none of them — so counting them would make a CORRECT conversion
+    /// look like dropped content. Excluding both the spoken number words (here)
+    /// and the numeric tokens they become (`isNumericToken`) from the ratios, the
+    /// way stopwords/self-correction markers already are, makes number formatting
+    /// invisible to the faithfulness floors. Non-number content words still carry
+    /// the ratio, so dropping a real clause is still caught.
+    private static let numberWords: Set<String> = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+        "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
+        "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
+        "thousand", "million", "billion", "trillion",
+        "point", "percent", "dollar", "dollars", "cent", "cents",
+    ]
+
+    /// A token made only of digits — the numeric form a spoken number converts
+    /// to (the surrounding "%", "$", "." are non-alphanumeric and already split
+    /// away by `contentWords`, so "99.9%" arrives here as the tokens "99"/"9").
+    private static func isNumericToken(_ token: String) -> Bool {
+        !token.isEmpty && token.allSatisfy { $0.isNumber }
+    }
+
     private static func contentWords(_ text: String) -> [String] {
         text.lowercased()
             .replacingOccurrences(of: "\u{2019}", with: "'")
             .split { !$0.isLetter && !$0.isNumber }
             .map(String.init)
-            .filter { $0.count > 1 && !contentStopwords.contains($0) && !selfCorrectionMarkers.contains($0) }
+            .filter {
+                $0.count > 1
+                    && !contentStopwords.contains($0)
+                    && !selfCorrectionMarkers.contains($0)
+                    && !numberWords.contains($0)
+                    && !isNumericToken($0)
+            }
     }
 
     /// Remove transcript fence delimiters the model sometimes echoes from the

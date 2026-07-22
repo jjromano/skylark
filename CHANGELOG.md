@@ -6,6 +6,16 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.6.1 — 2026-07-22
+
+- Local cleanup, tuned against the real on-device model: spoken numbers are
+  now written as numerals and symbols ("ninety nine point nine percent" →
+  "99.9%"), polite framing ("can you please…") is never compressed away,
+  self-corrections resolve cleanly, long unpunctuated dictation is split
+  into proper sentences, and prose narration ("first… then… finally…") is
+  no longer misformatted as a list. Verified live on an M3 Air across a
+  12-case acceptance matrix, three runs each.
+
 ## 0.6.0 — 2026-07-22
 
 - New (opt-in, off by default): **learn words from your corrections**. When

@@ -176,13 +176,16 @@ struct LocalCleanerTests {
         }
         let cleaner = LocalCleaner(backend: backend)
 
-        // Build a transcript long enough to chunk, with the marker in exactly
-        // one sentence.
-        var sentences = Array(repeating: "The nightly build passed on staging.", count: 20)
+        // Build a transcript long enough to chunk at the real threshold, with
+        // the marker in exactly one sentence. Chunk with the SAME budget the
+        // cleaner uses so the boundaries — and thus the expected raw/cleaned
+        // chunk text — match what `clean` produces.
+        let budget = LocalCleaner.chunkTokenThreshold
+        var sentences = Array(repeating: "The nightly build passed on staging.", count: 40)
         sentences.insert("We shipped the \(marker) release this morning.", at: 10)
         let transcript = sentences.joined(separator: " ")
 
-        let chunks = LocalCleaner.sentenceChunks(transcript, maxTokens: 120)
+        let chunks = LocalCleaner.sentenceChunks(transcript, maxTokens: budget)
         let badChunk = try #require(chunks.first { $0.lowercased().contains(marker) })
         let goodChunk = try #require(chunks.first { !$0.lowercased().contains(marker) })
 
@@ -206,6 +209,24 @@ struct LocalCleanerTests {
         // Generous budget → the whole thing packs into one chunk.
         let big = LocalCleaner.sentenceChunks(text, maxTokens: 500)
         #expect(big.count == 1)
+    }
+
+    @Test("joinChunks repairs continuation seams but keeps real sentence-boundary capitals")
+    func joinChunksSeamRepair() {
+        // Prev chunk does NOT end a sentence → the next chunk's leading capital
+        // is a window-seam artifact (each chunk is cleaned in isolation and the
+        // model capitalizes every chunk's first word) and is down-cased.
+        #expect(LocalCleaner.joinChunks(["I want to", "Review the rotation."])
+            == "I want to review the rotation.")
+        // Prev chunk ends a sentence → the next capital is a real sentence start.
+        #expect(LocalCleaner.joinChunks(["We shipped it.", "Redis is fine."])
+            == "We shipped it. Redis is fine.")
+        // "I" at a seam is never down-cased.
+        #expect(LocalCleaner.joinChunks(["and then", "I fixed it."])
+            == "and then I fixed it.")
+        // An all-caps acronym at a seam is left alone.
+        #expect(LocalCleaner.joinChunks(["we called the", "API twice."])
+            == "we called the API twice.")
     }
 
     @Test("sentenceChunks: input already within budget is a single passthrough chunk")

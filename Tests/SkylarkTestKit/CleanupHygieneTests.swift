@@ -225,6 +225,27 @@ struct LocalStrictnessTests {
         }
     }
 
+    @Test("Number formatting is invisible to the floors: numeral conversion passes, a numbered clause drop still fails")
+    func numberAwareFloors() throws {
+        // Spoken number → digits/symbol is a faithful repair. The words
+        // "ninety/nine/point/nine/percent" vanish and become "99.9%", which
+        // matches none of them — yet this must NOT read as content loss.
+        #expect(try validateLocal(
+            "The uptime last month was 99.9%, which is below our target.",
+            "the uptime last month was ninety nine point nine percent which is below our target"
+        ) == "The uptime last month was 99.9%, which is below our target.")
+        #expect(try validateLocal("We have 23 open tickets.", "we have twenty three open tickets")
+            == "We have 23 open tickets.")
+        // Inviolable: a genuine clause drop is still rejected even when a number
+        // is converted in the same sentence (non-number words carry the ratio).
+        #expect(throws: CleanerError.self) {
+            try validateLocal(
+                "We shipped 3 features.",
+                "we shipped three features but the deployment failed on production"
+            )
+        }
+    }
+
     @Test("Cloud defaults are more permissive: a dropped clause the local floor rejects passes at 0.34")
     func cloudDefaultStaysPermissive() throws {
         let cleaned = "The tests pass on staging."
