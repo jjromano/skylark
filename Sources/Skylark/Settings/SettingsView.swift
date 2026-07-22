@@ -166,6 +166,12 @@ private struct GeneralPane: View {
     /// Sentinel for the mouse-trigger picker's "None" row (no binding).
     private static let mouseOffTag = "off"
 
+    /// Transient footer note surfacing the "Cleanup model" picker's implicit
+    /// tier switch (choosing a local/cloud model forces that tier). Mirrors
+    /// `AppController.showNote`'s clear-after-4s pattern, scoped to this pane.
+    @State private var tierSwitchNote: String?
+    @State private var tierSwitchNoteClearTask: Task<Void, Never>?
+
     /// Whether the current configuration routes anything through OpenRouter.
     private var usesCloud: Bool {
         if controller.cleanupOverride == "cloud" { return true }
@@ -250,7 +256,7 @@ private struct GeneralPane: View {
                 }
             }
 
-            Section("Speech & cleanup") {
+            Section {
                 Picker("Speech engine", selection: Binding(
                     get: { controller.currentSTT },
                     set: { controller.selectSTT($0) }
@@ -264,6 +270,7 @@ private struct GeneralPane: View {
                 Picker("Cleanup model", selection: Binding(
                     get: { controller.cleanupOverride == "local" ? Self.localCleanupTag : controller.currentCleanupSlug },
                     set: { selection in
+                        let previousTier = controller.cleanupOverride
                         if selection == Self.localCleanupTag {
                             controller.setCleanupOverride("local")
                         } else {
@@ -272,12 +279,21 @@ private struct GeneralPane: View {
                             controller.setCleanupOverride("cloud")
                             controller.selectCleanupSlug(selection)
                         }
+                        announceTierSwitch(from: previousTier, to: controller.cleanupOverride)
                     }
                 )) {
                     Text("Apple Intelligence (Local)").tag(Self.localCleanupTag)
                     ForEach(controller.cleanupModels) { entry in
                         Text(entry.label).tag(entry.slug)
                     }
+                }
+            } header: {
+                Text("Speech & cleanup")
+            } footer: {
+                if let tierSwitchNote {
+                    Text(tierSwitchNote)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -332,6 +348,21 @@ private struct GeneralPane: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    /// Surfaces the "Cleanup model" picker's implicit tier switch (a picker
+    /// selection forces Local or Cloud tier) with a transient footer caption,
+    /// but only when the tier actually changed — re-picking the same effective
+    /// tier stays silent.
+    private func announceTierSwitch(from previousTier: String, to newTier: String) {
+        guard previousTier != newTier else { return }
+        let label = newTier == "local" ? "Local" : "Cloud"
+        tierSwitchNote = "Default cleanup tier switched to \(label) to match your model choice."
+        tierSwitchNoteClearTask?.cancel()
+        tierSwitchNoteClearTask = Task {
+            try? await Task.sleep(for: .seconds(4))
+            if !Task.isCancelled { tierSwitchNote = nil }
+        }
     }
 }
 

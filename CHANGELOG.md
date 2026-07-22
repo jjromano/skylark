@@ -6,6 +6,15 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.2.2 — 2026-07-22
+
+- Fixed: choosing "Apple Intelligence (Local)" in Settings → General's
+  "Cleanup model" picker no longer snaps back to the previous selection — the
+  picker's underlying state wasn't observable, so SwiftUI never redrew it
+  after the choice took effect. The "Default cleanup tier" picker now visibly
+  follows suit when a model choice implicitly switches tiers, with a brief
+  note confirming the switch.
+
 ## 0.2.1 — 2026-07-11
 
 - Cleanup faithfulness: the transcript is now fenced and the model is told it

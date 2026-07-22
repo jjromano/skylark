@@ -185,6 +185,11 @@ final class AppController {
     /// Global cleanup override backing the menu "Cleanup" submenu. "auto" = use
     /// the resolved mode's tier; "raw"/"local"/"cloud" force that tier.
     static let cleanupOverrideKey = "cleanupTierOverride"
+    /// The persisted override raw value ("auto"/"raw"/"local"/"cloud"). Stored
+    /// (not computed) so `@Observable` tracks changes made via `setCleanupOverride`
+    /// — a computed property reading UserDefaults directly never triggers SwiftUI
+    /// re-renders, which left the Settings picker visually stuck on its old value.
+    private(set) var cleanupOverride: String
 
     // MARK: - History (Settings → History)
 
@@ -396,6 +401,7 @@ final class AppController {
 
         pressEnterEnabled = UserDefaults.standard.bool(forKey: Self.pressEnterKey)
         pauseMediaEnabled = UserDefaults.standard.bool(forKey: Self.pauseMediaKey)
+        cleanupOverride = UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto"
 
         // Composition root: one on-disk database; fall back to in-memory
         // providers (no history/persisted modes) if it can't open.
@@ -753,15 +759,11 @@ final class AppController {
 
     // MARK: - Cleanup override (menu bar)
 
-    /// The persisted override raw value ("auto"/"raw"/"local"/"cloud").
-    var cleanupOverride: String {
-        UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto"
-    }
-
     /// Set from the menu; persists and pushes the tier into mode resolution.
     /// Choosing Cloud without a stored key warns immediately instead of
     /// letting every dictation degrade in silence.
     func setCleanupOverride(_ raw: String) {
+        cleanupOverride = raw
         UserDefaults.standard.set(raw, forKey: Self.cleanupOverrideKey)
         applyCleanupOverride(raw)
         if raw == "cloud", !hasAPIKey {
