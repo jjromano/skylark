@@ -1,8 +1,10 @@
 import Foundation
 
 /// Shared output hygiene for every cleanup tier (local + cloud), so the
-/// faithfulness rules live in exactly one place and the two tiers stay in
-/// lockstep (per the `CleanupPrompt` design note).
+/// faithfulness rules live in exactly one place. The tiers use different
+/// prompts (see the `CleanupPrompt` design note) but the same guards here —
+/// the local tier just dials them stricter via `retentionFloor` /
+/// `contentLossFloor`, because the small on-device model paraphrases more.
 ///
 /// A cleanup model is only ever allowed to *repair* the transcript. This turns
 /// its raw response into trusted cleaned text, or throws
@@ -24,9 +26,24 @@ public enum CleanupHygiene {
 
     /// Sanitize `output`, then reject it (throwing `.unusableOutput`, so the
     /// caller keeps the raw transcript) when it's empty, runaway-long, chatbot
-    /// meta-commentary, or drops a negation present in `transcript`. Returns the
-    /// trusted cleaned text otherwise.
-    public static func validate(_ output: String, transcript: String) throws -> String {
+    /// meta-commentary, drops a negation present in `transcript`, or diverges
+    /// too far from it. Returns the trusted cleaned text otherwise.
+    ///
+    /// - Parameters:
+    ///   - retentionFloor: minimum share of the raw's content-word *vocabulary*
+    ///     that must survive in the cleaned text. Default `0.34` (cloud); the
+    ///     local tier passes a stricter value because the ~3B model paraphrases.
+    ///   - contentLossFloor: when non-nil, also reject when the cleaned text's
+    ///     content-word *count* falls below this fraction of the raw's — a
+    ///     separate guard against dropped clauses (filler + short self-
+    ///     corrections can't legitimately shrink the count this much). Cloud
+    ///     passes nil (no count guard, unchanged behavior); local passes ~0.60.
+    public static func validate(
+        _ output: String,
+        transcript: String,
+        retentionFloor: Double = 0.34,
+        contentLossFloor: Double? = nil
+    ) throws -> String {
         let cleaned = sanitize(output)
         guard !cleaned.isEmpty, cleaned.count <= transcript.count * 3 else {
             throw CleanerError.unusableOutput
@@ -37,7 +54,10 @@ public enum CleanupHygiene {
         if dropsNegation(from: transcript, to: cleaned) {
             throw CleanerError.unusableOutput
         }
-        if divergesFrom(transcript, cleaned: cleaned) {
+        if divergesFrom(transcript, cleaned: cleaned, retentionFloor: retentionFloor) {
+            throw CleanerError.unusableOutput
+        }
+        if let contentLossFloor, losesContent(transcript, cleaned: cleaned, floor: contentLossFloor) {
             throw CleanerError.unusableOutput
         }
         return cleaned
@@ -117,12 +137,26 @@ public enum CleanupHygiene {
     /// spoken. Legitimate cleanup (filler/self-correction removal, punctuation,
     /// casing) keeps most content words, so a low retention ratio is a reliable
     /// tell. Skipped for very short transcripts, where the ratio is too noisy.
-    static func divergesFrom(_ raw: String, cleaned: String) -> Bool {
+    static func divergesFrom(_ raw: String, cleaned: String, retentionFloor: Double) -> Bool {
         let rawWords = contentWords(raw)
         guard rawWords.count >= 4 else { return false }
         let cleanedSet = Set(contentWords(cleaned))
         let retained = rawWords.filter { cleanedSet.contains($0) }.count
-        return Double(retained) / Double(rawWords.count) < 0.34
+        return Double(retained) / Double(rawWords.count) < retentionFloor
+    }
+
+    /// True when the cleaned text's content-word COUNT dropped below `floor` ×
+    /// the raw's — a dropped-clause / summarization tell that `divergesFrom`
+    /// (which measures shared *vocabulary*, not amount) can miss when the model
+    /// keeps a few of the raw's words but throws most of the sentence away.
+    /// Removing fillers and resolving one-to-two-word self-corrections shrinks
+    /// the count only modestly, so a steep drop means content was lost.
+    /// Skipped for very short transcripts, where the ratio is too noisy.
+    static func losesContent(_ raw: String, cleaned: String, floor: Double) -> Bool {
+        let rawCount = contentWords(raw).count
+        guard rawCount >= 4 else { return false }
+        let cleanedCount = contentWords(cleaned).count
+        return Double(cleanedCount) / Double(rawCount) < floor
     }
 
     /// Filler + high-frequency function words carry no topical signal, so
@@ -132,12 +166,22 @@ public enum CleanupHygiene {
         "be", "this", "that", "it", "in", "on", "for", "my", "you", "your",
     ]
 
+    /// Self-correction markers ("send it to bob, actually alice"). Counting
+    /// them as stopwords means that *resolving* a self-correction — deleting
+    /// the marker and the word it replaces — doesn't itself dent the retention
+    /// or content-loss ratios, so a legitimate correction isn't punished as
+    /// "dropped content". The abandoned word ("bob") is still allowed to drop:
+    /// the ratios stay high because that's a one-to-two-word delta, not a clause.
+    private static let selfCorrectionMarkers: Set<String> = [
+        "actually", "wait", "mean", "sorry", "rather", "scratch", "no",
+    ]
+
     private static func contentWords(_ text: String) -> [String] {
         text.lowercased()
             .replacingOccurrences(of: "\u{2019}", with: "'")
             .split { !$0.isLetter && !$0.isNumber }
             .map(String.init)
-            .filter { $0.count > 1 && !contentStopwords.contains($0) }
+            .filter { $0.count > 1 && !contentStopwords.contains($0) && !selfCorrectionMarkers.contains($0) }
     }
 
     /// Remove transcript fence delimiters the model sometimes echoes from the

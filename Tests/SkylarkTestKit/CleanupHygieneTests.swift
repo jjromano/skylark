@@ -126,3 +126,112 @@ struct CleanupPromptFencingTests {
         #expect(text.contains("DATA"))
     }
 }
+
+@Suite("CleanupPrompt — compact local prompt")
+struct CompactPromptTests {
+    @Test("Few-shot examples, fencing, data rule, and the no-rewrite anchor are present")
+    func compactContent() {
+        let text = CleanupPrompt.compactInstructions(context: CleanupContext())
+        #expect(text.contains("<transcript>"))
+        #expect(text.contains("DATA"))
+        // At least three raw→cleaned few-shot pairs.
+        #expect(text.components(separatedBy: "Raw:").count - 1 >= 3)
+        #expect(text.components(separatedBy: "Cleaned:").count - 1 >= 3)
+        // The explicit closing anchor against paraphrase.
+        #expect(text.contains("Never drop, reorder, summarize, or reword"))
+        #expect(text.lowercased().contains("if unsure"))
+        // One example must be near-identical (models "do not rewrite").
+        #expect(text.contains("The migration ran cleanly on staging."))
+    }
+
+    @Test("Keeps the dictionary-terms and register-hint suffixes")
+    func compactSuffixes() {
+        let ctx = CleanupContext(registerHint: "email", dictionaryTerms: ["Skylark", "Parakeet"])
+        let text = CleanupPrompt.compactInstructions(context: ctx)
+        #expect(text.contains("Skylark"))
+        #expect(text.contains("Parakeet"))
+        #expect(text.lowercased().contains("register"))
+        #expect(text.contains("email"))
+    }
+
+    @Test("No suffixes when context is empty")
+    func compactNoSuffixes() {
+        let text = CleanupPrompt.compactInstructions(context: CleanupContext())
+        #expect(!text.lowercased().contains("prefer these exact spellings"))
+        #expect(!text.lowercased().contains("match this register"))
+    }
+}
+
+/// The local tier dials `CleanupHygiene.validate` stricter than the cloud
+/// default so the ~3B model's paraphrases fall back to raw. These fixtures pin
+/// the tuned floors (`LocalCleaner.localRetentionFloor` = 0.55, vocabulary;
+/// `localContentLossFloor` = 0.60, content-word count) in BOTH directions.
+@Suite("CleanupHygiene — local-tier strictness")
+struct LocalStrictnessTests {
+    private let vocab = LocalCleaner.localRetentionFloor
+    private let count = LocalCleaner.localContentLossFloor
+
+    private func validateLocal(_ cleaned: String, _ raw: String) throws -> String {
+        try CleanupHygiene.validate(cleaned, transcript: raw, retentionFloor: vocab, contentLossFloor: count)
+    }
+
+    @Test("Faithful cleanups pass the strict local floors")
+    func faithfulPasses() throws {
+        // Filler + self-correction resolved.
+        #expect(try validateLocal("Send it to Alice.", "um send it to bob uh actually alice") == "Send it to Alice.")
+        // Heavy filler removal only.
+        #expect(try validateLocal(
+            "I really think this feature is ready to ship.",
+            "so um i really think this feature is uh basically ready to ship"
+        ) == "I really think this feature is ready to ship.")
+        // Near-identical (already clean).
+        #expect(try validateLocal("The deploy finished without errors.", "the deploy finished without errors") ==
+            "The deploy finished without errors.")
+        // List formatting.
+        let listClean = "Here is a list of three items:\n1. Bananas\n2. Apples\n3. Lemons"
+        #expect(try validateLocal(listClean, "here is a list of three items one bananas two apples three lemons") == listClean)
+    }
+
+    @Test("Paraphrase / summarize / drop-a-clause are rejected at the strict floors")
+    func unfaithfulRejected() {
+        for (cleaned, raw) in [
+            ("I purchased milk.", "i went to the store and i bought some milk and then i came back home"),      // summarize
+            ("The tests pass on staging.", "the tests pass on staging but they fail on production"),            // drop clause
+            ("Kindly restructure the auth component with tokens.", "please refactor the authentication module to use tokens"), // reword
+        ] {
+            #expect(throws: CleanerError.self) { try validateLocal(cleaned, raw) }
+        }
+    }
+
+    @Test("The two guards are independent: vocab catches rewording, content-loss catches summarizing")
+    func guardsAreIndependent() {
+        // Reword keeps the word count high (content-loss alone would pass) but
+        // shares almost no vocabulary → only the vocab floor catches it.
+        #expect(throws: CleanerError.self) {
+            try CleanupHygiene.validate(
+                "Kindly restructure the auth component with tokens.",
+                transcript: "please refactor the authentication module to use tokens",
+                retentionFloor: vocab, contentLossFloor: nil
+            )
+        }
+        // Summarize shares its surviving words (vocab alone would pass with the
+        // floor disabled) but slashes the word count → only content-loss catches.
+        #expect(throws: CleanerError.self) {
+            try CleanupHygiene.validate(
+                "I purchased milk.",
+                transcript: "i went to the store and i bought some milk and then i came back home",
+                retentionFloor: 0.0, contentLossFloor: count
+            )
+        }
+    }
+
+    @Test("Cloud defaults are more permissive: a dropped clause the local floor rejects passes at 0.34")
+    func cloudDefaultStaysPermissive() throws {
+        let cleaned = "The tests pass on staging."
+        let raw = "the tests pass on staging but they fail on production"
+        // Local rejects.
+        #expect(throws: CleanerError.self) { try validateLocal(cleaned, raw) }
+        // Cloud (default floor, no content-loss guard) accepts — unchanged behavior.
+        #expect(try CleanupHygiene.validate(cleaned, transcript: raw) == cleaned)
+    }
+}

@@ -189,15 +189,49 @@ and `UpdateCommandWriter` emits a Terminal `.command` running
 
 ## 6. Engine integration facts (verified from source, 2026-07)
 
-### FluidAudio (Apache-2.0, SPM `from: "0.15.4"`, zero transitive deps)
+### FluidAudio (Apache-2.0, SPM `from: "0.15.5"`, zero transitive deps)
 - Batch path (our primary): `AsrModels.downloadAndLoad(to:)` once →
   `AsrManager` (actor) `.transcribe(_ samples: [Float], decoderState: inout
   TdtDecoderState)`. **Every transcribe takes `inout TdtDecoderState`** — the
   README's stateless example is stale. `reset()` clears decoder state but
   keeps models warm; `cleanup()` releases them (only on quit/engine switch).
+  These signatures are unchanged 0.15.4→0.15.5.
+- 0.15.x introduced an internal `ModelHub` download layer, but the public
+  `AsrModels.downloadAndLoad`/`.download`/`.modelsExist` wrappers are stable
+  and `DownloadUtils` still exists — **no adaptation needed** in our code.
+  `encoderPrecision` is typed `ParakeetEncoderPrecision` (`.int8`/`.int4`); we
+  pass `.int8`.
 - Parakeet TDT v3 int8 ≈ **483 MB** on disk, auto-downloaded from HuggingFace.
-  Pass our own directory: `~/Library/Application Support/Skylark/Models/`.
-- Compute: default `.cpuAndNeuralEngine` — keep it (low memory, ANE).
+  We pass `~/Library/Application Support/Skylark/Models/` as the models dir,
+  but FluidAudio actually lays the repo down at the **parent** of that dir under
+  the version's folder name (`-coreml` stripped): the real on-disk location is
+  `~/Library/Application Support/Skylark/parakeet-tdt-0.6b-v3/` (NOT under
+  `Models/`, NOT `…-coreml`). Verified: an install downloaded on 0.15.4 loads
+  under 0.15.5 with "no download needed" — the layout is stable, no forced
+  redownload. **Caveat:** `ModelPaths.parakeetModelDir`
+  (`Models/parakeet-tdt-0.6b-v3-coreml`) does NOT match this real path; it is
+  only consumed by the Settings model-manager for size/presence/delete, so that
+  UI currently mis-reports the Parakeet model. Pre-existing (not the 0.15.5
+  bump); flagged for a follow-up.
+- Compute: default `.cpuAndNeuralEngine` — keep it (low memory, ANE). Encoder
+  can opt into `.cpuAndGPU` (~+8% RTFx, WER-neutral) via `encoderComputeUnits:`
+  — not worth the power cost for us. Word-level timestamps are available on
+  `ASRResult.tokenTimings` (+ `WordTimingMerger`) if ever needed; we currently
+  use only `.text`.
+- **Custom vocabulary (0.15.x) is NOT a warm-up decoder bias.** For Parakeet
+  0.6B v3 (no built-in CTC head) it is a *post-decode* NeMo CTC word-spotter
+  rescorer ("Approach 2"): it needs a **separate ~97.5 MB Parakeet CTC-110M
+  model** and runs a **second full acoustic pass over the audio per utterance**
+  (~26x RTFx) plus a `VocabularyRescorer` over the TDT `tokenTimings`. The docs'
+  `asrManager.transcribe(_:customVocabulary:)` convenience does **not** exist in
+  the shipped 0.15.5 code — the real entry points are `CtcModels.downloadAndLoad`
+  → `CtcKeywordSpotter.spotKeywordsWithLogProbs` → `VocabularyRescorer.create` /
+  `.ctcTokenRescore`. Because the pass is per-utterance and heavyweight, it
+  **cannot** go on the Fn-up→paste path; any integration must run off-path
+  (insert raw, then rescore→replace via the existing detached cleanup path) and
+  is gated on the orchestrator accepting the +model download and +~64–130 MB
+  resident memory. **Not wired in the MVP** — our dictionary bias remains the
+  post-transcription `DictionaryCorrector` text rewrite.
 - Interim results for TDT v3 = `SlidingWindowAsrManager`
   (volatile/confirmed updates via `AsyncStream`), NOT transducer cache
   streaming. True low-latency streaming needs different model variants
@@ -206,7 +240,10 @@ and `UpdateCommandWriter` emits a Terminal `.command` running
 - **VAD included**: `VadManager` (Silero CoreML, 16 kHz, 256 ms chunks) with a
   streaming hysteresis state machine (`.speechStart`/`.speechEnd` events) and
   endpointing knobs (`minSilenceDuration` etc.). No extra dependency needed.
-- Builds clean on Swift 6.2.3 / macOS 26 (verified). No open ASR issues on 26.
+  `VadManager(config:modelDirectory:)`, `processStreamingChunk`,
+  `VadSegmentationConfig` unchanged in 0.15.5.
+- Builds clean on Swift 6.2.x / macOS 26 (re-verified at 0.15.5, zero warnings;
+  real transcription on the M3 Air at ~67x RTFx). No open ASR issues on 26.
 
 ### WhisperKit (MIT) — Phase 4
 - Repo renamed: package is now `argmax-oss-swift`, `from: "1.0.0"`, product

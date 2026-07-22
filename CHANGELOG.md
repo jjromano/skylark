@@ -6,6 +6,20 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.4.0 — 2026-07-22
+
+- Local (Apple Intelligence) cleanup is far more faithful to what you said:
+  deterministic decoding, a compact example-led prompt built for the small
+  on-device model, and much stricter guards that reject any output which
+  drops or rewords your content (falling back to the raw transcript). Long
+  dictations are now cleaned in sentence-sized windows instead of being
+  skipped entirely when they exceeded the model's context.
+- FluidAudio updated to 0.15.5 (verified: existing downloaded Parakeet
+  models keep working, no redownload).
+- Settings → Models now correctly reports the Parakeet and voice-activity
+  models as installed (it was checking the wrong folder names and showing
+  them as missing).
+
 ## 0.3.1 — 2026-07-22
 
 - Faster cloud cleanup with GPT-OSS models: requests now ask for low

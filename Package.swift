@@ -39,7 +39,7 @@ let package = Package(
     ],
     dependencies: [
         // Local Parakeet ASR + Silero VAD (Apache-2.0, no external transitive deps).
-        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.4"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.15.5"),
         // Persistence (MIT) — history/dictionary/modes/model-registry storage.
         .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
         // WhisperKit fallback STT engine (MIT). Package/repo renamed to

@@ -1,4 +1,5 @@
 import Foundation
+import NaturalLanguage
 import os
 
 #if canImport(FoundationModels)
@@ -33,13 +34,25 @@ public struct LocalCleaner: Cleaner {
 
     /// Rough token estimate — 4 chars/token (ARCHITECTURE §1 heuristic).
     static let charsPerToken = 4
-    /// Skip cleanup entirely above this many transcript tokens (~4096 ctx budget
-    /// minus instructions/response headroom).
-    static let contextTokenBudget = 3000
+    /// Above this many estimated transcript tokens, clean in sentence-window
+    /// chunks (≈2–3 sentences each) instead of one generation. The small
+    /// on-device model follows instructions far more faithfully on a short
+    /// window, and chunking runs off the paste path (cleanup is async
+    /// post-insert), so the extra sequential latency is acceptable. At or below
+    /// the threshold we keep today's single-generation behavior.
+    public static let chunkTokenThreshold = 120
     /// Hard cap on requested response tokens regardless of input size.
     static let responseTokenCap = 1024
     /// Floor so very short transcripts still get room to breathe.
     static let responseTokenFloor = 64
+
+    /// Local-tier faithfulness floors handed to `CleanupHygiene.validate`.
+    /// Stricter than the cloud defaults because the ~3B on-device model
+    /// paraphrases/summarizes more; see `CleanupHygiene` for what each guards.
+    /// A chunk (or short transcript) failing these keeps its RAW text rather
+    /// than the model's rewrite — faithful by construction.
+    public static let localRetentionFloor = 0.55
+    public static let localContentLossFloor = 0.60
 
     /// Testing seam — inject a fake backend (real generation isn't runnable on
     /// the CLT-only box).
@@ -56,38 +69,136 @@ public struct LocalCleaner: Cleaner {
     }
 
     public func clean(_ transcript: String, context: CleanupContext) async throws -> String {
-        // Truncation guard: skip cleanup for transcripts too long for the context.
-        let estimatedTokens = Self.estimatedTokens(transcript)
-        guard estimatedTokens <= Self.contextTokenBudget else {
-            throw CleanerError.unavailable(reason: "transcript too long for local cleanup")
-        }
-
         if let reason = await backend.unavailability() {
             throw CleanerError.unavailable(reason: reason)
         }
 
-        let instructions = CleanupPrompt.instructions(context: context)
-        let userMessage = CleanupPrompt.userMessage(transcript: transcript)
-        let maxTokens = Self.maximumResponseTokens(forTranscriptTokens: estimatedTokens)
+        // Local tier uses the compact, few-shot prompt (cloud keeps the fuller
+        // `instructions`); both share the same session-prewarm pattern.
+        let instructions = CleanupPrompt.compactInstructions(context: context)
+        let estimatedTokens = Self.estimatedTokens(transcript)
 
-        let raw = try await backend.generate(
-            instructions: instructions,
-            userMessage: userMessage,
-            maximumResponseTokens: maxTokens
-        )
+        // Short transcript → single generation (today's behavior). No chunking
+        // overhead below the threshold.
+        guard estimatedTokens > Self.chunkTokenThreshold else {
+            let maxTokens = Self.maximumResponseTokens(forTranscriptTokens: estimatedTokens)
+            let raw = try await backend.generate(
+                instructions: instructions,
+                userMessage: CleanupPrompt.userMessage(transcript: transcript),
+                maximumResponseTokens: maxTokens
+            )
+            // Prewarm the next session off the paste path (this whole call
+            // already runs detached from the HUD state), then apply hygiene
+            // with the strict local floors — a failure keeps the RAW transcript.
+            await backend.prewarm(instructions: instructions)
+            return try CleanupHygiene.validate(
+                raw,
+                transcript: transcript,
+                retentionFloor: Self.localRetentionFloor,
+                contentLossFloor: Self.localContentLossFloor
+            )
+        }
 
-        // Prewarm the next session off the paste path (this whole call already
-        // runs detached from the HUD state), then apply the shared output
-        // hygiene (empty/runaway/meta-commentary/negation-drop → keep raw).
+        // Longer transcript → sentence-window chunking. Each chunk is cleaned in
+        // its own generation and validated independently; a chunk that fails
+        // validation (or whose generation errors) keeps its RAW text so the
+        // whole transcript never fails. Arbitrarily long transcripts now
+        // succeed (no more too-long bail-out).
+        let chunks = Self.sentenceChunks(transcript, maxTokens: Self.chunkTokenThreshold)
+        var parts: [String] = []
+        parts.reserveCapacity(chunks.count)
+        for chunk in chunks {
+            let maxTokens = Self.maximumResponseTokens(forTranscriptTokens: Self.estimatedTokens(chunk))
+            do {
+                let raw = try await backend.generate(
+                    instructions: instructions,
+                    userMessage: CleanupPrompt.userMessage(transcript: chunk),
+                    maximumResponseTokens: maxTokens
+                )
+                parts.append(try CleanupHygiene.validate(
+                    raw,
+                    transcript: chunk,
+                    retentionFloor: Self.localRetentionFloor,
+                    contentLossFloor: Self.localContentLossFloor
+                ))
+            } catch {
+                parts.append(chunk) // keep this chunk's raw text; never fail the whole
+            }
+        }
         await backend.prewarm(instructions: instructions)
-
-        return try CleanupHygiene.validate(raw, transcript: transcript)
+        // Join with a space; any newlines the model produced inside a chunk are
+        // preserved (list formatting, "new paragraph").
+        return parts.joined(separator: " ")
     }
 
     // MARK: - Pure helpers (unit-tested)
 
     public static func estimatedTokens(_ text: String) -> Int {
         max(1, text.count / charsPerToken)
+    }
+
+    /// Split `text` into chunks of at most `maxTokens` estimated tokens, cutting
+    /// only on sentence boundaries (`NLTokenizer(unit: .sentence)`). Adjacent
+    /// sentences are packed greedily into one chunk until the next would exceed
+    /// the budget. A single sentence longer than the budget (common for raw
+    /// dictation, which often arrives unpunctuated as one long "sentence") is
+    /// broken into word windows so chunks stay bounded and arbitrarily long
+    /// input still succeeds. Pure and deterministic for unit testing.
+    public static func sentenceChunks(_ text: String, maxTokens: Int) -> [String] {
+        let sentences = splitSentences(text)
+        var chunks: [String] = []
+        var current = ""
+        for sentence in sentences {
+            let s = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !s.isEmpty else { continue }
+            if estimatedTokens(s) > maxTokens {
+                if !current.isEmpty { chunks.append(current); current = "" }
+                chunks.append(contentsOf: wordWindows(s, maxTokens: maxTokens))
+                continue
+            }
+            let candidate = current.isEmpty ? s : current + " " + s
+            if estimatedTokens(candidate) > maxTokens {
+                if !current.isEmpty { chunks.append(current) }
+                current = s
+            } else {
+                current = candidate
+            }
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks.isEmpty ? [text] : chunks
+    }
+
+    /// Sentence-tokenize with `NaturalLanguage` (no new dependency). Falls back
+    /// to the whole string when tokenization yields nothing.
+    private static func splitSentences(_ text: String) -> [String] {
+        let tokenizer = NLTokenizer(unit: .sentence)
+        tokenizer.string = text
+        var result: [String] = []
+        tokenizer.enumerateTokens(in: text.startIndex..<text.endIndex) { range, _ in
+            result.append(String(text[range]))
+            return true
+        }
+        return result.isEmpty ? [text] : result
+    }
+
+    /// Break an over-long sentence into whitespace-delimited windows each at or
+    /// below `maxTokens`. A single word longer than the budget still forms its
+    /// own window (never dropped).
+    private static func wordWindows(_ sentence: String, maxTokens: Int) -> [String] {
+        let words = sentence.split { $0.isWhitespace }.map(String.init)
+        var windows: [String] = []
+        var current = ""
+        for word in words {
+            let candidate = current.isEmpty ? word : current + " " + word
+            if !current.isEmpty, estimatedTokens(candidate) > maxTokens {
+                windows.append(current)
+                current = word
+            } else {
+                current = candidate
+            }
+        }
+        if !current.isEmpty { windows.append(current) }
+        return windows
     }
 
     /// ~2× transcript tokens, clamped to [floor, cap].
@@ -102,6 +213,20 @@ public struct LocalCleaner: Cleaner {
         CleanupHygiene.sanitize(output)
     }
 }
+
+#if canImport(FoundationModels)
+public extension LocalCleaner {
+    /// Cleanup decoding options. Greedy (deterministic) sampling is Apple's
+    /// recommended mode for strict instruction following on the on-device
+    /// model — it stops the ~3B model from creatively rewording the transcript,
+    /// which temperature sampling encouraged. A pure value factory so the choice
+    /// is unit-testable without live generation (Apple Intelligence is off on
+    /// the build box); building `GenerationOptions` needs no model.
+    static func cleanupOptions(maximumResponseTokens: Int) -> GenerationOptions {
+        GenerationOptions(sampling: .greedy, maximumResponseTokens: maximumResponseTokens)
+    }
+}
+#endif
 
 /// Backend used when `FoundationModels` can't be imported at all.
 struct UnavailableBackend: LocalCleanupBackend {
@@ -139,8 +264,10 @@ actor FoundationModelBackend: LocalCleanupBackend {
         } else {
             session = LanguageModelSession(instructions: { instructions })
         }
-        let options = GenerationOptions(temperature: 0.1, maximumResponseTokens: maximumResponseTokens)
-        let response = try await session.respond(to: userMessage, options: options)
+        let response = try await session.respond(
+            to: userMessage,
+            options: LocalCleaner.cleanupOptions(maximumResponseTokens: maximumResponseTokens)
+        )
         return response.content
     }
 

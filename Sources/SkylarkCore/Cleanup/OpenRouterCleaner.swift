@@ -1,9 +1,12 @@
 import Foundation
 
 /// Tier 2 cleanup: cloud model via OpenRouter (ARCHITECTURE §2, §6). Uses the
-/// same instruction set as `LocalCleaner` (`CleanupPrompt`) so tier switches
-/// change the model, not the task. Non-streaming for v1 — the in-place replace
-/// needs the full cleaned text anyway.
+/// fuller `CleanupPrompt.instructions` and the shared `CleanupHygiene` guards
+/// at their default (0.34) floor; the local tier diverged onto a compact,
+/// few-shot prompt with stricter floors (see the `CleanupPrompt` note) because
+/// the ~3B on-device model needs the extra hand-holding. The task is the same;
+/// only the prompt phrasing and guard strictness differ per model size.
+/// Non-streaming for v1 — the in-place replace needs the full cleaned text anyway.
 public struct OpenRouterCleaner: Cleaner {
     public let tier: CleanupTier
 

@@ -128,6 +128,45 @@ struct OpenRouterCleanerTests {
         }
     }
 
+    @Test("Cloud cleaner sends the full CleanupPrompt.instructions, NOT the compact local prompt")
+    func cloudUsesFullInstructions() async throws {
+        let host = "stub-\(UUID().uuidString).test"
+        let session = OpenRouterStubURLProtocol.makeSession(host: host) { _ in
+            let json = try! JSONSerialization.data(withJSONObject: [
+                "choices": [["message": ["content": "Hello there."]]],
+            ])
+            return .init(status: 200, headers: [:], body: json)
+        }
+        defer { OpenRouterStubURLProtocol.unregister(host: host) }
+        let client = OpenRouterClient(
+            keyProvider: { "test-key" },
+            session: session,
+            baseURL: URL(string: "https://\(host)")!
+        )
+        let cleaner = OpenRouterCleaner(client: client, entry: Self.entry)
+        _ = try await cleaner.clean("hello there", context: CleanupContext())
+
+        let body = try #require(OpenRouterStubURLProtocol.lastRequestBody(host: host))
+        let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let messages = try #require(json["messages"] as? [[String: Any]])
+        let system = try #require(messages.first { ($0["role"] as? String) == "system" }?["content"] as? String)
+        #expect(system == CleanupPrompt.instructions(context: CleanupContext()))
+        #expect(system != CleanupPrompt.compactInstructions(context: CleanupContext()))
+    }
+
+    @Test("Cloud keeps the permissive 0.34 floor — a dropped clause the LOCAL floor rejects still passes")
+    func cloudKeepsPermissiveFloor() async throws {
+        // The local tier's stricter floors would reject this (see
+        // LocalStrictnessTests); the cloud tier must NOT have regressed.
+        try await withCompletionContent("The tests pass on staging.") { cleaner in
+            let out = try await cleaner.clean(
+                "the tests pass on staging but they fail on production",
+                context: CleanupContext()
+            )
+            #expect(out == "The tests pass on staging.")
+        }
+    }
+
     @Test("No API key surfaces unavailable, not a raw network error")
     func noKeySurfacesUnavailable() async throws {
         // No stub needed — the client short-circuits on a missing key before

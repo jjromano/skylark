@@ -38,16 +38,19 @@ public enum ModelPaths {
 
     // MARK: - Per-engine model directories
 
-    /// FluidAudio Parakeet TDT v3 repo folder (`AsrModels.downloadAndLoad(to:)`
-    /// clones the HuggingFace repo into this subfolder of `models`).
+    /// FluidAudio Parakeet TDT v3 repo folder. FluidAudio's v3 `folderName`
+    /// strips the repo's `-coreml` suffix and resolves against the PARENT of
+    /// the base we pass, so the repo lands beside `Models`, not inside it
+    /// (verified on disk against 0.15.x downloads).
     public static var parakeetModelDir: URL {
-        models.appendingPathComponent("parakeet-tdt-0.6b-v3-coreml", isDirectory: true)
+        appSupport.appendingPathComponent("parakeet-tdt-0.6b-v3", isDirectory: true)
     }
 
     /// FluidAudio Silero VAD repo folder (`VadManager` appends `Models/` to the
-    /// app-support base, landing here alongside the ASR repo).
+    /// app-support base; the repo folder drops the `-coreml` suffix — verified
+    /// on disk).
     public static var vadModelDir: URL {
-        models.appendingPathComponent("silero-vad-coreml", isDirectory: true)
+        models.appendingPathComponent("silero-vad", isDirectory: true)
     }
 
     /// WhisperKit download base — passed to WhisperKit as `downloadBase` so its
