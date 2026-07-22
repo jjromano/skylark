@@ -6,15 +6,18 @@ public enum STTChoice: Sendable, Equatable, Hashable {
     case localParakeet
     /// Local WhisperKit large-v3-turbo (offline fallback engine, phase-4).
     case localWhisper
+    /// Local Apple Speech (macOS 26 SpeechAnalyzer/SpeechTranscriber, offline).
+    case localApple
     /// Cloud STT via OpenRouter, identified by registry slug.
     case cloud(slug: String)
 
-    /// UserDefaults serialization ("local" | "localWhisper" | "cloud:<slug>");
-    /// non-secret.
+    /// UserDefaults serialization ("local" | "localWhisper" | "localApple" |
+    /// "cloud:<slug>"); non-secret.
     var serialized: String {
         switch self {
         case .localParakeet: return "local"
         case .localWhisper: return "localWhisper"
+        case .localApple: return "localApple"
         case .cloud(let slug): return "cloud:\(slug)"
         }
     }
@@ -25,6 +28,8 @@ public enum STTChoice: Sendable, Equatable, Hashable {
             self = .cloud(slug: String(value.dropFirst("cloud:".count)))
         } else if value == "localWhisper" {
             self = .localWhisper
+        } else if value == "localApple" {
+            self = .localApple
         } else {
             self = .localParakeet
         }
@@ -33,7 +38,7 @@ public enum STTChoice: Sendable, Equatable, Hashable {
     /// Whether this is one of the local (offline) engines.
     public var isLocal: Bool {
         switch self {
-        case .localParakeet, .localWhisper: return true
+        case .localParakeet, .localWhisper, .localApple: return true
         case .cloud: return false
         }
     }

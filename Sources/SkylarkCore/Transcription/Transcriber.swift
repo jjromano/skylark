@@ -4,6 +4,7 @@ import Foundation
 public enum TranscriberID: Sendable, Equatable {
     case parakeet
     case whisperKit
+    case speechAnalyzer
     case cloud(String)
     case stub
 }

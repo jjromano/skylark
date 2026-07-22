@@ -139,12 +139,13 @@ final class AppController {
 
     /// A local model the settings model-manager can download/delete.
     enum ManagedModel: String, CaseIterable, Identifiable {
-        case parakeet, whisper, vad
+        case parakeet, whisper, appleSpeech, vad
         var id: String { rawValue }
         var label: String {
             switch self {
             case .parakeet: return "Parakeet TDT v3"
             case .whisper: return "Whisper large-v3-turbo"
+            case .appleSpeech: return "Apple Speech"
             case .vad: return "Silero VAD"
             }
         }
@@ -152,6 +153,7 @@ final class AppController {
             switch self {
             case .parakeet: return "~483 MB"
             case .whisper: return "~626 MB"
+            case .appleSpeech: return "system-managed"
             case .vad: return "few MB"
             }
         }
@@ -159,9 +161,15 @@ final class AppController {
             switch self {
             case .parakeet: return ModelPaths.parakeetModelDir
             case .whisper: return ModelPaths.whisperKitBase
+            // System-managed (assets live in the OS's Speech asset store, not
+            // under our Models dir). Placeholder — never measured for size.
+            case .appleSpeech: return ModelPaths.appSupport
             case .vad: return ModelPaths.vadModelDir
             }
         }
+        /// Apple-provided model managed by the OS (`AssetInventory`) — no local
+        /// on-disk size, no download-to-our-dir, no delete.
+        var isSystemManaged: Bool { self == .appleSpeech }
     }
 
     enum ManagedModelState: Equatable {
@@ -173,6 +181,10 @@ final class AppController {
 
     /// Per-model download/on-disk state observed by the settings model manager.
     private(set) var modelStates: [ManagedModel: ManagedModelState] = [:]
+
+    /// Resolved BCP-47 locale of the Apple Speech engine (shown in the Models
+    /// pane, e.g. "en-US"). System-managed; refreshed with its install state.
+    private(set) var appleSpeechLocale: String = "en-US"
 
     // MARK: - Audio devices (Settings → Audio)
 
@@ -331,6 +343,7 @@ final class AppController {
     private let capture = AudioCaptureService()
     private let parakeet: FluidAudioParakeet
     private let whisper: WhisperKitWhisper
+    private let appleSpeech: SpeechAnalyzerTranscriber
     private let endpointer = FluidAudioVAD()
     private let injector = TextInjector()
     private let monitor = HotkeyMonitor()
@@ -377,6 +390,7 @@ final class AppController {
         prepStream = stream
         parakeet = FluidAudioParakeet(progress: { state in cont.yield((.parakeet, state)) })
         whisper = WhisperKitWhisper(progress: { state in cont.yield((.whisper, state)) })
+        appleSpeech = SpeechAnalyzerTranscriber(progress: { state in cont.yield((.appleSpeech, state)) })
         whisperModeOn = UserDefaults.standard.bool(forKey: Self.whisperModeKey)
         // Sound effects default ON (register the default before the first read).
         if UserDefaults.standard.object(forKey: Self.soundEffectsKey) == nil {
@@ -580,6 +594,7 @@ final class AppController {
         // Seed model-manager state from disk, then apply persisted whisper mode
         // (gain/floor/VAD/HUD) and the selected input device before first press.
         refreshModelStates()
+        refreshAppleSpeechState()
         applyWhisperTuning()
         startAudioDevices()
 
@@ -676,11 +691,19 @@ final class AppController {
         case let .downloading(progress):
             modelStates[model] = .downloading(progress)
         case .ready:
-            modelStates[model] = .ready(bytes: ModelPaths.installedSize(at: model.directory))
+            // System-managed models have no measurable on-disk size — report
+            // "ready" without a byte count (the row hides size for them).
+            modelStates[model] = model.isSystemManaged
+                ? .ready(bytes: 0)
+                : .ready(bytes: ModelPaths.installedSize(at: model.directory))
         case .failed:
-            modelStates[model] = ModelPaths.isPresent(at: model.directory)
-                ? .ready(bytes: ModelPaths.installedSize(at: model.directory))
-                : .notDownloaded
+            if model.isSystemManaged {
+                modelStates[model] = .notDownloaded
+            } else {
+                modelStates[model] = ModelPaths.isPresent(at: model.directory)
+                    ? .ready(bytes: ModelPaths.installedSize(at: model.directory))
+                    : .notDownloaded
+            }
         }
 
         // Menu line reflects any in-flight preparation; the readiness gate and HUD
@@ -723,7 +746,20 @@ final class AppController {
     /// The model backing the active speech engine (the warm local engine, or the
     /// cloud fallback's local engine).
     private var activeSpeechModel: ManagedModel {
-        activeLocal == .localWhisper ? .whisper : .parakeet
+        switch activeLocal {
+        case .localWhisper: return .whisper
+        case .localApple: return .appleSpeech
+        default: return .parakeet
+        }
+    }
+
+    /// The local engine instance backing an STT choice (used for warm/keep/drop).
+    private func localEngine(for choice: STTChoice) -> any Transcriber {
+        switch choice {
+        case .localWhisper: return whisper
+        case .localApple: return appleSpeech
+        default: return parakeet
+        }
     }
 
     func showNote(_ note: String) {
@@ -826,6 +862,8 @@ final class AppController {
             switchLocalEngine(to: .localParakeet)
         case .localWhisper:
             switchLocalEngine(to: .localWhisper)
+        case .localApple:
+            switchLocalEngine(to: .localApple)
         case .cloud(let slug):
             // Read the key OFF the main actor: with a self-signed dev build,
             // `SecItemCopyMatching` can raise a keychain authorization prompt
@@ -851,15 +889,16 @@ final class AppController {
         let notice: @Sendable (String) -> Void = { [weak self] message in
             Task { @MainActor in self?.showNote(message) }
         }
-        // Fallback = whichever local engine is currently active (stays warm).
-        let localFallback: any Transcriber = (activeLocal == .localWhisper) ? whisper : parakeet
-        let idle: any Transcriber = (activeLocal == .localWhisper) ? parakeet : whisper
+        // Fallback = whichever local engine is currently active (stays warm);
+        // every other local engine is freed to stay within the memory budget.
+        let localFallback = localEngine(for: activeLocal)
+        let idle: [any Transcriber] = [parakeet, whisper, appleSpeech].filter { $0.id != localFallback.id }
         let fallback = FallbackTranscriber(primary: cloud, fallback: localFallback, notice: notice)
-        Task { [orchestrator] in
+        Task { [orchestrator, idle] in
             try? await fallback.warmUp()
             await orchestrator.setTranscriber(fallback)
             await orchestrator.setTranscriberReady(true)
-            await Self.shutdownEngine(idle) // free the non-fallback local engine
+            for engine in idle { await Self.shutdownEngine(engine) }
         }
     }
 
@@ -867,16 +906,15 @@ final class AppController {
     /// completes) shutting the other down to stay within the 16 GB memory budget.
     private func switchLocalEngine(to choice: STTChoice) {
         activeLocal = choice
-        let keepWhisper = (choice == .localWhisper)
-        let keep: any Transcriber = keepWhisper ? whisper : parakeet
-        let drop: any Transcriber = keepWhisper ? parakeet : whisper
-        Task { [orchestrator, weak self] in
+        let keep = localEngine(for: choice)
+        let drop: [any Transcriber] = [parakeet, whisper, appleSpeech].filter { $0.id != keep.id }
+        Task { [orchestrator, keep, drop, weak self] in
             let ready = await Self.engineReady(keep)
             if !ready { await orchestrator.setTranscriberReady(false) }
             await orchestrator.setTranscriber(keep)
             try? await keep.warmUp()
             await orchestrator.setTranscriberReady(true)
-            await Self.shutdownEngine(drop)
+            for engine in drop { await Self.shutdownEngine(engine) }
             self?.applyWhisperTuning()
         }
     }
@@ -884,12 +922,14 @@ final class AppController {
     private static func engineReady(_ engine: any Transcriber) async -> Bool {
         if let p = engine as? FluidAudioParakeet { return await p.isReady }
         if let w = engine as? WhisperKitWhisper { return await w.isReady }
+        if let a = engine as? SpeechAnalyzerTranscriber { return await a.isReady }
         return true
     }
 
     private static func shutdownEngine(_ engine: any Transcriber) async {
         if let p = engine as? FluidAudioParakeet { await p.shutdown() }
         else if let w = engine as? WhisperKitWhisper { await w.shutdown() }
+        else if let a = engine as? SpeechAnalyzerTranscriber { await a.shutdown() }
     }
 
     // MARK: - Whisper Mode (menu bar)
@@ -944,9 +984,10 @@ final class AppController {
         let tuning = WhisperModeTuning.forWhisperMode(whisperModeOn)
         capture.setGain(tuning.captureGain)
         hud.isWhisperMode = whisperModeOn
-        Task { [parakeet, whisper, endpointer] in
+        Task { [parakeet, whisper, appleSpeech, endpointer] in
             await parakeet.setSilenceFloor(tuning.silenceFloor)
             await whisper.setSilenceFloor(tuning.silenceFloor)
+            await appleSpeech.setSilenceFloor(tuning.silenceFloor)
             await endpointer.setTuning(tuning)
         }
     }
@@ -956,6 +997,9 @@ final class AppController {
     /// Re-read on-disk model presence/size (skips models mid-download/prepare).
     func refreshModelStates() {
         for model in ManagedModel.allCases {
+            // System-managed models (Apple Speech) aren't on disk here — their
+            // install state comes from `AssetInventory` via refreshAppleSpeechState().
+            if model.isSystemManaged { continue }
             switch modelStates[model] {
             case .downloading, .preparing: continue
             default: break
@@ -965,11 +1009,27 @@ final class AppController {
         }
     }
 
+    /// Re-read the Apple Speech asset install state + resolved locale from the
+    /// OS (`AssetInventory`); never clobbers an in-flight download/prepare.
+    func refreshAppleSpeechState() {
+        Task { [weak self] in
+            guard let self else { return }
+            let installed = await self.appleSpeech.isAssetInstalled()
+            let locale = await self.appleSpeech.localeIdentifier()
+            switch self.modelStates[.appleSpeech] {
+            case .downloading, .preparing: break
+            default: self.modelStates[.appleSpeech] = installed ? .ready(bytes: 0) : .notDownloaded
+            }
+            self.appleSpeechLocale = locale
+        }
+    }
+
     /// Whether a model is the active speech engine (delete is blocked for it).
     func isModelInUse(_ model: ManagedModel) -> Bool {
         switch model {
         case .parakeet: return activeSpeechModel == .parakeet
         case .whisper: return activeSpeechModel == .whisper
+        case .appleSpeech: return activeSpeechModel == .appleSpeech
         case .vad: return false
         }
     }
@@ -990,6 +1050,14 @@ final class AppController {
                 if self?.activeSpeechModel != .whisper { await whisper.shutdown() }
                 self?.refreshModelStates()
             }
+        case .appleSpeech:
+            modelStates[.appleSpeech] = .preparing
+            Task { [appleSpeech, weak self] in
+                // Downloading = ensuring the OS asset is installed + preheated.
+                try? await appleSpeech.warmUp()
+                if self?.activeSpeechModel != .appleSpeech { await appleSpeech.shutdown() }
+                self?.refreshAppleSpeechState()
+            }
         case .vad:
             modelStates[.vad] = .preparing
             Task { [endpointer, weak self] in
@@ -1003,6 +1071,12 @@ final class AppController {
 
     /// Delete a model from disk (confirmed). Blocked for the in-use engine.
     func deleteModel(_ model: ManagedModel) {
+        // System-managed assets (Apple Speech) aren't ours to delete, and their
+        // `directory` is a placeholder — never touch disk for them.
+        guard !model.isSystemManaged else {
+            showNote("Apple Speech is managed by macOS — remove it in System Settings.")
+            return
+        }
         guard !isModelInUse(model) else {
             showNote("Can't delete the speech engine in use")
             return
@@ -1018,6 +1092,7 @@ final class AppController {
             switch model {
             case .parakeet: await parakeet.shutdown()
             case .whisper: await whisper.shutdown()
+            case .appleSpeech: break // guarded above — never reached
             case .vad: break
             }
             try? ModelPaths.removeFromDisk(at: model.directory)

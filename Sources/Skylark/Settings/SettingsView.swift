@@ -263,6 +263,7 @@ private struct GeneralPane: View {
                 )) {
                     Text("Local — Parakeet").tag(STTChoice.localParakeet)
                     Text("Local — Whisper large-v3-turbo").tag(STTChoice.localWhisper)
+                    Text("Local — Apple Speech (macOS)").tag(STTChoice.localApple)
                     ForEach(controller.sttModels) { entry in
                         Text(entry.label).tag(STTChoice.cloud(slug: entry.slug))
                     }
@@ -492,6 +493,7 @@ private struct RecentDictationRow: View {
         switch engine {
         case "parakeet": return "Parakeet · local"
         case "whisperkit": return "Whisper · local"
+        case "appleSpeech": return "Apple Speech · local"
         case "stub": return "stub"
         default: return shortSlug(engine) + " · cloud"
         }
@@ -525,10 +527,11 @@ private struct ModelsPane: View {
             Section {
                 ModelRow(controller: controller, model: .parakeet)
                 ModelRow(controller: controller, model: .whisper)
+                AppleSpeechRow(controller: controller)
             } header: {
                 Text("Speech engines · on device")
             } footer: {
-                Text("Downloaded once and stored locally under Application Support/Skylark. Runs fully offline.")
+                Text("Downloaded once and stored locally under Application Support/Skylark. Runs fully offline. Apple Speech's language asset is managed by macOS instead.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -632,6 +635,60 @@ private struct ModelRow: View {
             Button("Delete") { controller.deleteModel(model) }
                 .disabled(controller.isModelInUse(model))
                 .help(controller.isModelInUse(model) ? "In use by the current speech engine" : "")
+        }
+    }
+}
+
+/// Row for the macOS-managed Apple Speech engine. Like `ModelRow` it offers a
+/// Download action (which installs the OS language asset) and shows progress,
+/// but there's no size or delete — the asset is system-managed and removed in
+/// System Settings, not here. Shows the resolved locale.
+private struct AppleSpeechRow: View {
+    @Bindable var controller: AppController
+
+    private var state: AppController.ManagedModelState {
+        controller.modelStates[.appleSpeech] ?? .notDownloaded
+    }
+
+    private let info = ModelInfo.appleSpeech
+
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Apple Speech").font(.system(size: 13, weight: .medium))
+                Text(statusText).font(.caption).foregroundStyle(.secondary)
+                Text(info.description).font(.caption).foregroundStyle(.secondary)
+                ScoreRow(info: info)
+            }
+            Spacer(minLength: 8)
+            actions
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var statusText: String {
+        switch state {
+        case .notDownloaded:
+            return "Not installed · language \(controller.appleSpeechLocale) · system-managed"
+        case let .downloading(progress):
+            return "Downloading \(Int((progress * 100).rounded()))%"
+        case .preparing:
+            return "Preparing…"
+        case .ready:
+            return "Installed · language \(controller.appleSpeechLocale) · system-managed"
+        }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        switch state {
+        case .notDownloaded:
+            Button("Download") { controller.downloadModel(.appleSpeech) }
+        case .downloading, .preparing:
+            ProgressView().controlSize(.small)
+        case .ready:
+            // No delete: the asset belongs to macOS.
+            EmptyView()
         }
     }
 }

@@ -58,6 +58,16 @@ enum ModelInfo {
         primary: 4, primaryLabel: "Quality", secondary: 3.5, secondaryLabel: "Speed"
     )
 
+    // MARK: Speech · on device (system-managed, not a downloadable `ManagedModel` dir)
+
+    /// macOS 26 Apple Speech (SpeechAnalyzer/SpeechTranscriber). The speech asset
+    /// is downloaded and managed by macOS (no fixed size, no delete here); native
+    /// punctuation and capitalization come built in.
+    static let appleSpeech = Entry(
+        "macOS on-device speech recognition (SpeechAnalyzer). Private, offline, with native punctuation and capitalization. The language asset is downloaded and managed by macOS — no fixed size, and it's removed in System Settings, not here.",
+        primary: 4, secondary: 4.5
+    )
+
     // MARK: Cloud (by registry slug)
 
     static let cloudSTT: [String: Entry] = [

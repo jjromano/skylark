@@ -6,6 +6,19 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.5.0 — 2026-07-22
+
+- New local speech engine: **Apple Speech (macOS)** — Apple's on-device
+  SpeechAnalyzer. Fully offline, near-zero memory in Skylark (the model runs
+  in a system process), natively punctuated and capitalized output, ~30+
+  languages. Measured on an M3 Air: final text ~170 ms after end of speech
+  (Parakeet: ~80 ms; both well inside the 300 ms budget). Its model is a
+  shared system asset — Settings → Models shows install state and download.
+  Great fit when Apple Intelligence is off or punctuation-without-cleanup
+  matters.
+- `skylark-bench --compare` runs the same audio through Parakeet and Apple
+  Speech side by side.
+
 ## 0.4.0 — 2026-07-22
 
 - Local (Apple Intelligence) cleanup is far more faithful to what you said:

@@ -31,12 +31,16 @@ final class ConverterFeed: @unchecked Sendable {
 enum EngineChoice: String {
     case parakeet
     case whisper
+    case apple // macOS SpeechAnalyzer / SpeechTranscriber
 }
 
 var repeats = 3
 var modelsDir: URL = ModelPaths.models
 var engineChoice: EngineChoice = .parakeet
 var files: [String] = []
+/// `--compare` runs the SAME audio through Parakeet AND Apple Speech, printing
+/// per-engine decode latency + transcript + whether the output is punctuated.
+var compareMode = false
 
 var args = Array(CommandLine.arguments.dropFirst())
 var i = 0
@@ -45,11 +49,14 @@ while i < args.count {
     switch arg {
     case "--engine":
         guard i + 1 < args.count, let choice = EngineChoice(rawValue: args[i + 1]) else {
-            FileHandle.standardError.write(Data("error: --engine needs parakeet|whisper\n".utf8))
+            FileHandle.standardError.write(Data("error: --engine needs parakeet|whisper|apple\n".utf8))
             exit(2)
         }
         engineChoice = choice
         i += 2
+    case "--compare":
+        compareMode = true
+        i += 1
     case "--repeat":
         guard i + 1 < args.count, let n = Int(args[i + 1]), n > 0 else {
             FileHandle.standardError.write(Data("error: --repeat needs a positive integer\n".utf8))
@@ -164,6 +171,11 @@ func run(files: [String], repeats: Int, modelsDir: URL, engineChoice: EngineChoi
         engine = WhisperKitWhisper(downloadBase: modelsDir.appendingPathComponent("whisperkit"))
         engineLabel = "whisper"
         print("Preparing WhisperKit models (dir: \(modelsDir.appendingPathComponent("whisperkit").path))…")
+    case .apple:
+        // First run may trigger a system-managed language-asset download.
+        engine = SpeechAnalyzerTranscriber()
+        engineLabel = "apple"
+        print("Preparing Apple Speech (SpeechAnalyzer) — may download a system language asset…")
     }
 
     do {
@@ -232,5 +244,81 @@ func run(files: [String], repeats: Int, modelsDir: URL, engineChoice: EngineChoi
     return failed ? 1 : 0
 }
 
-let code = await run(files: files, repeats: repeats, modelsDir: modelsDir, engineChoice: engineChoice)
+// MARK: - Compare mode (Parakeet vs Apple Speech, same audio)
+
+/// Whether `text` contains sentence punctuation / capitalization — a quick proxy
+/// for "native formatting present" (Apple Speech punctuates; Parakeet does not).
+func looksPunctuated(_ text: String) -> Bool {
+    let hasPunct = text.contains { ".,?!;:".contains($0) }
+    let hasUpper = text.contains { $0.isUppercase }
+    return hasPunct || hasUpper
+}
+
+/// Runs each file through Parakeet and Apple Speech, printing end-of-audio →
+/// final-text decode latency, the transcript, and whether it's punctuated.
+/// NOTE: unlike the default bench, this prints transcript content — it's a
+/// developer comparison harness, so run it only on non-sensitive test clips.
+func runCompare(files: [String], repeats: Int, modelsDir: URL) async -> Int32 {
+    let parakeet = FluidAudioParakeet(modelsDirectory: modelsDir)
+    let apple = SpeechAnalyzerTranscriber()
+    let engines: [(label: String, engine: any Transcriber)] = [
+        ("parakeet", parakeet),
+        ("apple", apple),
+    ]
+
+    print("Preparing engines (Parakeet + Apple Speech)…")
+    for (label, engine) in engines {
+        do {
+            try await engine.warmUp()
+        } catch {
+            FileHandle.standardError.write(Data("error: \(label) warmUp failed: \(error.localizedDescription)\n".utf8))
+            return 1
+        }
+    }
+
+    var failed = false
+    for path in files {
+        let name = (path as NSString).lastPathComponent
+        let clip: AudioClip
+        do {
+            clip = try loadClip(path)
+        } catch {
+            FileHandle.standardError.write(Data("error: \(error)\n".utf8))
+            failed = true
+            continue
+        }
+        print("")
+        print("=== \(name)  (\(String(format: "%.2f", clip.duration)) s audio) ===")
+        for (label, engine) in engines {
+            var decodeMs: [Double] = []
+            var transcript = ""
+            var ok = true
+            for _ in 0..<repeats {
+                let start = ContinuousClock.now
+                do {
+                    transcript = try await engine.transcribe(clip, hint: .none)
+                } catch {
+                    FileHandle.standardError.write(Data("error: \(label) decode failed for \(name): \(error.localizedDescription)\n".utf8))
+                    ok = false
+                    break
+                }
+                let elapsed = start.duration(to: .now)
+                decodeMs.append(Double(elapsed.components.seconds) * 1000 + Double(elapsed.components.attoseconds) / 1e15)
+            }
+            if !ok { failed = true; continue }
+            let med = median(decodeMs)
+            print("  \(pad(label, 10)) end→text: \(lpad(String(format: "%.1f", med), 8)) ms   punctuated: \(looksPunctuated(transcript) ? "yes" : "no")")
+            print("  \(pad("", 10)) text: \"\(transcript)\"")
+            print("RESULT\t\(label)\t\(name)\t\(String(format: "%.2f", clip.duration))\t\(String(format: "%.1f", med))\t\(looksPunctuated(transcript) ? "punct" : "plain")")
+        }
+    }
+    return failed ? 1 : 0
+}
+
+let code: Int32
+if compareMode {
+    code = await runCompare(files: files, repeats: repeats, modelsDir: modelsDir)
+} else {
+    code = await run(files: files, repeats: repeats, modelsDir: modelsDir, engineChoice: engineChoice)
+}
 exit(code)

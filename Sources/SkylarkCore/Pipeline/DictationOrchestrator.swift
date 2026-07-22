@@ -415,6 +415,7 @@ public actor DictationOrchestrator {
         switch id {
         case .parakeet: return "parakeet"
         case .whisperKit: return "whisperkit"
+        case .speechAnalyzer: return "appleSpeech"
         case .cloud(let slug): return slug
         case .stub: return "stub"
         }
