@@ -73,6 +73,18 @@ enum ModelInfo {
             "Lighter, cheaper GPT-4o transcription — nearly as accurate, faster and cheaper.",
             primary: 4.5, secondary: 4.5, costPerMonth: "≈ $0.90/mo"
         ),
+        "deepgram/nova-3": Entry(
+            "Deepgram's flagship ASR — strong accuracy on real-world speech, very fast batch turnaround ($0.0043/min).",
+            primary: 4.5, secondary: 4.5, costPerMonth: "≈ $1.30/mo"
+        ),
+        "microsoft/mai-transcribe-1.5": Entry(
+            "Microsoft's 2026 transcription model — current independent accuracy leader, fast batch; served via Azure ($0.36/hr).",
+            primary: 5, secondary: 4.5, costPerMonth: "≈ $1.80/mo"
+        ),
+        "mistralai/voxtral-mini-transcribe": Entry(
+            "Mistral's dedicated transcription model — accuracy near the leaders at a budget price ($0.003/min).",
+            primary: 4.5, secondary: 4.5, costPerMonth: "≈ $0.90/mo"
+        ),
     ]
 
     static let cloudCleanup: [String: Entry] = [
@@ -90,6 +102,11 @@ enum ModelInfo {
             "Highest-quality cleanup here — best grammar and formatting, slightly slower.",
             primary: 4.5, primaryLabel: "Quality", secondary: 4, secondaryLabel: "Speed",
             costPerMonth: "≈ $0.08/mo"
+        ),
+        "openai/gpt-oss-120b": Entry(
+            "Big open model on Groq (~500 tok/s) — smartest cleanup option; Groq's successor to Llama 3.3 70B.",
+            primary: 4.5, primaryLabel: "Quality", secondary: 4, secondaryLabel: "Speed",
+            costPerMonth: "≈ $0.02/mo"
         ),
     ]
 }

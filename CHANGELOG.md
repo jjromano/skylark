@@ -6,6 +6,18 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.3.0 — 2026-07-22
+
+- New cloud STT choices in the model registry: **Deepgram Nova-3**
+  (fast, strong real-world accuracy, ≈$1.30/mo at 5 hrs), **MAI Transcribe
+  1.5** (Microsoft — current independent accuracy leader, ≈$1.80/mo), and
+  **Voxtral Mini Transcribe** (Mistral — near-leader accuracy at ≈$0.90/mo).
+  All single-provider on OpenRouter, no pin needed.
+- New cloud cleanup choice: **GPT-OSS 120B (Groq)** — Groq's recommended
+  successor to Llama 3.3 70B (which Groq deprecates 2026-08-16 along with
+  Llama 3.1 8B; both remain listed for now and fall back to other providers
+  after that date).
+
 ## 0.2.2 — 2026-07-22
 
 - Fixed: choosing "Apple Intelligence (Local)" in Settings → General's

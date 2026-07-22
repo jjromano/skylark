@@ -32,9 +32,18 @@ public struct ModelRegistryEntry: Sendable, Equatable, Codable, Identifiable {
         .init(slug: "meta-llama/llama-3.1-8b-instruct", label: "Llama 3.1 8B (Groq)", providerPin: "groq", kind: .cleanup, sort: 0),
         .init(slug: "openai/gpt-oss-20b", label: "GPT-OSS 20B (Groq)", providerPin: "groq", kind: .cleanup, sort: 1),
         .init(slug: "meta-llama/llama-3.3-70b-instruct", label: "Llama 3.3 70B (Groq)", providerPin: "groq", kind: .cleanup, sort: 2),
+        // Groq deprecates llama-3.1-8b-instant / llama-3.3-70b-versatile on
+        // 2026-08-16; gpt-oss-120b is Groq's recommended replacement (~500 t/s,
+        // Cerebras/others as soft-pin fallbacks).
+        .init(slug: "openai/gpt-oss-120b", label: "GPT-OSS 120B (Groq)", providerPin: "groq", kind: .cleanup, sort: 3),
         // Cloud STT — Groq is whisper-large-v3-turbo's sole provider (no pin needed).
         .init(slug: "openai/whisper-large-v3-turbo", label: "Groq Fast Whisper", providerPin: nil, kind: .stt, sort: 0),
         .init(slug: "openai/gpt-4o-transcribe", label: "GPT-4o Transcribe", providerPin: nil, kind: .stt, sort: 1),
         .init(slug: "openai/gpt-4o-mini-transcribe", label: "GPT-4o Mini Transcribe", providerPin: nil, kind: .stt, sort: 2),
+        // 2026 transcription entrants — each has a single OpenRouter provider
+        // (Deepgram / Azure / Mistral respectively), so no pin needed.
+        .init(slug: "deepgram/nova-3", label: "Deepgram Nova-3", providerPin: nil, kind: .stt, sort: 3),
+        .init(slug: "microsoft/mai-transcribe-1.5", label: "MAI Transcribe 1.5", providerPin: nil, kind: .stt, sort: 4),
+        .init(slug: "mistralai/voxtral-mini-transcribe", label: "Voxtral Mini Transcribe", providerPin: nil, kind: .stt, sort: 5),
     ]
 }
