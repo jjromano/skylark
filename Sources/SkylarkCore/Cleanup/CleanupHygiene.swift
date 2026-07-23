@@ -76,6 +76,16 @@ public enum CleanupHygiene {
             if dropsNegation(from: transcript, to: cleaned) {
                 throw CleanerError.unusableOutput
             }
+            // Numbers are excluded from the vocabulary/count ratios (so spoken→
+            // digit conversion isn't punished), which leaves a numbers-heavy
+            // clause drop invisible to those floors ("transfer twenty three
+            // thousand … dollars … to vendor now" → "Transfer to vendor now."
+            // retains 100% of its non-number words). This dedicated guard closes
+            // that gap by counting number *units*, not words — a dropped amount
+            // deletes a whole unit even when every surviving word is kept.
+            if dropsNumberUnit(from: transcript, to: cleaned) {
+                throw CleanerError.unusableOutput
+            }
             if divergesFrom(transcript, cleaned: cleaned, retentionFloor: retentionFloor) {
                 throw CleanerError.unusableOutput
             }
@@ -192,6 +202,46 @@ public enum CleanupHygiene {
         guard rawCount >= 4 else { return false }
         let cleanedCount = contentWords(cleaned).count
         return Double(cleanedCount) / Double(rawCount) < floor
+    }
+
+    /// True when the cleaned text preserves fewer distinct number *units* than
+    /// the raw — a numbers-heavy clause was dropped. A "number unit" is one
+    /// maximal consecutive run of number tokens (spoken number words or numeric/
+    /// symbol tokens): converting "twenty three" → "23" collapses one run into
+    /// one token = the SAME unit count (a faithful repair, allowed), whereas
+    /// dropping a spoken money amount deletes an entire run = fewer units
+    /// (rejected). Runs at every non-translated tier — it's what lets numbers be
+    /// excluded from the vocabulary/count ratios without opening a hole.
+    static func dropsNumberUnit(from raw: String, to cleaned: String) -> Bool {
+        numberUnitCount(cleaned) < numberUnitCount(raw)
+    }
+
+    /// Count maximal consecutive runs of number tokens as one unit each.
+    private static func numberUnitCount(_ text: String) -> Int {
+        let normalized = text.lowercased().replacingOccurrences(of: "\u{2019}", with: "'")
+        var units = 0
+        var inRun = false
+        for token in normalized.split(whereSeparator: { $0.isWhitespace }) {
+            if isNumberToken(String(token)) {
+                if !inRun { units += 1; inRun = true }
+            } else {
+                inRun = false
+            }
+        }
+        return units
+    }
+
+    /// A whitespace-delimited token that reads as (part of) a number: a spoken
+    /// number word (`numberWords`, tolerating attached punctuation like a
+    /// trailing comma), or a numeric/symbol token that carries a digit
+    /// ("23", "$20", "99.9%", "23,456"). A token with non-number letters
+    /// ("vendor", "3rd") is not a number token, so it breaks a run.
+    private static func isNumberToken(_ token: String) -> Bool {
+        let letters = token.filter { $0.isLetter }
+        if letters.isEmpty {
+            return token.contains { $0.isNumber }
+        }
+        return numberWords.contains(letters)
     }
 
     /// Length (UTF-16-agnostic Character count) of a verbatim run of surrounding

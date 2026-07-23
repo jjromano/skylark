@@ -811,9 +811,9 @@ public actor DictationOrchestrator {
         // nil = no readable selection → generate text at the cursor.
         let selection = await injector.readSelection()
 
-        let result: String
+        let outcome: CommandOutcome
         do {
-            result = try await commandRunner.run(
+            outcome = try await commandRunner.run(
                 instruction: instruction, selection: selection?.text, tier: tier
             )
         } catch {
@@ -821,6 +821,10 @@ public actor DictationOrchestrator {
             finishCommandIdle(note: "Command failed — selection left unchanged")
             return
         }
+        // Surface any degrade marker (e.g. cloud outage served on-device) without
+        // blocking the write.
+        if let degradeNote = outcome.note { noteContinuation.yield(degradeNote) }
+        let result = outcome.text
 
         phase = .injecting
         if let selection, !selection.text.isEmpty {

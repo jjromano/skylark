@@ -224,6 +224,82 @@ struct LocalCleanerTests {
         #expect(!out.lowercased().contains("completely unrelated words"))
     }
 
+    @Test("Chunk count is capped: past maxChunks the remainder is kept RAW in one piece")
+    func chunkCountCapped() async throws {
+        // Enough sentences to exceed maxChunks at the real budget.
+        let backend = MappingBackend { chunk in chunk.uppercased() }
+        let cleaner = LocalCleaner(backend: backend)
+        let sentence = "The build finished cleanly on staging today."
+        let long = Array(repeating: sentence, count: 300).joined(separator: " ")
+
+        // Sanity: this transcript really does produce more than the cap of chunks.
+        #expect(LocalCleaner.sentenceChunks(long, maxTokens: LocalCleaner.chunkTokenThreshold).count
+            > LocalCleaner.maxChunks)
+
+        let out = try await cleaner.clean(long, context: CleanupContext())
+        // Exactly maxChunks generations ran — the remainder was never sent to the
+        // model (bounded per-utterance work).
+        await #expect(backend.transcripts().count == LocalCleaner.maxChunks)
+        // The remainder survives verbatim (raw, mixed-case), never dropped.
+        #expect(out.contains(sentence))
+        // And the capped chunks were actually cleaned (uppercased).
+        #expect(out.contains(sentence.uppercased()))
+    }
+
+    @Test("Cancellation never partial-drops: every chunk survives as raw or cleaned")
+    func cancellationKeepsAllContent() async throws {
+        let backend = MappingBackend { chunk in chunk.uppercased() }
+        let cleaner = LocalCleaner(backend: backend)
+        let long = Array(repeating: "The build finished cleanly on staging today.", count: 60)
+            .joined(separator: " ")
+        let task = Task { try await cleaner.clean(long, context: CleanupContext()) }
+        task.cancel()
+        let out = try await task.value
+        // Wherever cancellation landed (before / during / after generation), no
+        // content is lost: the output is at least as long as the raw transcript
+        // and the source sentence is present (raw and/or uppercased).
+        #expect(out.count >= long.count)
+        #expect(out.uppercased().contains("THE BUILD FINISHED CLEANLY ON STAGING TODAY."))
+    }
+
+    @Test("A cancelled generation propagates (not swallowed as a failed chunk)")
+    func cancelledGenerationPropagates() async {
+        // The chunk loop must distinguish a cancelled generate from a failed one:
+        // a real CancellationError propagates rather than continuing the loop.
+        let backend = MappingBackend { _ in throw CancellationError() }
+        let cleaner = LocalCleaner(backend: backend)
+        let long = Array(repeating: "The build finished cleanly on staging today.", count: 60)
+            .joined(separator: " ")
+        await #expect(throws: CancellationError.self) {
+            _ = try await cleaner.clean(long, context: CleanupContext())
+        }
+    }
+
+    @Test("Translation is single-shot: one generation within the cap, refusal beyond it")
+    func translationDoesNotChunk() async throws {
+        let ctx = CleanupContext(translateTo: "es")
+        // ~375 tokens: over the 200-token chunk threshold (would chunk in cleanup
+        // mode) but under the 800-token translation cap → exactly ONE generation.
+        let within = String(repeating: "hola ", count: 300)
+        #expect(LocalCleaner.estimatedTokens(within) > LocalCleaner.chunkTokenThreshold)
+        #expect(LocalCleaner.estimatedTokens(within) <= LocalCleaner.translationTokenCap)
+        let backend = MappingBackend { _ in "Hola, texto traducido." }
+        let cleaner = LocalCleaner(backend: backend)
+        _ = try await cleaner.clean(within, context: ctx)
+        await #expect(backend.transcripts().count == 1)
+
+        // Beyond the cap → refuse (CleanerError.unavailable) without generating, so
+        // the orchestrator's fallback keeps the raw transcript + shows its note.
+        let tooLong = String(repeating: "hola ", count: 800)
+        #expect(LocalCleaner.estimatedTokens(tooLong) > LocalCleaner.translationTokenCap)
+        let capBackend = MappingBackend { _ in "no" }
+        let capCleaner = LocalCleaner(backend: capBackend)
+        await #expect(throws: CleanerError.self) {
+            _ = try await capCleaner.clean(tooLong, context: ctx)
+        }
+        await #expect(capBackend.transcripts().isEmpty)
+    }
+
     @Test("sentenceChunks: packs sentences up to the budget, splits on boundaries")
     func sentenceChunkBoundaries() {
         let text = "One two three. Four five six. Seven eight nine. Ten eleven twelve."
@@ -240,20 +316,40 @@ struct LocalCleanerTests {
 
     @Test("joinChunks repairs continuation seams but keeps real sentence-boundary capitals")
     func joinChunksSeamRepair() {
-        // Prev chunk does NOT end a sentence → the next chunk's leading capital
-        // is a window-seam artifact (each chunk is cleaned in isolation and the
-        // model capitalizes every chunk's first word) and is down-cased.
-        #expect(LocalCleaner.joinChunks(["I want to", "Review the rotation."])
-            == "I want to review the rotation.")
+        // Prev chunk does NOT end a sentence AND the raw had the word lowercase →
+        // the next chunk's leading capital is a window-seam artifact (each chunk
+        // is cleaned in isolation and the model capitalizes every chunk's first
+        // word) and is down-cased.
+        #expect(LocalCleaner.joinChunks([
+            (cleaned: "I want to", raw: "i want to"),
+            (cleaned: "Review the rotation.", raw: "review the rotation"),
+        ]) == "I want to review the rotation.")
         // Prev chunk ends a sentence → the next capital is a real sentence start.
-        #expect(LocalCleaner.joinChunks(["We shipped it.", "Redis is fine."])
-            == "We shipped it. Redis is fine.")
+        #expect(LocalCleaner.joinChunks([
+            (cleaned: "We shipped it.", raw: "we shipped it"),
+            (cleaned: "Redis is fine.", raw: "redis is fine"),
+        ]) == "We shipped it. Redis is fine.")
         // "I" at a seam is never down-cased.
-        #expect(LocalCleaner.joinChunks(["and then", "I fixed it."])
-            == "and then I fixed it.")
+        #expect(LocalCleaner.joinChunks([
+            (cleaned: "and then", raw: "and then"),
+            (cleaned: "I fixed it.", raw: "i fixed it"),
+        ]) == "and then I fixed it.")
         // An all-caps acronym at a seam is left alone.
-        #expect(LocalCleaner.joinChunks(["we called the", "API twice."])
-            == "we called the API twice.")
+        #expect(LocalCleaner.joinChunks([
+            (cleaned: "we called the", raw: "we called the"),
+            (cleaned: "API twice.", raw: "api twice"),
+        ]) == "we called the API twice.")
+        // Proper noun at a seam is PRESERVED: the raw spelled "Sarah" capitalized,
+        // so the capital is genuine, not a seam artifact (the fixed behavior).
+        #expect(LocalCleaner.joinChunks([
+            (cleaned: "I met", raw: "i met"),
+            (cleaned: "Sarah yesterday.", raw: "i met Sarah yesterday"),
+        ]) == "I met Sarah yesterday.")
+        // Continuation whose raw DID have the word lowercase is still down-cased.
+        #expect(LocalCleaner.joinChunks([
+            (cleaned: "I saw", raw: "i saw"),
+            (cleaned: "The dog.", raw: "the dog"),
+        ]) == "I saw the dog.")
     }
 
     @Test("sentenceChunks: input already within budget is a single passthrough chunk")

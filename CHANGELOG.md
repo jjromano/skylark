@@ -6,6 +6,22 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.1 — 2026-07-22
+
+Hardening from the post-wave audit (adversarially reviewed and verified):
+
+- Cleanup can no longer silently lose numbers: a dictated amount that a
+  cleanup model drops now rejects the cleanup and keeps your raw words —
+  at every tier, cloud included.
+- Long local cleanups are now bounded and cancellable; translation always
+  runs whole (never chunked), so long translated dictations can't come out
+  mixed-language; chunk seams no longer lowercase proper nouns.
+- Voice commands now fall back to the on-device model when the cloud is
+  unreachable ("Cloud unavailable — used on-device model") instead of
+  failing.
+- One less audio-thread allocation when hands-free and live preview run
+  together.
+
 ## 0.7.0 — 2026-07-22
 
 A large feature wave. Everything new that watches, stores, or sends anything

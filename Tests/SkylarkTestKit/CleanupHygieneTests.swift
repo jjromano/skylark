@@ -106,6 +106,33 @@ struct CleanupHygieneTests {
         let out = try CleanupHygiene.validate(clean, transcript: raw)
         #expect(out == clean)
     }
+
+    @Test("A dropped numbers-heavy clause is rejected even at the permissive cloud floor")
+    func numberUnitClauseDropRejected() {
+        // The regression: excluding numbers from the vocab/count ratios let a
+        // dropped money clause retain 100% of its NON-number words. The number-
+        // unit guard counts the two dropped amount runs and rejects it — at the
+        // cloud default floor (0.34, no content-loss guard), where it used to pass.
+        #expect(throws: CleanerError.self) {
+            try CleanupHygiene.validate(
+                "Transfer to vendor now.",
+                transcript: "transfer twenty three thousand four hundred fifty six dollars "
+                    + "and ninety nine cents to vendor now"
+            )
+        }
+    }
+
+    @Test("Number formatting keeps its unit: spoken→digit conversion passes the number guard")
+    func numberConversionPassesGuard() throws {
+        // "twenty three" → "23" collapses one run into one token = same unit count.
+        #expect(try CleanupHygiene.validate("We have 23 tickets.", transcript: "we have twenty three tickets")
+            == "We have 23 tickets.")
+        // Two separate number runs on both sides → equal units → passes.
+        #expect(try CleanupHygiene.validate(
+            "I ate 1 banana and 2 apples.",
+            transcript: "i ate one banana and two apples"
+        ) == "I ate 1 banana and 2 apples.")
+    }
 }
 
 @Suite("CleanupPrompt — transcript fencing")
@@ -244,6 +271,19 @@ struct LocalStrictnessTests {
                 "we shipped three features but the deployment failed on production"
             )
         }
+    }
+
+    @Test("Content-loss boundary: exactly 6/10 content words (== the 0.60 floor) passes (strict <)")
+    func contentLossBoundaryPasses() throws {
+        // 10 content words in raw (fillers "um"/"the"/"and" don't count); the
+        // cleanup keeps exactly 6 of them → ratio 0.60, which is NOT < 0.60, so
+        // it passes. This pins the floor as a strict inequality at the boundary.
+        let raw = "um the quarterly report covers revenue costs profit margins growth and risk factors"
+        let cleaned6 = "The quarterly report covers revenue, costs, and profit." // 6 content words
+        #expect(try validateLocal(cleaned6, raw) == cleaned6)
+        // One content word fewer (5/10 = 0.50 < 0.60) tips over the floor → rejected.
+        let cleaned5 = "The quarterly report covers revenue and costs."
+        #expect(throws: CleanerError.self) { try validateLocal(cleaned5, raw) }
     }
 
     @Test("Cloud defaults are more permissive: a dropped clause the local floor rejects passes at 0.34")

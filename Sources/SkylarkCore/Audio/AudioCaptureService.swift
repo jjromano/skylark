@@ -261,17 +261,18 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         let rms = (sumSquares / Float(frames)).squareRoot()
         levelsContinuation.yield(rms)
 
-        // Hands-free only: hand a copy of the converted frames to the VAD path.
-        // Off (no allocation) for push-to-talk.
-        if framesWanted.load(ordering: .relaxed) {
-            framesContinuation.yield(Array(UnsafeBufferPointer(start: channel, count: frames)))
-        }
-
-        // Live-preview only: hand a copy of the converted frames to the
-        // sliding-window preview engine. Independently gated; off for every
-        // recording that isn't showing a preview.
-        if previewWanted.load(ordering: .relaxed) {
-            previewFramesContinuation.yield(Array(UnsafeBufferPointer(start: channel, count: frames)))
+        // Deliver a copy of the converted frames to whichever raw-frame
+        // consumers are active (hands-free VAD and/or live preview). Both gates
+        // off = push-to-talk with no preview → the zero-allocation path (no Array
+        // built at all). When either is on, allocate the copy ONCE and hand the
+        // same value to both streams: it's copy-on-write and both consumers only
+        // read it, so a single buffer is safe (was two identical allocations).
+        let wantFrames = framesWanted.load(ordering: .relaxed)
+        let wantPreview = previewWanted.load(ordering: .relaxed)
+        if wantFrames || wantPreview {
+            let copy = Array(UnsafeBufferPointer(start: channel, count: frames))
+            if wantFrames { framesContinuation.yield(copy) }
+            if wantPreview { previewFramesContinuation.yield(copy) }
         }
     }
 }

@@ -28,12 +28,12 @@ private actor StubCommandRunner: CommandRunning {
 
     init(_ behavior: Behavior) { self.behavior = behavior }
 
-    func run(instruction: String, selection: String?, tier: CleanupTier) async throws -> String {
+    func run(instruction: String, selection: String?, tier: CleanupTier) async throws -> CommandOutcome {
         runCount += 1
         lastSelection = selection
         lastTier = tier
         switch behavior {
-        case let .succeed(text): return text
+        case let .succeed(text): return CommandOutcome(text: text)
         case .fail: throw CommandError.unavailable(reason: "stub failure")
         }
     }

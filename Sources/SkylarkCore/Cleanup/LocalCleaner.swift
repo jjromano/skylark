@@ -47,6 +47,15 @@ public struct LocalCleaner: Cleaner {
     /// capitalization for that path. The model's 4096-token context makes a
     /// 200-token input + its output trivially safe in one shot.
     public static let chunkTokenThreshold = 200
+    /// Hard cap on the number of chunk generations per utterance. Beyond this the
+    /// remainder is kept RAW in one piece, bounding per-utterance model work so a
+    /// pathologically long dictation can't fan out into unbounded generations.
+    public static let maxChunks = 12
+    /// Translation is never chunked (independent per-chunk translation produces
+    /// mixed-language output). It runs as ONE generation up to this many
+    /// estimated input tokens; beyond it we refuse (`CleanerError.unavailable`)
+    /// so the orchestrator's fallback keeps the raw transcript + shows its note.
+    public static let translationTokenCap = 800
     /// Hard cap on requested response tokens regardless of input size.
     static let responseTokenCap = 1024
     /// Floor so very short transcripts still get room to breathe.
@@ -96,38 +105,54 @@ public struct LocalCleaner: Cleaner {
         let translated = context.translateTo != nil
         let estimatedTokens = Self.estimatedTokens(transcript)
 
+        // Translation must NOT be chunked: chunk-wise translation splices
+        // independently-translated windows at English-specific seams and
+        // regresses to raw English on any rejected chunk — all of which produce
+        // mixed-language output. Translate in ONE generation up to the cap; past
+        // it, refuse so the orchestrator's fallback keeps the raw transcript and
+        // surfaces the standard "couldn't translate" note.
+        if translated {
+            guard estimatedTokens <= Self.translationTokenCap else {
+                throw CleanerError.unavailable(reason: "transcript too long to translate")
+            }
+            return try await singleGeneration(
+                transcript, instructions: instructions, context: context, translated: true
+            )
+        }
+
         // Short transcript → single generation (today's behavior). No chunking
         // overhead below the threshold.
         guard estimatedTokens > Self.chunkTokenThreshold else {
-            let maxTokens = Self.maximumResponseTokens(forTranscriptTokens: estimatedTokens)
-            let raw = try await backend.generate(
-                instructions: instructions,
-                userMessage: CleanupPrompt.userMessage(transcript: transcript),
-                maximumResponseTokens: maxTokens
-            )
-            // Prewarm the next session off the paste path (this whole call
-            // already runs detached from the HUD state), then apply hygiene
-            // with the strict local floors — a failure keeps the RAW transcript.
-            await backend.prewarm(instructions: instructions)
-            return try CleanupHygiene.validate(
-                raw,
-                transcript: transcript,
-                retentionFloor: Self.localRetentionFloor,
-                contentLossFloor: Self.localContentLossFloor,
-                fieldContext: context.fieldContext,
-                translated: translated
+            return try await singleGeneration(
+                transcript, instructions: instructions, context: context, translated: false
             )
         }
 
         // Longer transcript → sentence-window chunking. Each chunk is cleaned in
         // its own generation and validated independently; a chunk that fails
         // validation (or whose generation errors) keeps its RAW text so the
-        // whole transcript never fails. Arbitrarily long transcripts now
-        // succeed (no more too-long bail-out).
-        let chunks = Self.sentenceChunks(transcript, maxTokens: Self.chunkTokenThreshold)
-        var parts: [String] = []
-        parts.reserveCapacity(chunks.count)
-        for chunk in chunks {
+        // whole transcript never fails.
+        let allChunks = Self.sentenceChunks(transcript, maxTokens: Self.chunkTokenThreshold)
+        // Cap the number of model generations per utterance; the remainder past
+        // the cap is kept RAW in one piece (bounded, faithful by construction).
+        let capped = Array(allChunks.prefix(Self.maxChunks))
+        let remainderRaw = allChunks.count > Self.maxChunks
+            ? allChunks[Self.maxChunks...].joined(separator: " ")
+            : nil
+
+        // Each entry pairs the text that will be joined with the chunk's RAW
+        // input, so seam repair (`joinChunks`) can tell a model-introduced
+        // capital from a proper noun the speaker actually used.
+        var parts: [(cleaned: String, raw: String)] = []
+        parts.reserveCapacity(allChunks.count)
+        for (index, chunk) in capped.enumerated() {
+            // Observe cancellation (e.g. the cleanup-timeout `cancelAll`): keep
+            // every not-yet-cleaned chunk's RAW text — never partial-drop — and
+            // stop generating.
+            if Task.isCancelled {
+                for remaining in capped[index...] { parts.append((remaining, remaining)) }
+                break
+            }
             let maxTokens = Self.maximumResponseTokens(forTranscriptTokens: Self.estimatedTokens(chunk))
             do {
                 let raw = try await backend.generate(
@@ -135,20 +160,54 @@ public struct LocalCleaner: Cleaner {
                     userMessage: CleanupPrompt.userMessage(transcript: chunk),
                     maximumResponseTokens: maxTokens
                 )
-                parts.append(try CleanupHygiene.validate(
+                let cleaned = try CleanupHygiene.validate(
                     raw,
                     transcript: chunk,
                     retentionFloor: Self.localRetentionFloor,
                     contentLossFloor: Self.localContentLossFloor,
                     fieldContext: context.fieldContext,
-                    translated: translated
-                ))
+                    translated: false
+                )
+                parts.append((cleaned, chunk))
+            } catch is CancellationError {
+                // A cancelled generation is NOT a failed chunk: propagate so the
+                // caller's timeout path keeps the raw transcript, rather than
+                // silently continuing the loop with a partial rewrite.
+                throw CancellationError()
             } catch {
-                parts.append(chunk) // keep this chunk's raw text; never fail the whole
+                parts.append((chunk, chunk)) // keep this chunk's raw text; never fail the whole
             }
         }
+        if let remainderRaw { parts.append((remainderRaw, remainderRaw)) }
         await backend.prewarm(instructions: instructions)
         return Self.joinChunks(parts)
+    }
+
+    /// One cleanup generation over the whole `transcript` (the short-transcript
+    /// and translation paths). Prewarms the next session off the paste path,
+    /// then applies hygiene with the strict local floors — a failure throws so
+    /// the caller keeps the RAW transcript.
+    private func singleGeneration(
+        _ transcript: String,
+        instructions: String,
+        context: CleanupContext,
+        translated: Bool
+    ) async throws -> String {
+        let maxTokens = Self.maximumResponseTokens(forTranscriptTokens: Self.estimatedTokens(transcript))
+        let raw = try await backend.generate(
+            instructions: instructions,
+            userMessage: CleanupPrompt.userMessage(transcript: transcript),
+            maximumResponseTokens: maxTokens
+        )
+        await backend.prewarm(instructions: instructions)
+        return try CleanupHygiene.validate(
+            raw,
+            transcript: transcript,
+            retentionFloor: Self.localRetentionFloor,
+            contentLossFloor: Self.localContentLossFloor,
+            fieldContext: context.fieldContext,
+            translated: translated
+        )
     }
 
     /// Reassemble cleaned chunks. Each chunk was cleaned in isolation, so the
@@ -157,31 +216,48 @@ public struct LocalCleaner: Cleaner {
     /// unpunctuated dictation). Join with a space, but when the accumulated text
     /// does NOT already end a sentence (no terminal `.`/`!`/`?`/`:`/newline),
     /// lowercase the continuation chunk's first word so the seam reads as one
-    /// sentence — unless that word is "I"/"I'…" or looks like a proper noun
-    /// (all-caps acronym, or a longer capitalized word we leave alone rather
-    /// than risk down-casing a name). Newlines the model produced inside a chunk
+    /// sentence — but ONLY when that word appears spelled lowercase in the
+    /// chunk's own RAW input (proof the capital is a model-introduced seam
+    /// artifact, not a proper noun the speaker used, e.g. "Sarah"). Each part
+    /// carries its raw text for exactly that decision. "I"/"I'…" and all-caps
+    /// acronyms are never down-cased. Newlines the model produced inside a chunk
     /// (list formatting, "new paragraph") are preserved.
-    public static func joinChunks(_ parts: [String]) -> String {
+    public static func joinChunks(_ parts: [(cleaned: String, raw: String)]) -> String {
         var result = ""
-        for part in parts {
-            let p = part.trimmingCharacters(in: .whitespacesAndNewlines)
+        for (cleaned, raw) in parts {
+            let p = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !p.isEmpty else { continue }
             guard !result.isEmpty else { result = p; continue }
             let endsSentence = result.last.map { ".!?:\n".contains($0) } ?? true
-            result += " " + (endsSentence ? p : lowercasedContinuation(p))
+            result += " " + (endsSentence ? p : lowercasedContinuation(p, raw: raw))
         }
         return result
     }
 
     /// Lowercase the first letter of a continuation chunk unless it's a word we
-    /// must not down-case: "I"/"I'm"/"I'll"…, or an all-caps token (acronym).
-    private static func lowercasedContinuation(_ chunk: String) -> String {
+    /// must not down-case: "I"/"I'm"/"I'll"…, an all-caps token (acronym), or a
+    /// word the chunk's RAW input did NOT spell lowercase (a proper noun — the
+    /// model's capital is genuine, so leave it). Only when the raw actually had
+    /// the word lowercase is the capital a seam artifact we should undo.
+    private static func lowercasedContinuation(_ chunk: String, raw: String) -> String {
         let firstWord = chunk.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? chunk
         if firstWord == "I" || firstWord.hasPrefix("I'") || firstWord.hasPrefix("I\u{2019}") { return chunk }
         // All-caps acronym (e.g. "API", "SQL") — leave it.
         let letters = firstWord.filter { $0.isLetter }
         if letters.count >= 2, letters == letters.uppercased() { return chunk }
+        // Only a word the raw dictation spelled lowercase is a seam artifact.
+        guard rawHasLowercased(firstWord, in: raw) else { return chunk }
         return chunk.prefix(1).lowercased() + chunk.dropFirst()
+    }
+
+    /// True when `word` (reduced to its alphanumeric core, lowercased) appears as
+    /// a whole token, spelled all-lowercase, in `raw`. Case-sensitive on purpose:
+    /// raw "the" matches, raw "The"/"Sarah" does not — so a proper noun keeps its
+    /// capital while a genuinely-lowercase continuation is down-cased.
+    private static func rawHasLowercased(_ word: String, in raw: String) -> Bool {
+        let target = word.filter { $0.isLetter || $0.isNumber }.lowercased()
+        guard !target.isEmpty else { return false }
+        return raw.split { !$0.isLetter && !$0.isNumber }.contains { $0 == target }
     }
 
     // MARK: - Pure helpers (unit-tested)
