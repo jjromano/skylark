@@ -217,6 +217,12 @@ final class AppController {
     /// re-renders, which left the Settings picker visually stuck on its old value.
     private(set) var cleanupOverride: String
 
+    /// How aggressively the cleanup stage edits (Settings → General, Cleanup
+    /// section). Stored for the same `@Observable`-tracking reason as
+    /// `cleanupOverride` above.
+    static let cleanupIntensityKey = CleanupIntensity.defaultsKey
+    private(set) var cleanupIntensity: CleanupIntensity
+
     // MARK: - History (Settings → History)
 
     /// Audio retention opt-in (default OFF — PRD §8, phase-5a spec §2).
@@ -436,6 +442,7 @@ final class AppController {
         pressEnterEnabled = UserDefaults.standard.bool(forKey: Self.pressEnterKey)
         pauseMediaEnabled = UserDefaults.standard.bool(forKey: Self.pauseMediaKey)
         cleanupOverride = UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto"
+        cleanupIntensity = CleanupIntensity.persisted()
 
         // Composition root: one on-disk database; fall back to in-memory
         // providers (no history/persisted modes) if it can't open.
@@ -689,6 +696,7 @@ final class AppController {
         try? await modeStore?.seedIfEmpty()
 
         applyCleanupOverride(cleanupOverride)
+        Task { [orchestrator, cleanupIntensity] in await orchestrator.setCleanupIntensity(cleanupIntensity) }
         rebuildTranscriber()
     }
 
@@ -909,6 +917,16 @@ final class AppController {
         default: tier = nil // auto
         }
         Task { [orchestrator] in await orchestrator.setTierOverride(tier) }
+    }
+
+    // MARK: - Cleanup intensity (Settings → General)
+
+    /// Set from Settings; persists and pushes the level to the orchestrator.
+    /// Disabled in the UI when `cleanupOverride == "raw"` (nothing to tune).
+    func setCleanupIntensity(_ intensity: CleanupIntensity) {
+        cleanupIntensity = intensity
+        UserDefaults.standard.set(intensity.rawValue, forKey: Self.cleanupIntensityKey)
+        Task { [orchestrator] in await orchestrator.setCleanupIntensity(intensity) }
     }
 
     // MARK: - Quick-switch (menu bar)

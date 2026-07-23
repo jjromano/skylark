@@ -18,11 +18,20 @@ public struct CleanupContext: Sendable {
     public let registerHint: String?
     /// Custom-dictionary spellings the cleaner must preserve/prefer.
     public let dictionaryTerms: [String]
+    /// How aggressively the cleaner may edit (Settings → General). Defaulted
+    /// so existing call sites compile unchanged.
+    public let intensity: CleanupIntensity
 
-    public init(targetAppBundleID: String? = nil, registerHint: String? = nil, dictionaryTerms: [String] = []) {
+    public init(
+        targetAppBundleID: String? = nil,
+        registerHint: String? = nil,
+        dictionaryTerms: [String] = [],
+        intensity: CleanupIntensity = .standard
+    ) {
         self.targetAppBundleID = targetAppBundleID
         self.registerHint = registerHint
         self.dictionaryTerms = dictionaryTerms
+        self.intensity = intensity
     }
 }
 

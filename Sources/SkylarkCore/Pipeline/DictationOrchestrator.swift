@@ -42,6 +42,8 @@ public actor DictationOrchestrator {
     /// Temporary global cleanup override from the menu bar (nil = auto/use mode).
     private var tierOverride: CleanupTier?
     private var silencePeakThreshold: Float = SilenceDetector.peakThreshold
+    /// Global cleanup intensity (Settings → General, Cleanup section).
+    private var cleanupIntensity: CleanupIntensity = .standard
     /// Spoken "press enter" command opt-in (Settings → General). When on, a
     /// terminal "press enter"/"press return" is stripped from the transcript
     /// and a Return keystroke is synthesized after the text lands.
@@ -154,6 +156,12 @@ public actor DictationOrchestrator {
         tierOverride = tier
     }
 
+    /// Set the global cleanup intensity (Settings → General, Cleanup
+    /// section). Takes effect on the next dictation's `buildSetup`.
+    public func setCleanupIntensity(_ intensity: CleanupIntensity) {
+        cleanupIntensity = intensity
+    }
+
     /// Toggle the spoken "press enter" command (Settings → General).
     public func setPressEnterEnabled(_ enabled: Bool) {
         pressEnterEnabled = enabled
@@ -224,8 +232,8 @@ public actor DictationOrchestrator {
         let bundleID = frontmostBundleID()
         sessionSetup = nil
         setupTask?.cancel()
-        setupTask = Task { [modeProvider, dictionary, snippetProvider] in
-            await Self.buildSetup(bundleID: bundleID, modeProvider: modeProvider, dictionary: dictionary, snippets: snippetProvider)
+        setupTask = Task { [modeProvider, dictionary, snippetProvider, cleanupIntensity] in
+            await Self.buildSetup(bundleID: bundleID, modeProvider: modeProvider, dictionary: dictionary, snippets: snippetProvider, intensity: cleanupIntensity)
         }
         publish(.listening(level: 0))
         startLevelForwarding()
@@ -541,7 +549,8 @@ public actor DictationOrchestrator {
         bundleID: String?,
         modeProvider: any ModeProviding,
         dictionary: any DictionaryProviding,
-        snippets snippetProvider: (@Sendable () async -> [SnippetRecord])?
+        snippets snippetProvider: (@Sendable () async -> [SnippetRecord])?,
+        intensity: CleanupIntensity
     ) async -> SessionSetup {
         let modes = (try? await modeProvider.modes()) ?? []
         let mode = ModeResolver.resolve(bundleID: bundleID, modes: modes)
@@ -550,7 +559,8 @@ public actor DictationOrchestrator {
             targetAppBundleID: bundleID,
             registerHint: mode.registerHint,
             // Every correct-spelling phrase is protected during recognition.
-            dictionaryTerms: entries.map(\.phrase)
+            dictionaryTerms: entries.map(\.phrase),
+            intensity: intensity
         )
         let corrector = DictionaryCorrector(entries: entries)
         let snippets = await snippetProvider?() ?? []
@@ -565,7 +575,7 @@ public actor DictationOrchestrator {
         if let setupTask {
             setup = await setupTask.value
         } else {
-            setup = await Self.buildSetup(bundleID: frontmostBundleID(), modeProvider: modeProvider, dictionary: dictionary, snippets: snippetProvider)
+            setup = await Self.buildSetup(bundleID: frontmostBundleID(), modeProvider: modeProvider, dictionary: dictionary, snippets: snippetProvider, intensity: cleanupIntensity)
         }
         sessionSetup = setup
         return setup

@@ -263,6 +263,19 @@ private struct GeneralPane: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                 }
+                Picker("Cleanup intensity", selection: Binding(
+                    get: { controller.cleanupIntensity },
+                    set: { controller.setCleanupIntensity($0) }
+                )) {
+                    Text("Light").tag(CleanupIntensity.light)
+                    Text("Standard").tag(CleanupIntensity.standard)
+                    Text("High").tag(CleanupIntensity.high)
+                }
+                .pickerStyle(.segmented)
+                .disabled(controller.cleanupOverride == "raw")
+                Text(controller.cleanupIntensity.caption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {

@@ -369,4 +369,54 @@ struct DictationOrchestratorCleanupTests {
         await #expect(spy.count() == 1)
         await #expect(spy.first() == StubTranscriber.output) // fell back to raw
     }
+
+    @Test("setCleanupIntensity reaches the CleanupContext handed to the cleaner")
+    func cleanupIntensityReachesContext() async {
+        let spy = SpyInjector(direct: true)
+        let cleaner = ContextCapturingCleaner()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: cleaner),
+            modeProvider: modes(defaultTier: .local)
+        )
+        await orchestrator.setCleanupIntensity(.high)
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        await settle()
+        let lastIntensity = await cleaner.lastContext?.intensity
+        #expect(lastIntensity == .high)
+    }
+
+    @Test("Default cleanup intensity (never set) is .standard")
+    func cleanupIntensityDefaultsToStandard() async {
+        let spy = SpyInjector(direct: true)
+        let cleaner = ContextCapturingCleaner()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: cleaner),
+            modeProvider: modes(defaultTier: .local)
+        )
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        await settle()
+        let lastIntensity = await cleaner.lastContext?.intensity
+        #expect(lastIntensity == .standard)
+    }
+}
+
+/// Cleaner double that records the `CleanupContext` it was handed, so tests
+/// can assert settings (like cleanup intensity) actually reach the cleaner
+/// rather than only checking the transformed text.
+private actor ContextCapturingCleaner: Cleaner {
+    let tier: CleanupTier = .local
+    private(set) var lastContext: CleanupContext?
+
+    func clean(_ transcript: String, context: CleanupContext) async throws -> String {
+        lastContext = context
+        return "CLEANED"
+    }
 }
