@@ -45,12 +45,22 @@ public enum CleanupHygiene {
     ///     transcript — rejected so the raw transcript stands. The other guards
     ///     already compare only transcript vs output, so context can't otherwise
     ///     inflate the faithfulness ratios.
+    ///   - translated: translation-mode output (Settings → General). A correct
+    ///     translation legitimately shares NO source vocabulary and changes the
+    ///     content-word count and negation count arbitrarily across languages, so
+    ///     the retention, content-loss, and negation guards — all source-language
+    ///     comparisons — would reject every correct translation. In this mode
+    ///     they are skipped; the empty/runaway-length check and the
+    ///     meta-commentary tells (still meaningful — a chatbot preface is a
+    ///     failure in any language) are KEPT, plus translated-only rejections
+    ///     for leaked fence tags and separator-repeated untranslated output.
     public static func validate(
         _ output: String,
         transcript: String,
         retentionFloor: Double = 0.34,
         contentLossFloor: Double? = nil,
-        fieldContext: FieldContext? = nil
+        fieldContext: FieldContext? = nil,
+        translated: Bool = false
     ) throws -> String {
         let cleaned = sanitize(output)
         guard !cleaned.isEmpty, cleaned.count <= transcript.count * 3 else {
@@ -59,14 +69,19 @@ public enum CleanupHygiene {
         if isMetaCommentary(cleaned, transcript: transcript) {
             throw CleanerError.unusableOutput
         }
-        if dropsNegation(from: transcript, to: cleaned) {
-            throw CleanerError.unusableOutput
-        }
-        if divergesFrom(transcript, cleaned: cleaned, retentionFloor: retentionFloor) {
-            throw CleanerError.unusableOutput
-        }
-        if let contentLossFloor, losesContent(transcript, cleaned: cleaned, floor: contentLossFloor) {
-            throw CleanerError.unusableOutput
+        // The remaining guards all compare against the SOURCE-language transcript
+        // (shared vocabulary, content-word count, negation count). A translation
+        // shares none of that by design, so they only fire in non-translated mode.
+        if !translated {
+            if dropsNegation(from: transcript, to: cleaned) {
+                throw CleanerError.unusableOutput
+            }
+            if divergesFrom(transcript, cleaned: cleaned, retentionFloor: retentionFloor) {
+                throw CleanerError.unusableOutput
+            }
+            if let contentLossFloor, losesContent(transcript, cleaned: cleaned, floor: contentLossFloor) {
+                throw CleanerError.unusableOutput
+            }
         }
         if let fieldContext, echoesFieldContext(cleaned, transcript: transcript, fieldContext: fieldContext) {
             throw CleanerError.unusableOutput

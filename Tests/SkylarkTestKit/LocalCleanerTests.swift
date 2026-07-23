@@ -102,6 +102,33 @@ struct LocalCleanerTests {
         #expect(user == CleanupPrompt.userMessage(transcript: "hello there"))
     }
 
+    @Test("Translation context reaches the prompt AND relaxes the guards end-to-end")
+    func translationPlumbing() async throws {
+        // A Spanish rendering that shares no source vocabulary with the English
+        // transcript — normally the strict local floors would reject it.
+        let english = "please refactor the authentication module to use tokens"
+        let spanish = "Por favor, refactoriza el módulo de autenticación para usar tokens."
+
+        // translateTo set → the compact prompt carries the translate tail, and the
+        // divergent Spanish output survives (translated-mode bypass).
+        let onBackend = FakeBackend(output: spanish)
+        let onCleaner = LocalCleaner(backend: onBackend)
+        let onCtx = CleanupContext(translateTo: "es")
+        let onOut = try await onCleaner.clean(english, context: onCtx)
+        #expect(onOut == spanish)
+        let instructions = await onBackend.instructions()
+        #expect(instructions?.contains("Spanish") == true)
+        #expect(instructions?.contains("translate") == true)
+
+        // translateTo nil → same divergent output is rejected by the floors and
+        // the cleaner falls back to the raw transcript.
+        let offBackend = FakeBackend(output: spanish)
+        let offCleaner = LocalCleaner(backend: offBackend)
+        await #expect(throws: CleanerError.self) {
+            _ = try await offCleaner.clean(english, context: CleanupContext())
+        }
+    }
+
     @Test("Prewarms the next session after a successful generation")
     func prewarmsNext() async throws {
         let backend = FakeBackend(output: "Clean.")

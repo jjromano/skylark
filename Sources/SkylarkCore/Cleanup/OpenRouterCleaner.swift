@@ -52,7 +52,14 @@ public struct OpenRouterCleaner: Cleaner {
 
         // Shared hygiene with LocalCleaner: trim/unquote, and reject empty,
         // runaway, meta-commentary, or negation-dropping output so the caller
-        // keeps the raw transcript.
-        return try CleanupHygiene.validate(output, transcript: transcript, fieldContext: context.fieldContext)
+        // keeps the raw transcript. In translation mode the source-language
+        // retention/content-loss/negation guards are bypassed (a correct
+        // translation shares no source vocabulary); the empty/runaway and
+        // meta-commentary checks still apply.
+        return try CleanupHygiene.validate(
+            output, transcript: transcript,
+            fieldContext: context.fieldContext,
+            translated: context.translateTo != nil
+        )
     }
 }

@@ -188,6 +188,13 @@ private struct GeneralPane: View {
         return false
     }
 
+    /// Caption for the live-preview toggle. Notes the Parakeet-only limitation
+    /// when another engine is active (the toggle stays but preview won't render).
+    private var livePreviewCaption: String {
+        let base = "Shows words as you speak in the recording pill. Experimental — the pasted text is unaffected."
+        return controller.currentSTT == .localParakeet ? base : base + " Parakeet only."
+    }
+
     var body: some View {
         Form {
             Section {
@@ -242,6 +249,14 @@ private struct GeneralPane: View {
                     set: { controller.setHUDShowIdlePill($0) }
                 ))
                 .disabled(controller.hud.style == .hidden)
+                Toggle("Live preview while speaking", isOn: Binding(
+                    get: { controller.livePreviewEnabled },
+                    set: { controller.setLivePreviewEnabled($0) }
+                ))
+                .disabled(controller.hud.style == .hidden)
+                Text(livePreviewCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -295,6 +310,28 @@ private struct GeneralPane: View {
                     set: { controller.setContextAwareCleanupEnabled($0) }
                 ))
                 Text("Reads the text around your cursor (via Accessibility) so dictation continues sentences naturally and matches spellings already in the field. The context is used only for this cleanup pass — never stored. With a cloud cleanup model it is sent to that model.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Translate dictation", isOn: Binding(
+                    get: { controller.translateEnabled },
+                    set: { controller.setTranslateEnabled($0) }
+                ))
+                Picker("Target language", selection: Binding(
+                    get: { controller.translateTargetLanguage },
+                    set: { controller.setTranslateTargetLanguage($0) }
+                )) {
+                    ForEach(TranslationLanguage.codes, id: \.self) { code in
+                        Text(TranslationLanguage.displayName(code)).tag(code)
+                    }
+                }
+                .disabled(!controller.translateEnabled)
+            } header: {
+                Text("Translation")
+            } footer: {
+                Text("Cleans up your dictation and translates it to the target language before typing it. Uses your selected cleanup model — with a Local tier this runs fully on-device (quality depends on the on-device model; cloud models translate better).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -108,6 +108,13 @@ public actor FluidAudioParakeet: Transcriber {
         logger.info("Parakeet ready")
     }
 
+    /// The loaded ASR models (nil until warm-up completes). Handed to a
+    /// `SlidingWindowAsrManager` for the optional live preview: the `MLModel`
+    /// instances are shared read-only — the streaming manager retains them
+    /// without reloading from disk, so preview adds no download and only a small
+    /// resident-memory delta.
+    public func loadedModels() -> AsrModels? { models }
+
     /// Apply the whisper-mode tuning (currently just the silence floor for the
     /// skip guard). Takes effect on the next `transcribe`.
     public func setSilenceFloor(_ floor: Float) {

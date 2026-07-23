@@ -119,6 +119,18 @@ final class AppController {
         Task { [orchestrator] in await orchestrator.setContextAwareCleanupEnabled(on) }
     }
 
+    /// Live transcription preview (prototype): show interim words in the
+    /// recording pill while speaking. Off by default; only renders for the local
+    /// Parakeet engine. The pasted text is always the batch decode — unaffected.
+    static let livePreviewKey = "recording.livePreview"
+    private(set) var livePreviewEnabled: Bool
+
+    func setLivePreviewEnabled(_ on: Bool) {
+        livePreviewEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.livePreviewKey)
+        Task { [orchestrator] in await orchestrator.setLivePreviewEnabled(on) }
+    }
+
     /// Pause Music/Spotify while dictating (off by default; needs an Automation
     /// permission grant the first time it fires).
     static let pauseMediaKey = "pauseMediaWhileDictating"
@@ -127,6 +139,34 @@ final class AppController {
     func setPauseMediaEnabled(_ on: Bool) {
         pauseMediaEnabled = on
         UserDefaults.standard.set(on, forKey: Self.pauseMediaKey)
+    }
+
+    /// Translation mode (Settings → General; OFF by default). When on, cleanup
+    /// also translates the text into `translateTargetLanguage` (a BCP-47 code)
+    /// before typing. Requires a cleanup tier — raw dictation proceeds untranslated.
+    static let translateEnabledKey = "translation.enabled"
+    static let translateLanguageKey = "translation.targetLanguage"
+    /// Default target when the user first enables translation (English).
+    static let translateDefaultLanguage = "en"
+    private(set) var translateEnabled: Bool
+    private(set) var translateTargetLanguage: String
+
+    func setTranslateEnabled(_ on: Bool) {
+        translateEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.translateEnabledKey)
+        applyTranslationSetting()
+    }
+
+    func setTranslateTargetLanguage(_ code: String) {
+        translateTargetLanguage = code
+        UserDefaults.standard.set(code, forKey: Self.translateLanguageKey)
+        applyTranslationSetting()
+    }
+
+    /// Push the resolved translation target (nil when off) to the orchestrator.
+    private func applyTranslationSetting() {
+        let target = translateEnabled ? translateTargetLanguage : nil
+        Task { [orchestrator] in await orchestrator.setTranslateTo(target) }
     }
 
     /// Auto-learn dictionary corrections from history edits (off = confirm chips).
@@ -476,7 +516,11 @@ final class AppController {
 
         pressEnterEnabled = UserDefaults.standard.bool(forKey: Self.pressEnterKey)
         contextAwareCleanupEnabled = UserDefaults.standard.bool(forKey: Self.contextAwareCleanupKey)
+        livePreviewEnabled = UserDefaults.standard.bool(forKey: Self.livePreviewKey)
         pauseMediaEnabled = UserDefaults.standard.bool(forKey: Self.pauseMediaKey)
+        translateEnabled = UserDefaults.standard.bool(forKey: Self.translateEnabledKey)
+        translateTargetLanguage = UserDefaults.standard.string(forKey: Self.translateLanguageKey)
+            ?? Self.translateDefaultLanguage
         cleanupOverride = UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto"
         cleanupIntensity = CleanupIntensity.persisted()
 
@@ -567,6 +611,12 @@ final class AppController {
             snippets: snippetsProvider,
             fieldContextReader: AXFieldContextReader(),
             commandRunner: commandRunner,
+            // Live-preview prototype: streams the SAME warm Parakeet models via a
+            // sliding-window manager. `loadedModels()` returns nil until warm-up
+            // completes, in which case makeSession() yields no session.
+            livePreview: FluidAudioLivePreviewProvider(
+                modelsSource: { [parakeet] in await parakeet.loadedModels() }
+            ),
             historyRecord: historyHub?.recordSink(appInfo: frontmost.infoSnapshot),
             historyUpdate: historyHub?.updateSink()
         )
@@ -633,12 +683,17 @@ final class AppController {
                 wasListening = isListening
                 wasIdle = isIdle
                 switch state {
-                case let .listening(level), let .commandListening(level):
+                case let .listening(level, preview):
+                    hud.pushLevel(level)
+                    // Live-preview prototype text (nil unless the setting is on).
+                    hud.preview = preview
+                case let .commandListening(level):
                     hud.pushLevel(level)
                 case .idle:
                     hud.resetWaveform()
+                    hud.preview = nil
                 case .processing:
-                    break
+                    hud.preview = nil
                 }
                 hudPanel.refreshLayout()
             }
@@ -719,6 +774,10 @@ final class AppController {
         Task { [orchestrator, contextAwareCleanupEnabled] in
             await orchestrator.setContextAwareCleanupEnabled(contextAwareCleanupEnabled)
         }
+        Task { [orchestrator, livePreviewEnabled] in
+            await orchestrator.setLivePreviewEnabled(livePreviewEnabled)
+        }
+        applyTranslationSetting()
         pruneHistory()
         refreshStats()
 

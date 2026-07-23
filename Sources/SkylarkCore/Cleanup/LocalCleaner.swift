@@ -90,6 +90,10 @@ public struct LocalCleaner: Cleaner {
         // Local tier uses the compact, few-shot prompt (cloud keeps the fuller
         // `instructions`); both share the same session-prewarm pattern.
         let instructions = CleanupPrompt.compactInstructions(context: context)
+        // Translation mode bypasses the source-language faithfulness guards (a
+        // correct translation shares no source vocabulary); empty/runaway and
+        // meta-commentary checks still apply.
+        let translated = context.translateTo != nil
         let estimatedTokens = Self.estimatedTokens(transcript)
 
         // Short transcript → single generation (today's behavior). No chunking
@@ -110,7 +114,8 @@ public struct LocalCleaner: Cleaner {
                 transcript: transcript,
                 retentionFloor: Self.localRetentionFloor,
                 contentLossFloor: Self.localContentLossFloor,
-                fieldContext: context.fieldContext
+                fieldContext: context.fieldContext,
+                translated: translated
             )
         }
 
@@ -135,7 +140,8 @@ public struct LocalCleaner: Cleaner {
                     transcript: chunk,
                     retentionFloor: Self.localRetentionFloor,
                     contentLossFloor: Self.localContentLossFloor,
-                    fieldContext: context.fieldContext
+                    fieldContext: context.fieldContext,
+                    translated: translated
                 ))
             } catch {
                 parts.append(chunk) // keep this chunk's raw text; never fail the whole

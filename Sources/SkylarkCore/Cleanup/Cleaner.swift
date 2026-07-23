@@ -59,19 +59,29 @@ public struct CleanupContext: Sendable {
     /// the toggle is off, the field isn't AX-readable, or the read hadn't
     /// finished by cleanup time — the cleaner then behaves exactly as before.
     public let fieldContext: FieldContext?
+    /// BCP-47 target language for translation mode (Settings → General; OFF by
+    /// default). `nil` = translate off. When set, the cleanup prompt appends a
+    /// final "translate the result into <language>" instruction, and the
+    /// faithfulness guards run in translated mode (retention/content-loss/
+    /// negation checks — all source-language comparisons — are bypassed; see
+    /// `CleanupHygiene.validate`). Ignored by `RawPassthrough` (Tier 0 needs a
+    /// cleanup model to translate, so raw dictation is never translated).
+    public let translateTo: String?
 
     public init(
         targetAppBundleID: String? = nil,
         registerHint: String? = nil,
         dictionaryTerms: [String] = [],
         intensity: CleanupIntensity = .standard,
-        fieldContext: FieldContext? = nil
+        fieldContext: FieldContext? = nil,
+        translateTo: String? = nil
     ) {
         self.targetAppBundleID = targetAppBundleID
         self.registerHint = registerHint
         self.dictionaryTerms = dictionaryTerms
         self.intensity = intensity
         self.fieldContext = fieldContext
+        self.translateTo = translateTo
     }
 
     /// Copy carrying `fieldContext` — the orchestrator merges the (late,
@@ -84,7 +94,8 @@ public struct CleanupContext: Sendable {
             registerHint: registerHint,
             dictionaryTerms: dictionaryTerms,
             intensity: intensity,
-            fieldContext: resolved
+            fieldContext: resolved,
+            translateTo: translateTo
         )
     }
 }

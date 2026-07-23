@@ -38,6 +38,14 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     public let frames: AsyncStream<[Float]>
     private let framesWanted = Atomic<Bool>(false)
 
+    // Separate raw-frame delivery for the optional live transcription preview.
+    // Kept distinct from `frames` (a single-consumer stream owned by the VAD
+    // path) so preview and hands-free never contend for the same iterator.
+    // Gated by `previewWanted`; off = no per-callback allocation.
+    private let previewFramesContinuation: AsyncStream<[Float]>.Continuation
+    public let previewFrames: AsyncStream<[Float]>
+    private let previewWanted = Atomic<Bool>(false)
+
     // Whisper-mode capture gain, stored as Float bit-pattern for lock-free reads
     // on the audio thread (Float isn't AtomicRepresentable). 1.0 = unity.
     private let gainBits = Atomic<UInt32>(Float(1.0).bitPattern)
@@ -60,16 +68,24 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         let (frameStream, frameCont) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .bufferingNewest(8))
         frames = frameStream
         framesContinuation = frameCont
+        let (previewStream, previewCont) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        previewFrames = previewStream
+        previewFramesContinuation = previewCont
     }
 
     deinit {
         storage.deallocate()
         levelsContinuation.finish()
         framesContinuation.finish()
+        previewFramesContinuation.finish()
     }
 
     public func setFramesWanted(_ wanted: Bool) {
         framesWanted.store(wanted, ordering: .relaxed)
+    }
+
+    public func setPreviewWanted(_ wanted: Bool) {
+        previewWanted.store(wanted, ordering: .relaxed)
     }
 
     /// Set the whisper-mode capture gain (linear multiplier). Applied in the tap,
@@ -249,6 +265,13 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         // Off (no allocation) for push-to-talk.
         if framesWanted.load(ordering: .relaxed) {
             framesContinuation.yield(Array(UnsafeBufferPointer(start: channel, count: frames)))
+        }
+
+        // Live-preview only: hand a copy of the converted frames to the
+        // sliding-window preview engine. Independently gated; off for every
+        // recording that isn't showing a preview.
+        if previewWanted.load(ordering: .relaxed) {
+            previewFramesContinuation.yield(Array(UnsafeBufferPointer(start: channel, count: frames)))
         }
     }
 }

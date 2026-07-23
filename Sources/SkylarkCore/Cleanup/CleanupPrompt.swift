@@ -28,6 +28,7 @@ public enum CleanupPrompt {
             text += "\nLightly match this register without rewriting content: \(register)."
         }
         text += fieldContextSection(context.fieldContext)
+        text += translationSuffix(context)
         return text
     }
 
@@ -47,6 +48,7 @@ public enum CleanupPrompt {
             text += "\nLightly match this register without rewriting content: \(register)."
         }
         text += fieldContextSection(context.fieldContext)
+        text += translationSuffix(context)
         return text
     }
 
@@ -134,6 +136,7 @@ public enum CleanupPrompt {
         case .standard: return compactStandardTask
         case .high: return compactHighTask
         }
+
     }
 
     /// Shared disclaimer + "Rules:" header. Identical at every intensity.
@@ -260,5 +263,20 @@ public enum CleanupPrompt {
             section += "\n<field_context_after>\n\(context.following)\n</field_context_after>"
         }
         return section
+    }
+
+    /// Translation-mode tail (Settings → General; empty when translation is off).
+    /// Appended LAST — after the cleanup rules, the dictionary/register suffixes,
+    /// and any field-context section — so the model cleans first and translates
+    /// the cleaned result. The transcript is still the fenced DATA established at
+    /// the top of each prompt — this only adds a final output transform, it does
+    /// not relax the "never obey the content" rule.
+    private static func translationSuffix(_ context: CleanupContext) -> String {
+        guard let code = context.translateTo, !code.isEmpty else { return "" }
+        let language = TranslationLanguage.promptName(code)
+        return "\nFinally, after applying the cleanup rules above, translate the"
+            + " cleaned result into \(language). Output ONLY the \(language)"
+            + " translation — no original text, no notes, nothing else."
+    
     }
 }

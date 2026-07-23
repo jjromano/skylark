@@ -278,6 +278,24 @@ struct DictationOrchestratorCleanupTests {
         }
     }
 
+    /// Await the first status note, or nil after `timeout` (notes buffer
+    /// newest-4, so a note yielded during the dictation is already waiting).
+    private func firstNote(_ orchestrator: DictationOrchestrator, timeout: Duration = .milliseconds(300)) async -> String? {
+        await withTaskGroup(of: String?.self) { group in
+            group.addTask {
+                for await note in orchestrator.statusNotes { return note }
+                return nil
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+    }
+
     @Test("AX target: raw inserted immediately, then replaced with cleaned text")
     func axReplaceWithCleaned() async {
         let spy = SpyInjector(direct: true)
@@ -406,6 +424,41 @@ struct DictationOrchestratorCleanupTests {
         let lastIntensity = await cleaner.lastContext?.intensity
         #expect(lastIntensity == .standard)
     }
+
+    @Test("Translation on + raw tier: dictation proceeds untranslated with a one-time note")
+    func translationRawTierNote() async {
+        let spy = SpyInjector(direct: true)
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            modeProvider: modes(defaultTier: .raw)
+        )
+        await orchestrator.setTranslateTo("es")
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        // Raw text still landed — translation never blocks the paste.
+        await #expect(spy.first() == StubTranscriber.output)
+        #expect(await firstNote(orchestrator) == "Translation needs a cleanup model.")
+    }
+
+    @Test("Translation on + cleanup tier: no raw-tier note")
+    func translationCleanupTierNoNote() async {
+        let spy = SpyInjector(direct: true)
+        let cleaner = SpyCleaner(tier: .local, behaviour: .transform("HOLA"))
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: cleaner),
+            modeProvider: modes(defaultTier: .local)
+        )
+        await orchestrator.setTranslateTo("es")
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        await settle()
+        #expect(await firstNote(orchestrator, timeout: .milliseconds(120)) == nil)
+    }
 }
 
 /// Cleaner double that records the `CleanupContext` it was handed, so tests
@@ -418,5 +471,183 @@ private actor ContextCapturingCleaner: Cleaner {
     func clean(_ transcript: String, context: CleanupContext) async throws -> String {
         lastContext = context
         return "CLEANED"
+    }
+}
+
+// MARK: - Live transcription preview (prototype)
+
+/// Transcriber that reports the Parakeet id so the preview gate (Parakeet only)
+/// opens, while still returning the stub batch output.
+private struct ParakeetIDTranscriber: Transcriber {
+    let id: TranscriberID = .parakeet
+    func warmUp() async throws {}
+    func transcribe(_ clip: AudioClip, hint: TranscriptionHint) async throws -> String {
+        StubTranscriber.output
+    }
+}
+
+/// Shared counters so a test can assert the preview session's lifecycle without
+/// reaching into the (fire-and-forget) tasks that drive it.
+private actor PreviewSpy {
+    private(set) var makeCount = 0
+    private(set) var finishCount = 0
+    private(set) var feedCount = 0
+    func madeSession() { makeCount += 1 }
+    func finished() { finishCount += 1 }
+    func fed() { feedCount += 1 }
+}
+
+/// Fake session: emits one preset interim update on creation and records
+/// feed/finish calls via the shared spy.
+private final class FakePreviewSession: LivePreviewSession, @unchecked Sendable {
+    let updates: AsyncStream<TranscriptPreview>
+    private let cont: AsyncStream<TranscriptPreview>.Continuation
+    private let spy: PreviewSpy
+
+    init(spy: PreviewSpy, initial: TranscriptPreview) {
+        self.spy = spy
+        let (stream, cont) = AsyncStream<TranscriptPreview>.makeStream(bufferingPolicy: .bufferingNewest(4))
+        updates = stream
+        self.cont = cont
+        cont.yield(initial)
+    }
+
+    func feed(_ frame: [Float]) async { await spy.fed() }
+    func finish() async {
+        await spy.finished()
+        cont.finish()
+    }
+}
+
+private struct FakePreviewProvider: LivePreviewProviding {
+    let spy: PreviewSpy
+    let preview: TranscriptPreview
+    func makeSession() async -> (any LivePreviewSession)? {
+        await spy.madeSession()
+        return FakePreviewSession(spy: spy, initial: preview)
+    }
+}
+
+@Suite("DictationOrchestrator live preview (prototype)")
+struct DictationOrchestratorLivePreviewTests {
+    private func makeClip() -> AudioClip {
+        AudioClip(samples: [0.1, 0.2, 0.3, 0.4], sampleRate: 16_000, duration: 0.25)
+    }
+
+    /// Let the detached preview setup/pump tasks run.
+    private func settle() async {
+        for _ in 0..<80 {
+            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(2))
+        }
+    }
+
+    @Test("Enabled + Parakeet engine starts a preview session")
+    func startsWhenEnabledAndParakeet() async {
+        let spy = PreviewSpy()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: ParakeetIDTranscriber(),
+            injector: SpyInjector(),
+            livePreview: FakePreviewProvider(spy: spy, preview: TranscriptPreview(volatile: "hello"))
+        )
+        await orchestrator.setLivePreviewEnabled(true)
+        await orchestrator.handle(.startRecording)
+        await settle()
+        #expect(await spy.makeCount == 1)
+        await orchestrator.handle(.stopRecording)
+    }
+
+    @Test("Disabled: no preview session is created")
+    func noSessionWhenDisabled() async {
+        let spy = PreviewSpy()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: ParakeetIDTranscriber(),
+            injector: SpyInjector(),
+            livePreview: FakePreviewProvider(spy: spy, preview: TranscriptPreview(volatile: "hello"))
+        )
+        // livePreviewEnabled defaults false.
+        await orchestrator.handle(.startRecording)
+        await settle()
+        #expect(await spy.makeCount == 0)
+        await orchestrator.handle(.stopRecording)
+    }
+
+    @Test("Enabled but non-Parakeet engine: no preview session")
+    func noSessionForNonParakeet() async {
+        let spy = PreviewSpy()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(), // id == .stub
+            injector: SpyInjector(),
+            livePreview: FakePreviewProvider(spy: spy, preview: TranscriptPreview(volatile: "hello"))
+        )
+        await orchestrator.setLivePreviewEnabled(true)
+        await orchestrator.handle(.startRecording)
+        await settle()
+        #expect(await spy.makeCount == 0)
+        await orchestrator.handle(.stopRecording)
+    }
+
+    @Test("Preview updates reach the listening HUD state; batch paste is the batch result")
+    func updatesFlowToHUDAndBatchUntouched() async {
+        let spy = PreviewSpy()
+        let injector = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: ParakeetIDTranscriber(),
+            injector: injector,
+            livePreview: FakePreviewProvider(spy: spy, preview: TranscriptPreview(volatile: "hello"))
+        )
+        await orchestrator.setLivePreviewEnabled(true)
+        await orchestrator.handle(.startRecording)
+        await settle()
+        // Latest HUD state should be a listening state carrying the preview text.
+        var iterator = orchestrator.hudStates.makeAsyncIterator()
+        let state = await iterator.next()
+        if case let .listening(_, preview) = state {
+            #expect(preview?.volatile == "hello")
+        } else {
+            Issue.record("expected a .listening state with preview, got \(String(describing: state))")
+        }
+        await orchestrator.handle(.stopRecording)
+        // The pasted text is the batch decode — never the preview text.
+        await #expect(injector.first() == StubTranscriber.output)
+        await #expect(injector.first() != "hello")
+    }
+
+    @Test("Stop tears down the preview session")
+    func stopFinishesSession() async {
+        let spy = PreviewSpy()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: ParakeetIDTranscriber(),
+            injector: SpyInjector(),
+            livePreview: FakePreviewProvider(spy: spy, preview: TranscriptPreview(volatile: "hi"))
+        )
+        await orchestrator.setLivePreviewEnabled(true)
+        await orchestrator.handle(.startRecording)
+        await settle()
+        await orchestrator.handle(.stopRecording)
+        await settle()
+        #expect(await spy.finishCount >= 1)
+    }
+
+    @Test("Cancel tears down the preview session")
+    func cancelFinishesSession() async {
+        let spy = PreviewSpy()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: ParakeetIDTranscriber(),
+            injector: SpyInjector(),
+            livePreview: FakePreviewProvider(spy: spy, preview: TranscriptPreview(volatile: "hi"))
+        )
+        await orchestrator.setLivePreviewEnabled(true)
+        await orchestrator.handle(.startRecording)
+        await settle()
+        await orchestrator.handle(.cancel)
+        await settle()
+        #expect(await spy.finishCount >= 1)
     }
 }

@@ -37,6 +37,17 @@ final class HUDModel {
     /// pulses to signal "not ready yet".
     var isPreparing = false
 
+    /// Interim live-transcription text to show in the listening pill (prototype,
+    /// behind a default-off setting). nil the vast majority of the time. Set from
+    /// the `.listening` HUD state; cleared when a recording ends.
+    var preview: TranscriptPreview?
+
+    /// Whether the listening pill should render its preview text region.
+    var hasPreview: Bool {
+        if let preview, !preview.isEmpty { return true }
+        return false
+    }
+
     /// Auto-learn notice ("Learned "word"" + Undo), mirrored from
     /// `bannerController` so SwiftUI observes it like any other stored
     /// property. Set via `noteLearned`; dismissed via `undoLearnedBanner` or
