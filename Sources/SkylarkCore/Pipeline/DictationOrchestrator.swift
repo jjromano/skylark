@@ -853,13 +853,7 @@ public actor DictationOrchestrator {
 
     /// Stable engine string for the history row.
     private static func engineString(_ id: TranscriberID) -> String {
-        switch id {
-        case .parakeet: return "parakeet"
-        case .whisperKit: return "whisperkit"
-        case .speechAnalyzer: return "appleSpeech"
-        case .cloud(let slug): return slug
-        case .stub: return "stub"
-        }
+        id.historyColumn
     }
 
     /// AX-verified in-place insert attempt (nil = nothing inserted, caller

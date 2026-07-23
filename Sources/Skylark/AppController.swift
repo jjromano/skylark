@@ -4,6 +4,34 @@ import ServiceManagement
 import SkylarkCore
 import SwiftUI
 
+/// An engine option offered by History → Re-transcribe. Cloud cases carry their
+/// slug + label so the factory can build an `OpenRouterCloud` without reading
+/// any main-actor state; the picker keys on `id`.
+enum RetranscribeEngine: Identifiable, Hashable {
+    case parakeet
+    case whisper
+    case appleSpeech
+    case cloud(slug: String, label: String)
+
+    var id: String {
+        switch self {
+        case .parakeet: return "parakeet"
+        case .whisper: return "whisper"
+        case .appleSpeech: return "appleSpeech"
+        case .cloud(let slug, _): return "cloud:\(slug)"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .parakeet: return "Parakeet — local"
+        case .whisper: return "Whisper — local"
+        case .appleSpeech: return "Apple Speech — local"
+        case .cloud(_, let label): return "\(label) — cloud"
+        }
+    }
+}
+
 /// Owns and wires every runtime service, windows, and the HUD. The single
 /// coordination point the app shell talks to.
 @MainActor
@@ -305,11 +333,85 @@ final class AppController {
 
     func setAudioRetentionEnabled(_ enabled: Bool) {
         UserDefaults.standard.set(enabled, forKey: Self.historyAudioRetentionKey)
+        if enabled {
+            // Newly on: apply the retention window to anything already on disk.
+            pruneAudio()
+        } else {
+            // Turning retention off deletes every stored audio file (rows stay).
+            deleteAllStoredAudio()
+        }
+    }
+
+    /// Audio retention window in days (default 7). Applies to retained audio
+    /// *files* only — pruning nulls `audio_path` and deletes the file, keeping
+    /// the text row. Never 0 (there is no "forever" for audio).
+    var audioRetentionDays: Int {
+        HistoryStore.audioRetentionDays(
+            stored: UserDefaults.standard.integer(forKey: HistoryStore.audioRetentionDefaultsKey)
+        )
+    }
+
+    func setAudioRetentionDays(_ days: Int) {
+        UserDefaults.standard.set(days, forKey: HistoryStore.audioRetentionDefaultsKey)
+        pruneAudio()
+    }
+
+    /// Prune retained audio files past the retention window. No-op when
+    /// retention is off (there's nothing being written). Off any latency path.
+    private func pruneAudio() {
+        guard audioRetentionEnabled else { return }
+        let days = audioRetentionDays
+        Task { [historyStore] in _ = try? await historyStore?.pruneAudio(olderThanDays: days) }
     }
 
     /// Deletes every retained audio file; the text history rows stay.
     func deleteAllStoredAudio() {
         Task { [historyHub] in await historyHub?.deleteAllAudio() }
+    }
+
+    // MARK: - Re-transcribe (History window)
+
+    /// Engines offered by History → Re-transcribe. The three local engines are
+    /// always available; cloud STT models appear only when an API key is stored
+    /// — picking one is the sole path on which a retained clip leaves the Mac
+    /// (an explicit user action, allowed per the privacy invariants).
+    var retranscribeEngines: [RetranscribeEngine] {
+        var list: [RetranscribeEngine] = [.parakeet, .whisper, .appleSpeech]
+        if hasAPIKey {
+            for entry in sttModels {
+                list.append(.cloud(slug: entry.slug, label: entry.label))
+            }
+        }
+        return list
+    }
+
+    /// Re-transcribe a retained clip with a FRESHLY-instantiated engine, never
+    /// touching the live dictation engine's warm state (a separate instance is
+    /// built here and released after). Replaces the row's raw text + engine
+    /// column via `Retranscription.run`. Returns the new raw text; throws on a
+    /// missing clip or engine error. `nonisolated` so it runs off the main
+    /// actor — the History view awaits it from a `Task`.
+    nonisolated func retranscribe(id: Int64, audioPath: String, using engine: RetranscribeEngine) async throws -> String {
+        guard let store = historyStore else { throw Retranscription.Failure.audioUnavailable }
+        let transcriber = makeRetranscriber(engine)
+        defer { Task { await Self.shutdownEngine(transcriber) } }
+        return try await Retranscription.run(store: store, id: id, audioPath: audioPath, transcriber: transcriber)
+    }
+
+    /// Build a standalone transcriber for the re-transcribe path. Distinct from
+    /// the live-dictation engines (`parakeet`/`whisper`/`appleSpeech`) so warming
+    /// or releasing it can't disturb whatever engine dictation is using.
+    private nonisolated func makeRetranscriber(_ engine: RetranscribeEngine) -> any Transcriber {
+        switch engine {
+        case .parakeet: return FluidAudioParakeet()
+        case .whisper: return WhisperKitWhisper()
+        case .appleSpeech: return SpeechAnalyzerTranscriber()
+        case .cloud(let slug, let label):
+            return OpenRouterCloud(
+                client: openRouterClient,
+                entry: ModelRegistryEntry(slug: slug, label: label, providerPin: nil, kind: .stt, sort: 0)
+            )
+        }
     }
 
     /// History retention window in days (0 = keep forever). Prunes immediately
@@ -779,6 +881,7 @@ final class AppController {
         }
         applyTranslationSetting()
         pruneHistory()
+        pruneAudio()
         refreshStats()
 
         // Build the correction auto-learn watcher (needs a dictionary store) and
@@ -1503,7 +1606,17 @@ final class AppController {
         }
         let window = Self.makeWindow(
             title: "Skylark History",
-            content: HistoryView(store: historyStore, hub: historyHub, modeStore: modeStore, dictionaryStore: dictionaryStore),
+            content: HistoryView(
+                store: historyStore,
+                hub: historyHub,
+                modeStore: modeStore,
+                dictionaryStore: dictionaryStore,
+                retranscribeEngines: retranscribeEngines,
+                retranscribe: { [weak self] id, path, engine in
+                    guard let self else { throw Retranscription.Failure.audioUnavailable }
+                    return try await self.retranscribe(id: id, audioPath: path, using: engine)
+                }
+            ),
             width: 720, height: 480
         )
         historyWindow = window

@@ -7,6 +7,20 @@ public enum TranscriberID: Sendable, Equatable {
     case speechAnalyzer
     case cloud(String)
     case stub
+
+    /// The value stored in `history.engine` for this engine. Shared by the
+    /// live-dictation path (`DictationOrchestrator`) and the History
+    /// re-transcribe path so a re-transcribed row is stamped exactly like a
+    /// freshly-dictated one.
+    public var historyColumn: String {
+        switch self {
+        case .parakeet: return "parakeet"
+        case .whisperKit: return "whisperkit"
+        case .speechAnalyzer: return "appleSpeech"
+        case .cloud(let slug): return slug
+        case .stub: return "stub"
+        }
+    }
 }
 
 /// Hints passed to a transcriber for a single utterance.

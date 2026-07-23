@@ -17,6 +17,7 @@ matching the design intent. No other `URLSession`, socket, or shell-out to
 | # | Call site | Trigger | Data sent |
 |---|---|---|---|
 | Cloud STT | `OpenRouterClient.transcribe` (`Sources/SkylarkCore/Network/OpenRouterClient.swift:71`), invoked from `OpenRouterCloud` (`Sources/SkylarkCore/Transcription/OpenRouterCloud.swift:31`) | User has selected a cloud entry under menu bar → Speech Engine and dictates | The recorded audio clip, WAV-encoded and base64-inlined in the JSON body (`OpenRouterClient.swift:80`), to `POST /api/v1/audio/transcriptions` |
+| Cloud re-transcribe | `OpenRouterClient.transcribe` via `Retranscription.run` (`Sources/SkylarkCore/Transcription/Retranscription.swift`) → `OpenRouterCloud`, built by `AppController.makeRetranscriber` | In History, the user opens a *retained* entry and explicitly picks a **cloud** engine in the Re-transcribe control, then clicks Go | A previously-retained clip, decoded from its local WAV (`WavDecoder`) and re-encoded/base64-inlined, to `POST /api/v1/audio/transcriptions`. This is the *only* path on which a **retained** file leaves the Mac, and it is a deliberate per-entry user action (choosing a cloud engine over the always-present local ones). Local re-transcribe engines never touch the network. |
 | Cloud cleanup | `OpenRouterClient.complete` (`OpenRouterClient.swift:101`), invoked from `OpenRouterCleaner` (`Sources/SkylarkCore/Cleanup/OpenRouterCleaner.swift:31`) | Menu bar → Cleanup is set to Cloud | The raw transcript text only (no audio) as a chat message, to `POST /api/v1/chat/completions` |
 | Key validation | `OpenRouterClient.validateKey` (`OpenRouterClient.swift:181`), invoked from `APIKeyCard.save()` (`Sources/Skylark/APIKeyEntry.swift:52`) | User saves a key in onboarding or Settings | Only the Bearer key in the request header, to `GET /api/v1/key` |
 | Model download (Parakeet) | `AsrModels.downloadAndLoad` (`Sources/SkylarkCore/Transcription/FluidAudioParakeet.swift:83`) | First local-engine warm-up if the Parakeet model isn't already on disk (`AppController.swift:239,559`) | Model weight files from Hugging Face only — no audio, no transcript |
@@ -55,8 +56,22 @@ When ON, `HistoryHub` writes 16 kHz WAV files to
 `~/Library/Application Support/Skylark/Audio/` strictly off the paste path,
 and per-row delete / Clear History / "Delete all stored audio" remove the
 files. An orphan sweep at launch removes files with no DB row (logs a count
-only). Cloud STT never reads retained files — it encodes the in-memory clip
-of the current dictation only.
+only). Retained files are pruned by an audio-only retention window (default 7
+days; `HistoryStore.pruneAudio` deletes the file and nulls `audio_path`,
+keeping the text row) at launch and on setting change, and turning the toggle
+off deletes every retained file immediately (`AppController.setAudioRetentionEnabled`
+→ `HistoryHub.deleteAllAudio`).
+
+**Reads of retained audio.** Live cloud STT never reads retained files — it
+encodes the in-memory clip of the current dictation only. The one place a
+retained file is *read* is History → Re-transcribe (`WavDecoder.decode` →
+`Retranscription.run`): the clip is decoded locally and fed to a
+freshly-instantiated engine. With a **local** engine chosen, the audio never
+leaves the Mac; with a **cloud** engine explicitly chosen, it is uploaded once
+(the "Cloud re-transcribe" row in §1). Re-transcribe replaces the row's raw
+text and clears its clean text — no re-cleanup, no re-injection, and no audio
+or transcript content is logged on this path (only content-free engine/network
+errors surface to the History detail pane).
 
 ## 3. Keychain-only secrets
 
@@ -94,7 +109,7 @@ already documents as intentional.
 
 1. **`Sources/SkylarkCore/Injection/TextInjector.swift:260-262`** — when a synthesized paste fails, the pre-dictation clipboard snapshot is discarded rather than restored; the user's prior clipboard contents are lost in that branch (the transcript replaces them until the user's next copy). This is a deliberate, commented tradeoff (better to leave usable text than silently drop it), but it's the one path where "clipboard preserved" doesn't hold.
 2. **`Sources/SkylarkCore/Network/OpenRouterClient.swift:212-213`** — every OpenRouter request sends a static `HTTP-Referer`/`X-OpenRouter-Title` identifying header. No secret or user data in it, but it is an outbound identifier present on every cloud call, worth knowing about.
-3. **Audio-retention opt-in is unimplemented** (see §2) — not a privacy violation (the stricter state — no audio ever persists — currently holds), but the PRD's "off by default, opt-in available" feature has no toggle in this build; a future implementer should not assume the setting exists.
+3. **Audio-retention opt-in is implemented** (see §2), OFF by default, with an audio-only retention window, toggle-off purge, orphan sweep, and per-row/purge deletion. The only outbound path for a retained clip is an explicit user-initiated cloud Re-transcribe (§1). No content is logged on any of these paths.
 
 No transcript or audio content was found in any log line, error path, or
 persisted location outside the local GRDB `history` table's own

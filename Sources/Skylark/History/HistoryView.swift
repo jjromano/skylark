@@ -12,6 +12,12 @@ struct HistoryView: View {
     let hub: HistoryHub
     let modeStore: ModeStore?
     let dictionaryStore: DictionaryStore?
+    /// Engines offered by the Re-transcribe control (local always; cloud when a
+    /// key exists). Empty hides the control entirely.
+    var retranscribeEngines: [RetranscribeEngine] = []
+    /// Re-transcribes a retained clip with a fresh engine and replaces the row's
+    /// raw text + engine; returns the new text. Injected by `AppController`.
+    var retranscribe: ((Int64, String, RetranscribeEngine) async throws -> String)?
 
     @State private var query = ""
     @State private var records: [HistoryRecord] = []
@@ -62,6 +68,8 @@ struct HistoryView: View {
                     dictionaryStore: dictionaryStore,
                     record: selected,
                     modeName: selected.modeID.flatMap { modeNames[$0] },
+                    retranscribeEngines: retranscribeEngines,
+                    retranscribe: retranscribe,
                     onSaved: { await reload() },
                     onDelete: {
                         if let id = selected.id { await hub.deleteEntry(id: id) }
@@ -154,6 +162,8 @@ private struct HistoryDetailView: View {
     let dictionaryStore: DictionaryStore?
     let record: HistoryRecord
     let modeName: String?
+    let retranscribeEngines: [RetranscribeEngine]
+    let retranscribe: ((Int64, String, RetranscribeEngine) async throws -> String)?
     let onSaved: () async -> Void
     let onDelete: () async -> Void
 
@@ -161,12 +171,22 @@ private struct HistoryDetailView: View {
     @State private var candidates: [DictionaryCandidate] = []
     @State private var player: AVAudioPlayer?
     @State private var confirmDelete = false
+    @State private var retranscribeSelection: RetranscribeEngine?
+    @State private var retranscribeStatus: RetranscribeStatus = .idle
+
+    private enum RetranscribeStatus: Equatable {
+        case idle
+        case running
+        case failed(String)
+    }
 
     init(
         store: HistoryStore,
         dictionaryStore: DictionaryStore?,
         record: HistoryRecord,
         modeName: String?,
+        retranscribeEngines: [RetranscribeEngine],
+        retranscribe: ((Int64, String, RetranscribeEngine) async throws -> String)?,
         onSaved: @escaping () async -> Void,
         onDelete: @escaping () async -> Void
     ) {
@@ -174,9 +194,18 @@ private struct HistoryDetailView: View {
         self.dictionaryStore = dictionaryStore
         self.record = record
         self.modeName = modeName
+        self.retranscribeEngines = retranscribeEngines
+        self.retranscribe = retranscribe
         self.onSaved = onSaved
         self.onDelete = onDelete
         _editedText = State(initialValue: record.cleanText ?? record.rawText)
+        _retranscribeSelection = State(initialValue: retranscribeEngines.first)
+    }
+
+    /// The Re-transcribe control is available only for entries with retained
+    /// audio and at least one engine offered.
+    private var canRetranscribe: Bool {
+        record.audioPath != nil && retranscribe != nil && !retranscribeEngines.isEmpty
     }
 
     private var finalText: String { record.cleanText ?? record.rawText }
@@ -214,6 +243,11 @@ private struct HistoryDetailView: View {
                         .textSelection(.enabled)
                 }
 
+                if canRetranscribe {
+                    Divider()
+                    retranscribeControls
+                }
+
                 Divider()
 
                 Text("Final text (editable)").font(.caption).foregroundStyle(.secondary)
@@ -243,6 +277,82 @@ private struct HistoryDetailView: View {
             Button("Delete", role: .destructive) { Task { await onDelete() } }
             Button("Cancel", role: .cancel) {}
         }
+        // Stop any in-flight playback when the selection changes (the parent
+        // re-creates this view via `.id`, tearing down `player`) or the window
+        // closes.
+        .onDisappear { player?.stop() }
+        // A re-transcribe replaces this row's raw text in place — the row id is
+        // unchanged, so the parent's `.id(selected.id)` doesn't re-init us. Re-seed
+        // the editable field (and drop any stale candidates) when the raw text
+        // actually changes. A normal edit-save only changes clean text, so this
+        // never clobbers an in-progress edit.
+        .onChange(of: record.rawText) { _, newRaw in
+            editedText = record.cleanText ?? newRaw
+            candidates = []
+        }
+    }
+
+    // MARK: - Re-transcribe
+
+    private var retranscribeControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Re-transcribe").font(.caption).foregroundStyle(.secondary)
+            HStack(spacing: 10) {
+                Picker("Engine", selection: $retranscribeSelection) {
+                    ForEach(retranscribeEngines) { engine in
+                        Text(engine.label).tag(Optional(engine))
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 260)
+
+                Button("Go") { runRetranscribe() }
+                    .disabled(retranscribeSelection == nil || retranscribeStatus == .running)
+
+                if retranscribeStatus == .running {
+                    ProgressView().controlSize(.small)
+                    Text("Transcribing…").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if case let .failed(message) = retranscribeStatus {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            Text("Runs the chosen engine on this entry's saved audio and replaces its text (no re-formatting, no re-insert). Cloud engines upload the audio; local engines never leave this Mac.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func runRetranscribe() {
+        guard let id = record.id,
+              let path = record.audioPath,
+              let engine = retranscribeSelection,
+              let retranscribe
+        else { return }
+        // Playback and re-transcribe would race on the same file — stop first.
+        player?.stop()
+        retranscribeStatus = .running
+        Task {
+            do {
+                _ = try await retranscribe(id, path, engine)
+                retranscribeStatus = .idle
+                // Reload so the parent hands this view the replaced record.
+                await onSaved()
+            } catch {
+                retranscribeStatus = .failed(Self.retranscribeMessage(error))
+            }
+        }
+    }
+
+    private static func retranscribeMessage(_ error: Error) -> String {
+        if case Retranscription.Failure.audioUnavailable = error {
+            return "The saved audio is missing or unreadable."
+        }
+        // Engine/network errors carry content-free descriptions (see privacy
+        // audit §2) — safe to surface.
+        return "Re-transcribe failed: \(error.localizedDescription)"
     }
 
     private var metadataGrid: some View {

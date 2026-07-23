@@ -138,6 +138,25 @@ public actor HistoryStore {
         }
     }
 
+    /// Replace a row's transcription in place (History → Re-transcribe): the new
+    /// engine's raw text overwrites `raw_text`, `clean_text` and `cleanup_engine`
+    /// are cleared (no re-cleanup happens on this path), the `engine` column is
+    /// stamped, and `word_count` is recomputed from the new raw text. Off any
+    /// latency path.
+    public func replaceTranscription(id: Int64, rawText: String, engine: String) async throws {
+        let count = WordCount.count(rawText)
+        try await db.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                UPDATE history
+                SET raw_text = ?, clean_text = NULL, cleanup_engine = NULL, engine = ?, word_count = ?
+                WHERE id = ?
+                """,
+                arguments: [rawText, engine, count, id]
+            )
+        }
+    }
+
     @discardableResult
     public func delete(id: Int64) async throws -> Bool {
         try await db.dbQueue.write { db in
@@ -171,6 +190,44 @@ public actor HistoryStore {
     /// Read/write lives in the app layer — this constant just gives both sides
     /// one spelling to agree on.
     public static let retentionDefaultsKey = "history.retentionDays"
+
+    /// UserDefaults key for the AUDIO retention window (whole days; default 7).
+    /// Distinct from `retentionDefaultsKey`: this one prunes retained *audio
+    /// files* only (see `pruneAudio`), never the text rows. Read/write lives in
+    /// the app layer.
+    public static let audioRetentionDefaultsKey = "history.audioRetentionDays"
+
+    /// Interpret the stored audio-retention-days default: unset (`UserDefaults`
+    /// returns 0 for a missing integer) means the 7-day default. There is no
+    /// "keep forever" for audio, so 0 is never a valid stored value.
+    public static func audioRetentionDays(stored: Int) -> Int {
+        stored == 0 ? 7 : stored
+    }
+
+    /// Delete retained audio *files* older than `days` and null their
+    /// `audio_path` column, keeping the text rows (opt-in audio retention,
+    /// phase-5a spec §2). Returns the number of files removed. Off any latency
+    /// path — called from the launch/periodic sweep and when the setting
+    /// changes.
+    @discardableResult
+    public func pruneAudio(olderThanDays days: Int) async throws -> Int {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
+        return try await db.dbQueue.write { db in
+            let paths = try String.fetchAll(
+                db,
+                sql: "SELECT audio_path FROM history WHERE timestamp < ? AND audio_path IS NOT NULL",
+                arguments: [cutoff]
+            )
+            for path in paths {
+                try? FileManager.default.removeItem(atPath: path)
+            }
+            try db.execute(
+                sql: "UPDATE history SET audio_path = NULL WHERE timestamp < ? AND audio_path IS NOT NULL",
+                arguments: [cutoff]
+            )
+            return paths.count
+        }
+    }
 
     /// Deletes every row older than `days` (by `timestamp`), removing each
     /// row's retained audio file first (same pattern as `deleteEntry`/

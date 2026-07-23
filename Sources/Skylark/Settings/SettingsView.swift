@@ -507,11 +507,23 @@ private struct HistoryPane: View {
             }
 
             Section("Audio retention") {
-                Toggle("Keep audio recordings (local only)", isOn: Binding(
+                Toggle("Keep audio recordings", isOn: Binding(
                     get: { controller.audioRetentionEnabled },
                     set: { controller.setAudioRetentionEnabled($0) }
                 ))
-                Text("Off by default. When on, each dictation's audio is saved locally under Application Support/Skylark/Audio — never uploaded, and deleted when its history entry is deleted or history is cleared.")
+                Text("Stores each dictation's audio on this Mac (Application Support/Skylark/Audio) so you can replay or re-transcribe it from History. Deleted automatically after the retention period. Nothing is uploaded.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Delete audio after", selection: Binding(
+                    get: { controller.audioRetentionDays },
+                    set: { controller.setAudioRetentionDays($0) }
+                )) {
+                    Text("7 days").tag(7)
+                    Text("30 days").tag(30)
+                    Text("90 days").tag(90)
+                }
+                .disabled(!controller.audioRetentionEnabled)
+                Text("Turning this off deletes all stored audio (your text history stays).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Button("Delete all stored audio…", role: .destructive) { confirmDeleteAudio = true }
