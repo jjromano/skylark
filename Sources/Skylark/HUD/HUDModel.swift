@@ -56,7 +56,16 @@ final class HUDModel {
     private(set) var waveform: [Float] = Array(repeating: 0, count: HUDModel.barCount)
 
     var isRecording: Bool {
-        if case .listening = state { return true }
+        switch state {
+        case .listening, .commandListening: return true
+        default: return false
+        }
+    }
+
+    /// True while the active recording is a Voice Command Mode instruction (the
+    /// pill renders a distinct tint + label).
+    var isCommand: Bool {
+        if case .commandListening = state { return true }
         return false
     }
 

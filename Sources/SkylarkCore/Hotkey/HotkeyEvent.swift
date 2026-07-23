@@ -15,4 +15,10 @@ public enum HotkeyEvent: Sendable, Equatable {
     /// The current recording became a hands-free (double-tap-lock) session:
     /// there is no key to release, so the orchestrator arms VAD endpointing.
     case engageHandsFree
+    /// Begin a Voice Command Mode session (a separate, optional trigger): the
+    /// user speaks an INSTRUCTION rather than dictation. Press-and-hold only.
+    case startCommand
+    /// Finish the command session and run the command pipeline (transcribe the
+    /// instruction, read the selection, run the tier LLM, replace/insert).
+    case stopCommand
 }

@@ -18,11 +18,19 @@ import os
 /// `@unchecked Sendable`.
 public final class HotkeyMonitor: @unchecked Sendable {
     private var processor = HotkeyProcessor()
+    /// Independent state machine for Voice Command Mode (press-and-hold only, no
+    /// double-tap-lock). Fed by the command binding's key events; its output is
+    /// translated to `.startCommand`/`.stopCommand` (see `emitCommand`).
+    private var commandProcessor = HotkeyProcessor(pressAndHoldOnly: true)
 
     // MARK: Bindings (main-actor confined)
 
     private var keyboardBinding: HotkeyBinding = .fn
     private var mouseBinding: HotkeyBinding?
+    /// Optional Voice Command Mode trigger (keyboard only). nil = unbound.
+    /// Distinct from the dictation trigger; when it collides with the dictation
+    /// keyboard binding the dictation binding wins (checked first in `handle`).
+    private var commandBinding: HotkeyBinding?
 
     /// Sticky pressed-state for the keyboard trigger. Only ever updated from the
     /// bound keycode's own event (modifier flagsChanged keyed strictly on its
@@ -31,6 +39,8 @@ public final class HotkeyMonitor: @unchecked Sendable {
     private var keyboardPressed = false
     /// Sticky pressed-state for the bound mouse button.
     private var mousePressed = false
+    /// Sticky pressed-state for the command trigger key.
+    private var commandPressed = false
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -69,6 +79,20 @@ public final class HotkeyMonitor: @unchecked Sendable {
         keyboardPressed = false
         mousePressed = false
         logger.info("hotkey bindings set: keyboard=\(keyboard.rawValue, privacy: .public) mouse=\(mouse?.rawValue ?? "none", privacy: .public)")
+    }
+
+    /// Set (or clear) the optional Voice Command Mode trigger. Like `setBindings`
+    /// the tap needn't rebuild — its mask already covers every relevant event.
+    /// Any in-flight command press is released so a live command session can't
+    /// get stuck across a binding change.
+    @MainActor
+    public func setCommandBinding(_ binding: HotkeyBinding?) {
+        commandBinding = binding
+        if commandPressed {
+            emitCommand(commandProcessor.process(.triggerUp, at: ContinuousClock.now))
+        }
+        commandPressed = false
+        logger.info("hotkey command binding set: \(binding?.rawValue ?? "none", privacy: .public)")
     }
 
     // MARK: - Lifecycle (main-thread confined)
@@ -151,8 +175,10 @@ public final class HotkeyMonitor: @unchecked Sendable {
         tapIsBuilt = true
         // Reset derived state on (re)build. Bindings persist across a rebuild.
         processor = HotkeyProcessor()
+        commandProcessor = HotkeyProcessor(pressAndHoldOnly: true)
         keyboardPressed = false
         mousePressed = false
+        commandPressed = false
         logger.info("hotkey tap active")
     }
 
@@ -242,6 +268,13 @@ public final class HotkeyMonitor: @unchecked Sendable {
                 emit(processor.process(down ? .triggerDown : .triggerUp, at: now))
                 return nil  // swallow the bound modifier
             }
+            // Command trigger (modifier). Dictation wins any collision above.
+            if let cmd = commandBinding, cmd.isModifier, keycode == cmd.keyCode, let mask = flagMask(for: cmd) {
+                let down = event.flags.contains(mask)
+                commandPressed = down
+                emitCommand(commandProcessor.process(down ? .triggerDown : .triggerUp, at: now))
+                return nil  // swallow the bound modifier
+            }
             return passthrough
 
         case .keyDown:
@@ -268,12 +301,33 @@ public final class HotkeyMonitor: @unchecked Sendable {
                 }
                 return nil  // swallow (down + auto-repeat)
             }
+            // Command trigger (function key). Dictation wins any collision above.
+            if let cmd = commandBinding, cmd.isFunctionKey, keycode == cmd.keyCode {
+                let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+                if !isRepeat {
+                    commandPressed = true
+                    emitCommand(commandProcessor.process(.triggerDown, at: now))
+                }
+                return nil  // swallow
+            }
+            // Command trigger (chord): exact keycode + modifier match, like above.
+            if let cmd = commandBinding, case let .chord(mods, code) = cmd, keycode == code,
+               Self.chordModifiersMatch(eventFlagsRawValue: event.flags.rawValue, chord: mods) {
+                let isRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+                if !isRepeat {
+                    commandPressed = true
+                    emitCommand(commandProcessor.process(.triggerDown, at: now))
+                }
+                return nil  // swallow (down + auto-repeat)
+            }
             // Skip unknown-keycode keyDowns carrying the fn flag (Fn+media keys).
             if event.flags.contains(.maskSecondaryFn), keycode >= 0x80 {
                 return passthrough
             }
             let isEscape = (keycode == kVK_Escape)
             emit(processor.process(.otherKeyDown(isEscape: isEscape), at: now))
+            // ESC (and a stray key) must cancel an active command session too.
+            emitCommand(commandProcessor.process(.otherKeyDown(isEscape: isEscape), at: now))
             return passthrough
 
         case .keyUp:
@@ -291,6 +345,17 @@ public final class HotkeyMonitor: @unchecked Sendable {
                 emit(processor.process(.triggerUp, at: now))
                 return nil  // swallow
             }
+            // Command trigger release (function key or chord key).
+            if let cmd = commandBinding, cmd.isFunctionKey, keycode == cmd.keyCode {
+                commandPressed = false
+                emitCommand(commandProcessor.process(.triggerUp, at: now))
+                return nil  // swallow
+            }
+            if let cmd = commandBinding, cmd.isChord, keycode == cmd.keyCode, commandPressed {
+                commandPressed = false
+                emitCommand(commandProcessor.process(.triggerUp, at: now))
+                return nil  // swallow
+            }
             return passthrough
 
         case .otherMouseDown:
@@ -300,8 +365,10 @@ public final class HotkeyMonitor: @unchecked Sendable {
                 emit(processor.process(.triggerDown, at: now))
                 return nil  // swallow the bound mouse button (no discard)
             }
-            // A non-bound mouse press feeds the "too-short hold" discard path.
+            // A non-bound mouse press feeds the "too-short hold" discard path
+            // for whichever session (dictation or command) is active.
             emit(processor.process(.mouseDown, at: now))
+            emitCommand(commandProcessor.process(.mouseDown, at: now))
             return passthrough
 
         case .otherMouseUp:
@@ -316,6 +383,7 @@ public final class HotkeyMonitor: @unchecked Sendable {
         case .leftMouseDown, .rightMouseDown:
             // Left/right are never bindable; they only cancel too-short holds.
             emit(processor.process(.mouseDown, at: now))
+            emitCommand(commandProcessor.process(.mouseDown, at: now))
             return passthrough
 
         default:
@@ -358,11 +426,45 @@ public final class HotkeyMonitor: @unchecked Sendable {
                 emit(processor.process(.triggerUp, at: ContinuousClock.now))
             }
         }
+
+        // Command trigger (keyboard only): reconcile the same way and synthesize
+        // a command triggerUp if it flipped pressed→released while disabled.
+        if let cmd = commandBinding {
+            let cmdNow: Bool
+            if cmd.isModifier, let mask = flagMask(for: cmd) {
+                cmdNow = CGEventSource.flagsState(.combinedSessionState).contains(mask)
+            } else if (cmd.isFunctionKey || cmd.isChord), let code = cmd.keyCode {
+                cmdNow = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
+            } else {
+                cmdNow = commandPressed
+            }
+            let cmdWas = commandPressed
+            commandPressed = cmdNow
+            if Self.reconcileNeedsSyntheticUp(wasPressed: cmdWas, nowPressed: cmdNow) {
+                emitCommand(commandProcessor.process(.triggerUp, at: ContinuousClock.now))
+            }
+        }
     }
 
     private func emit(_ event: HotkeyEvent?) {
         if let event {
             continuation.yield(event)
+        }
+    }
+
+    /// Translate the command processor's (dictation-flavored) output into the
+    /// command-mode events the orchestrator routes as a distinct session. The
+    /// command processor is press-and-hold-only, so `.engageHandsFree` never
+    /// occurs; `.cancel`/`.discard` share the dictation semantics (drop audio,
+    /// nothing inserted) and pass through unchanged.
+    private func emitCommand(_ event: HotkeyEvent?) {
+        guard let event else { return }
+        switch event {
+        case .startRecording: continuation.yield(.startCommand)
+        case .stopRecording: continuation.yield(.stopCommand)
+        case .cancel: continuation.yield(.cancel)
+        case .discard: continuation.yield(.discard)
+        case .engageHandsFree, .startCommand, .stopCommand: break
         }
     }
 }

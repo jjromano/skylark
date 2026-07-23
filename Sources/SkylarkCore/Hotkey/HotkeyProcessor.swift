@@ -55,7 +55,15 @@ public struct HotkeyProcessor: Sendable {
     /// (chord/ESC/dirty).
     private var isDirty = false
 
-    public init() {}
+    /// Press-and-hold-only mode (Voice Command Mode): the double-tap-lock
+    /// hands-free path is disabled, so two quick taps never lock — command mode
+    /// is strictly hold-to-speak. `.engageHandsFree` is never emitted. Everything
+    /// else (min-hold discard, ESC/chord cancel, dirty tracking) is identical.
+    private let pressAndHoldOnly: Bool
+
+    public init(pressAndHoldOnly: Bool = false) {
+        self.pressAndHoldOnly = pressAndHoldOnly
+    }
 
     /// True while a recording session is active (hold or locked).
     public var isRecording: Bool {
@@ -121,7 +129,8 @@ public struct HotkeyProcessor: Sendable {
 
         // Double-tap: this release is close to the previous one → lock hands-free.
         // Signal the orchestrator so it arms VAD endpointing (no key to release).
-        if let last = lastReleaseAt, last.duration(to: now) < Self.doubleTapWindow {
+        // Suppressed in press-and-hold-only mode (command mode never locks).
+        if !pressAndHoldOnly, let last = lastReleaseAt, last.duration(to: now) < Self.doubleTapWindow {
             state = .doubleTapLock
             lastReleaseAt = nil
             return .engageHandsFree

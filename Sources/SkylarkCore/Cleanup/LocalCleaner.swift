@@ -67,10 +67,18 @@ public struct LocalCleaner: Cleaner {
     }
 
     public init() {
+        self.backend = Self.makeDefaultBackend()
+    }
+
+    /// The default on-device backend for this build: the live Apple
+    /// `FoundationModels` conformer where available, else an unavailable stub.
+    /// Exposed so other on-device consumers (e.g. Voice Command Mode's local
+    /// runner) can build the same backend without reaching into internals.
+    public static func makeDefaultBackend() -> any LocalCleanupBackend {
         #if canImport(FoundationModels)
-        self.backend = FoundationModelBackend()
+        return FoundationModelBackend()
         #else
-        self.backend = UnavailableBackend(reason: "on-device model framework unavailable in this build")
+        return UnavailableBackend(reason: "on-device model framework unavailable in this build")
         #endif
     }
 

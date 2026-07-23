@@ -13,6 +13,16 @@ public actor DictationOrchestrator {
         case injecting
     }
 
+    /// Which kind of session is active. Dictation transcribes → cleans → inserts;
+    /// command speaks an instruction → LLM rewrite/generate → replace/insert.
+    /// Capture + STT are shared exactly (same warm engines); only the post-
+    /// transcription path differs. Command mode never touches the dictation
+    /// Fn-up→paste path (latency invariant §6).
+    public enum SessionKind: Sendable, Equatable {
+        case dictation
+        case command
+    }
+
     private let capture: any AudioCapturing
     /// Swappable at runtime (`setTranscriber`) so the menu-bar Speech Engine
     /// quick-switch can move between local and cloud without rebuilding the
@@ -21,6 +31,15 @@ public actor DictationOrchestrator {
     private let injector: any TextInjecting
     private let endpointer: (any SpeechEndpointer)?
     private let hint: TranscriptionHint
+
+    /// Voice Command Mode runner (optional). nil = command mode not wired
+    /// (headless/tests without it); a `.startCommand` then surfaces a note and
+    /// does nothing destructive.
+    private let commandRunner: (any CommandRunning)?
+
+    /// Kind of the active/last session (set at start; consumed at finish and by
+    /// level forwarding so the command pill renders distinctly).
+    private var sessionKind: SessionKind = .dictation
 
     /// Detached history sinks (phase-3 spec §7). Both off the paste path; nil in
     /// tests/headless callers that don't record. `historyRecord` also carries
@@ -124,6 +143,7 @@ public actor DictationOrchestrator {
         frontmostBundleID: @escaping @Sendable () -> String? = { nil },
         snippets: (@Sendable () async -> [SnippetRecord])? = nil,
         fieldContextReader: (any FieldContextReading)? = nil,
+        commandRunner: (any CommandRunning)? = nil,
         historyRecord: (@Sendable (HistoryRecord, AudioClip) -> Void)? = nil,
         historyUpdate: (@Sendable (HistoryRecord) -> Void)? = nil,
         replaceTimeout: Duration = .seconds(5),
@@ -134,6 +154,7 @@ public actor DictationOrchestrator {
         self.injector = injector
         self.endpointer = endpointer
         self.hint = hint
+        self.commandRunner = commandRunner
         self.cleaners = cleaners
         self.modeProvider = modeProvider
         self.dictionary = dictionary
@@ -221,20 +242,32 @@ public actor DictationOrchestrator {
     public func handle(_ event: HotkeyEvent) async {
         switch event {
         case .startRecording:
-            startRecording()
+            startRecording(kind: .dictation)
         case .stopRecording:
             await finishRecording()
         case .cancel, .discard:
             cancelRecording()
         case .engageHandsFree:
             engageHandsFree()
+        case .startCommand:
+            startRecording(kind: .command)
+        case .stopCommand:
+            await finishCommand()
         }
     }
 
     // MARK: - Transitions
 
-    private func startRecording() {
+    private func startRecording(kind: SessionKind) {
         guard phase == .idle else { return }
+        // Command mode needs a runner; refuse early (nothing destructive) rather
+        // than record an instruction we can't act on.
+        if kind == .command, commandRunner == nil {
+            logger.notice("command mode attempted but no runner wired; ignored")
+            noteContinuation.yield("Command mode isn't available")
+            publish(.idle)
+            return
+        }
         guard transcriberReady else {
             logger.notice("dictation attempted before model ready; discarded")
             noteContinuation.yield("Speech model still preparing…")
@@ -249,6 +282,7 @@ public actor DictationOrchestrator {
             return
         }
         phase = .recording
+        sessionKind = kind
         isHandsFree = false
         // Capture the target app AT dictation start (fn-down) and resolve the
         // mode + dictionary off the paste path while the user speaks.
@@ -277,7 +311,7 @@ public actor DictationOrchestrator {
                 await self?.storeFieldContext(context, session: session)
             }
         }
-        publish(.listening(level: 0))
+        publish(listeningState(level: 0))
         startLevelForwarding()
     }
 
@@ -287,6 +321,12 @@ public actor DictationOrchestrator {
     private func storeFieldContext(_ context: FieldContext?, session: Int) {
         guard session == fieldContextSession else { return }
         capturedFieldContext = context
+    }
+
+    /// The listening HUD state for the active session kind (command mode renders
+    /// a distinct pill).
+    private func listeningState(level: Float) -> HUDState {
+        sessionKind == .command ? .commandListening(level: level) : .listening(level: level)
     }
 
     /// Arm VAD endpointing for a hands-free (double-tap-lock) session. If VAD is
@@ -509,6 +549,102 @@ public actor DictationOrchestrator {
             fireCorrectionSettled(settledToken, finalText: settledFinalText)
         }
 
+        phase = .idle
+        publish(.idle)
+    }
+
+    // MARK: - Voice Command Mode
+
+    /// Command-mode finish path. Reuses capture + STT exactly (same warm
+    /// engines), then makes ONE LLM call (per the active cleanup tier) over the
+    /// spoken instruction and the AX selection: replace the selection, or insert
+    /// at the cursor when nothing is selected. Deliberately slower than dictation
+    /// (an LLM round-trip) but entirely OFF the dictation Fn-up→paste path
+    /// (latency invariant §6). A failed LLM call, an empty result, or a raw tier
+    /// leaves the user's selection untouched and surfaces a failure note.
+    private func finishCommand() async {
+        guard phase == .recording, sessionKind == .command else { return }
+        stopHandsFree()
+
+        let clip = capture.stop()
+        phase = .transcribing
+        publish(.processing)
+
+        guard let commandRunner else {
+            finishCommandIdle(note: "Command mode isn't available")
+            return
+        }
+        guard !clip.isEmpty else {
+            phase = .idle
+            publish(.idle)
+            return
+        }
+
+        let instruction: String
+        do {
+            instruction = try await transcriber.transcribe(clip, hint: hint)
+        } catch {
+            logger.error("command transcription failed: \(error.localizedDescription, privacy: .public)")
+            finishCommandIdle(note: "Couldn't hear the command")
+            return
+        }
+        guard !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            // Nothing said — quietly return to idle (nothing destructive).
+            phase = .idle
+            publish(.idle)
+            return
+        }
+
+        // Resolve the tier (override or resolved mode). Raw has no LLM to run:
+        // refuse and do nothing destructive (no selection read, no insert).
+        let setup = await resolvedSetup()
+        let tier = tierOverride ?? setup.mode.cleanupTier
+        if tier == .raw {
+            finishCommandIdle(note: "Command mode needs a cleanup model")
+            return
+        }
+
+        // Read the selection BEFORE the LLM call so any failure leaves it as-is.
+        // nil = no readable selection → generate text at the cursor.
+        let selection = await injector.readSelection()
+
+        let result: String
+        do {
+            result = try await commandRunner.run(
+                instruction: instruction, selection: selection?.text, tier: tier
+            )
+        } catch {
+            logger.error("command run failed: \(error.localizedDescription, privacy: .public)")
+            finishCommandIdle(note: "Command failed — selection left unchanged")
+            return
+        }
+
+        phase = .injecting
+        if let selection, !selection.text.isEmpty {
+            // Rewrite. When the model echoed the selection unchanged (its
+            // "instruction unclear" fallback), there's nothing to write.
+            guard result != selection.text else {
+                phase = .idle
+                publish(.idle)
+                return
+            }
+            let ok = await injector.replaceSelection(selection, with: result)
+            if !ok {
+                noteContinuation.yield("Couldn't replace the selection")
+            }
+        } else {
+            // Generate at the cursor via the shared verified-insert path.
+            _ = await insertRaw(result)
+        }
+
+        phase = .idle
+        publish(.idle)
+    }
+
+    /// Return to idle with a status note (command failure/refusal surface). The
+    /// selection is never modified before this is called on a failure path.
+    private func finishCommandIdle(note: String) {
+        noteContinuation.yield(note)
         phase = .idle
         publish(.idle)
     }
@@ -766,7 +902,7 @@ public actor DictationOrchestrator {
 
     private func forwardLevel(_ level: Float) {
         guard phase == .recording else { return }
-        publish(.listening(level: level))
+        publish(listeningState(level: level))
     }
 
     private func publish(_ state: HUDState) {

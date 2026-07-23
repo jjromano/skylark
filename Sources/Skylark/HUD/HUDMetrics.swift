@@ -15,6 +15,9 @@ enum HUDMetrics {
             return style == .minimal ? CGSize(width: 28, height: 7) : CGSize(width: 40, height: 10)
         case .listening:
             return style == .minimal ? CGSize(width: 92, height: 18) : CGSize(width: 120, height: 24)
+        case .commandListening:
+            // Wider than dictation to fit the "Command" label + icon.
+            return style == .minimal ? CGSize(width: 104, height: 18) : CGSize(width: 176, height: 24)
         case .processing:
             return style == .minimal ? CGSize(width: 76, height: 16) : CGSize(width: 96, height: 20)
         }

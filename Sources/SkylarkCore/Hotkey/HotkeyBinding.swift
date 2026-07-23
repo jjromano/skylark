@@ -116,6 +116,9 @@ public enum HotkeyBinding: Sendable, Equatable, Hashable {
     public static let defaultsKeyKeyboard = "hotkey.keyboard"
     /// UserDefaults key the app layer should use for the optional mouse binding.
     public static let defaultsKeyMouse = "hotkey.mouse"
+    /// UserDefaults key for the optional Voice Command Mode keyboard binding
+    /// (default UNBOUND — the user enables it in Settings → General).
+    public static let defaultsKeyCommand = "hotkey.command"
 
     // MARK: - Function-key table
 

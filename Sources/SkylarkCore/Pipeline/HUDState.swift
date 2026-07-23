@@ -6,4 +6,8 @@ public enum HUDState: Sendable, Equatable {
     case idle
     case listening(level: Float)
     case processing
+    /// Voice Command Mode is recording an instruction. Distinct from `.listening`
+    /// so the HUD pill can render a different tint + a "Command" label; the level
+    /// still drives the waveform.
+    case commandListening(level: Float)
 }

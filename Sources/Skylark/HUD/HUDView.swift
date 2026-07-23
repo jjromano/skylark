@@ -56,6 +56,8 @@ struct HUDView: View {
             }
         case .listening:
             listeningContent
+        case .commandListening:
+            commandListeningContent
         case .processing:
             processingContent
         }
@@ -118,6 +120,31 @@ struct HUDView: View {
                 ForEach(Array(model.waveform.enumerated()), id: \.offset) { _, level in
                     Capsule()
                         .fill(.white.opacity(0.55))
+                        .frame(width: 2, height: barHeight(level))
+                }
+            }
+            .frame(height: waveformBand)
+            .animation(.easeOut(duration: 0.08), value: model.waveform)
+        }
+        .padding(.horizontal, isMinimal ? 8 : 10)
+    }
+
+    /// Voice Command Mode listening pill: a distinct blue tint + a "Command"
+    /// label so it never reads as ordinary dictation. Same waveform mechanics.
+    private var commandListeningContent: some View {
+        HStack(spacing: isMinimal ? 6 : 8) {
+            if !isMinimal {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(Color.blue)
+                Text("Command")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color.blue.opacity(0.95))
+            }
+            HStack(spacing: 1) {
+                ForEach(Array(model.waveform.enumerated()), id: \.offset) { _, level in
+                    Capsule()
+                        .fill(Color.blue.opacity(0.65))
                         .frame(width: 2, height: barHeight(level))
                 }
             }

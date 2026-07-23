@@ -47,11 +47,26 @@ final class AppController {
     /// trigger. Persisted as `HotkeyBinding` raw strings; applied live.
     private(set) var hotkeyKeyboard: HotkeyBinding
     private(set) var hotkeyMouse: HotkeyBinding?
+    /// Optional Voice Command Mode trigger (keyboard only; default UNBOUND).
+    /// While held, the user speaks an instruction that rewrites the selection or
+    /// generates text at the cursor. Persisted under `hotkey.command`.
+    private(set) var hotkeyCommand: HotkeyBinding?
 
     func setHotkeyKeyboard(_ binding: HotkeyBinding) {
         hotkeyKeyboard = binding
         UserDefaults.standard.set(binding.rawValue, forKey: HotkeyBinding.defaultsKeyKeyboard)
         monitor.setBindings(keyboard: binding, mouse: hotkeyMouse)
+    }
+
+    /// Set (or clear, nil) the Voice Command Mode trigger. Applied live.
+    func setHotkeyCommand(_ binding: HotkeyBinding?) {
+        hotkeyCommand = binding
+        if let binding {
+            UserDefaults.standard.set(binding.rawValue, forKey: HotkeyBinding.defaultsKeyCommand)
+        } else {
+            UserDefaults.standard.removeObject(forKey: HotkeyBinding.defaultsKeyCommand)
+        }
+        monitor.setCommandBinding(binding)
     }
 
     /// Pause the global hotkey tap while the Settings shortcut recorder is
@@ -64,6 +79,7 @@ final class AppController {
 
     func resumeHotkeyMonitoring() {
         monitor.setBindings(keyboard: hotkeyKeyboard, mouse: hotkeyMouse)
+        monitor.setCommandBinding(hotkeyCommand)
         monitor.start()
     }
 
@@ -455,6 +471,8 @@ final class AppController {
             .flatMap(HotkeyBinding.init(rawValue:)) ?? .fn
         hotkeyMouse = UserDefaults.standard.string(forKey: HotkeyBinding.defaultsKeyMouse)
             .flatMap(HotkeyBinding.init(rawValue:))
+        hotkeyCommand = UserDefaults.standard.string(forKey: HotkeyBinding.defaultsKeyCommand)
+            .flatMap(HotkeyBinding.init(rawValue:))
 
         pressEnterEnabled = UserDefaults.standard.bool(forKey: Self.pressEnterKey)
         contextAwareCleanupEnabled = UserDefaults.standard.bool(forKey: Self.contextAwareCleanupKey)
@@ -529,6 +547,14 @@ final class AppController {
             Task { @MainActor in relay.post(message) }
         }
 
+        // Voice Command Mode runner: cloud via the shared OpenRouter client (the
+        // user's cleanup model), local via the on-device backend. Selection text
+        // reaches the cloud only when the cleanup tier is cloud (privacy §7).
+        let commandRunner = CommandRunner(
+            client: client,
+            localBackend: LocalCleaner.makeDefaultBackend()
+        )
+
         orchestrator = DictationOrchestrator(
             capture: capture,
             transcriber: parakeet,
@@ -540,6 +566,7 @@ final class AppController {
             frontmostBundleID: frontmost.snapshot,
             snippets: snippetsProvider,
             fieldContextReader: AXFieldContextReader(),
+            commandRunner: commandRunner,
             historyRecord: historyHub?.recordSink(appInfo: frontmost.infoSnapshot),
             historyUpdate: historyHub?.updateSink()
         )
@@ -550,6 +577,7 @@ final class AppController {
         switch hud.state {
         case .idle: return "Idle"
         case .listening: return "Listening"
+        case .commandListening: return "Listening (command)"
         case .processing: return "Processing"
         }
     }
@@ -578,7 +606,14 @@ final class AppController {
             var wasIdle = true
             for await state in orchestrator.hudStates {
                 hud.state = state
-                let isListening: Bool = { if case .listening = state { return true } else { return false } }()
+                // Both listening variants (dictation + command) drive the
+                // start/stop cues, media pause, and waveform.
+                let isListening: Bool = {
+                    switch state {
+                    case .listening, .commandListening: return true
+                    default: return false
+                    }
+                }()
                 let isIdle: Bool = { if case .idle = state { return true } else { return false } }()
                 if isListening, !wasListening {
                     sounds.playStart()
@@ -597,10 +632,13 @@ final class AppController {
                 if isIdle, !wasIdle { self?.refreshStats() }
                 wasListening = isListening
                 wasIdle = isIdle
-                if case let .listening(level) = state {
+                switch state {
+                case let .listening(level), let .commandListening(level):
                     hud.pushLevel(level)
-                } else if case .idle = state {
+                case .idle:
                     hud.resetWaveform()
+                case .processing:
+                    break
                 }
                 hudPanel.refreshLayout()
             }
@@ -693,6 +731,7 @@ final class AppController {
         // The monitor self-gates on Accessibility, so starting it is always safe.
         // Bindings are applied first so a non-default hotkey works from launch.
         monitor.setBindings(keyboard: hotkeyKeyboard, mouse: hotkeyMouse)
+        monitor.setCommandBinding(hotkeyCommand)
         monitor.start()
 
         if permissions.allGranted {
@@ -913,7 +952,9 @@ final class AppController {
                 await orchestrator.handle(.engageHandsFree)
             case .listening:
                 await orchestrator.handle(.stopRecording)
-            case .processing:
+            case .commandListening, .processing:
+                // A command session is a physical key hold (no HUD-button
+                // control); ignore the record button while one is active.
                 break
             }
         }

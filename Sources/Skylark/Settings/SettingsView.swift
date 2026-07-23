@@ -211,6 +211,22 @@ private struct GeneralPane: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section {
+                ShortcutRecorderRow(
+                    controller: controller,
+                    label: "Command key",
+                    currentDisplayName: controller.hotkeyCommand?.displayName ?? "None",
+                    onCapture: { controller.setHotkeyCommand($0) },
+                    onClear: { controller.setHotkeyCommand(nil) }
+                )
+            } header: {
+                Text("Voice command shortcut")
+            } footer: {
+                Text("Hold and speak an instruction to rewrite selected text or generate text at the cursor.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Recording indicator") {
                 Picker("Style", selection: Binding(
                     get: { controller.hud.style },

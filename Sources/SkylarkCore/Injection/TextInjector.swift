@@ -43,10 +43,56 @@ public struct InsertionToken: @unchecked Sendable, Equatable {
     }
 }
 
+/// A snapshot of the current AX selection for Voice Command Mode. Carries the
+/// selected `text` (the DATA a spoken instruction rewrites) plus the AX handle
+/// needed to replace exactly that range verifiably. When the AX handle is nil
+/// the caller falls back to a clipboard paste over the live selection.
+public struct CommandSelection: @unchecked Sendable, Equatable {
+    /// The currently selected text.
+    public let text: String
+    /// AX element + range for verified in-place replacement (nil in tests or
+    /// when the selection was captured without a replaceable handle).
+    let element: AXUIElement?
+    let range: CFRange?
+
+    /// Public initializer (no AX anchor) — used by tests and any caller that
+    /// only carries the selection text; replacement then uses the paste path.
+    public init(text: String) {
+        self.text = text
+        self.element = nil
+        self.range = nil
+    }
+
+    init(text: String, element: AXUIElement, range: CFRange) {
+        self.text = text
+        self.element = element
+        self.range = range
+    }
+
+    public static func == (lhs: CommandSelection, rhs: CommandSelection) -> Bool {
+        guard lhs.text == rhs.text else { return false }
+        switch (lhs.element, rhs.element) {
+        case (nil, nil): return true
+        case let (a?, b?): return CFEqual(a, b) && lhs.range?.location == rhs.range?.location && lhs.range?.length == rhs.range?.length
+        default: return false
+        }
+    }
+}
+
 /// Inserts text at the cursor (ARCHITECTURE §2).
 public protocol TextInjecting: Sendable {
     func insert(_ text: String) async throws -> InsertionToken
     func replace(_ token: InsertionToken, with text: String) async throws
+    /// Read the current AX selection (Voice Command Mode). Returns the selected
+    /// text plus a handle for verified replacement, or nil when there is no
+    /// readable selection — the caller then treats it as "no selection" and
+    /// inserts the command result at the cursor instead.
+    func readSelection() async -> CommandSelection?
+    /// Replace a previously-read selection with `text`, verified by read-back;
+    /// falls back to a clipboard-preserving paste over the live selection when
+    /// AX can't confirm. Returns true when the replacement landed. On false the
+    /// caller surfaces a failure and leaves the selection as-is.
+    func replaceSelection(_ selection: CommandSelection, with text: String) async -> Bool
     /// Whether the focused element supports precise AX insertion right now. The
     /// orchestrator probes this at paste time to pick the cleanup strategy
     /// (in-place replace vs. wait-for-clean).
@@ -74,6 +120,13 @@ public extension TextInjecting {
         }
         return nil
     }
+
+    /// Default: no readable selection (simple doubles report "nothing selected",
+    /// so command mode inserts at the cursor).
+    func readSelection() async -> CommandSelection? { nil }
+
+    /// Default: replacement unsupported for simple doubles.
+    func replaceSelection(_ selection: CommandSelection, with text: String) async -> Bool { false }
 }
 
 /// Posts a real Cmd-V (or an injected substitute in tests).
@@ -226,6 +279,51 @@ public final class TextInjector: TextInjecting {
             // leading space the raw insertion had.
             _ = Self.performAXReplace(element: element, original: token.text, replacement: token.leadingSeparator + text)
         }
+    }
+
+    // MARK: - Voice Command Mode selection (read + replace)
+
+    /// Read the current AX selection. Returns non-nil only when there is actual
+    /// selected text with a readable range; a bare caret (no selection) or an
+    /// unreadable field yields nil so the orchestrator inserts at the cursor.
+    public func readSelection() async -> CommandSelection? {
+        guard let element = Self.focusedEditableElement() else { return nil }
+        guard let range = Self.selectedRange(element), range.length > 0 else { return nil }
+        guard let text = Self.string(in: element, range: range), !text.isEmpty else { return nil }
+        return CommandSelection(text: text, element: element, range: range)
+    }
+
+    /// Replace a read selection with `text`. Prefers a verified AX write over the
+    /// exact selected range; on any failure (focus moved, field drops the write,
+    /// or no AX handle) falls back to a clipboard-preserving paste, which Cmd-V's
+    /// over the live selection to replace it. Returns true when text landed.
+    public func replaceSelection(_ selection: CommandSelection, with text: String) async -> Bool {
+        if let element = selection.element, let range = selection.range,
+           Self.axReplaceSelection(element: element, range: range, original: selection.text, replacement: text) {
+            return true
+        }
+        // Paste fallback: Cmd-V replaces the current selection in place.
+        let token = await performClipboardPaste(text, pasteboard: .general, executor: executor)
+        return !token.pasteUncertain
+    }
+
+    /// Re-select `range` and overwrite it with `replacement`, verified by
+    /// read-back. Returns false (no mutation trusted) if focus moved, the range
+    /// no longer holds `original`, or the write didn't land — the caller then
+    /// uses the paste fallback.
+    static func axReplaceSelection(element: AXUIElement, range: CFRange, original: String, replacement: String) -> Bool {
+        guard let focused = focusedEditableElement(), CFEqual(focused, element) else { return false }
+        guard let atRange = string(in: element, range: range), atRange == original else { return false }
+        guard setSelectedRange(element, range) else { return false }
+        guard AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, replacement as CFTypeRef) == .success else {
+            return false
+        }
+        // Verify the replacement is actually present at the range we wrote.
+        let writtenRange = CFRange(location: range.location, length: utf16Count(replacement))
+        guard let readBack = string(in: element, range: writtenRange), readBack == replacement else { return false }
+        // Collapse the caret at the end of the replacement.
+        _ = setSelectedRange(element, CFRange(location: range.location + utf16Count(replacement), length: 0))
+        return true
     }
 
     /// Whether the focused element supports precise AX insertion **and** the
