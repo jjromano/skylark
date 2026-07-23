@@ -90,6 +90,19 @@ final class AppController {
         Task { [orchestrator] in await orchestrator.setPressEnterEnabled(on) }
     }
 
+    /// Context-aware cleanup: read the on-screen text around the caret (via
+    /// Accessibility) at dictation start and feed it to the cleanup model, so
+    /// continuations and spellings match what's already in the field. Off by
+    /// default — it reads the focused field, so it's opt-in.
+    static let contextAwareCleanupKey = "cleanup.useOnScreenContext"
+    private(set) var contextAwareCleanupEnabled: Bool
+
+    func setContextAwareCleanupEnabled(_ on: Bool) {
+        contextAwareCleanupEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.contextAwareCleanupKey)
+        Task { [orchestrator] in await orchestrator.setContextAwareCleanupEnabled(on) }
+    }
+
     /// Pause Music/Spotify while dictating (off by default; needs an Automation
     /// permission grant the first time it fires).
     static let pauseMediaKey = "pauseMediaWhileDictating"
@@ -440,6 +453,7 @@ final class AppController {
             .flatMap(HotkeyBinding.init(rawValue:))
 
         pressEnterEnabled = UserDefaults.standard.bool(forKey: Self.pressEnterKey)
+        contextAwareCleanupEnabled = UserDefaults.standard.bool(forKey: Self.contextAwareCleanupKey)
         pauseMediaEnabled = UserDefaults.standard.bool(forKey: Self.pauseMediaKey)
         cleanupOverride = UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto"
         cleanupIntensity = CleanupIntensity.persisted()
@@ -521,6 +535,7 @@ final class AppController {
             dictionary: dictionaryProvider,
             frontmostBundleID: frontmost.snapshot,
             snippets: snippetsProvider,
+            fieldContextReader: AXFieldContextReader(),
             historyRecord: historyHub?.recordSink(appInfo: frontmost.infoSnapshot),
             historyUpdate: historyHub?.updateSink()
         )
@@ -656,6 +671,9 @@ final class AppController {
         // Apply the persisted press-enter opt-in, prune history to the retention
         // window, and warm the Insights aggregates.
         Task { [orchestrator, pressEnterEnabled] in await orchestrator.setPressEnterEnabled(pressEnterEnabled) }
+        Task { [orchestrator, contextAwareCleanupEnabled] in
+            await orchestrator.setContextAwareCleanupEnabled(contextAwareCleanupEnabled)
+        }
         pruneHistory()
         refreshStats()
 

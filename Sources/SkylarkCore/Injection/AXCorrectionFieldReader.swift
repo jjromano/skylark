@@ -28,10 +28,10 @@ public final class AXCorrectionFieldReader: CorrectionFieldReading, @unchecked S
         guard !finalText.isEmpty else { return nil }
         guard !CorrectionTarget.isExcludedApp(bundleID) else { return nil }
         // Focus must still be the token's element.
-        guard let focused = Self.focusedElement(), CFEqual(focused, element) else { return nil }
-        guard !Self.isSecure(element) else { return nil }
-        guard let caret = Self.selectedRange(element) else { return nil }
-        let anchor = caret.location - Self.utf16Count(finalText)
+        guard let focused = AXTextReader.focusedElement(), CFEqual(focused, element) else { return nil }
+        guard !AXTextReader.isSecure(element) else { return nil }
+        guard let caret = AXTextReader.selectedRange(element) else { return nil }
+        let anchor = caret.location - AXTextReader.utf16Count(finalText)
         guard anchor >= 0 else { return nil }
         return CorrectionWatch(token: token, finalText: finalText, anchorLocation: anchor)
     }
@@ -46,78 +46,18 @@ public final class AXCorrectionFieldReader: CorrectionFieldReading, @unchecked S
     private static func read(_ watch: CorrectionWatch) -> CorrectionReadback {
         guard case let .ax(element) = watch.token.method else { return .invalid }
         // Focus must still be the same element, and it must not have become secure.
-        guard let focused = focusedElement(), CFEqual(focused, element) else { return .invalid }
-        guard !isSecure(element) else { return .invalid }
-        guard let valueLength = numberOfCharacters(element) else { return .invalid }
+        guard let focused = AXTextReader.focusedElement(), CFEqual(focused, element) else { return .invalid }
+        guard !AXTextReader.isSecure(element) else { return .invalid }
+        guard let valueLength = AXTextReader.numberOfCharacters(element) else { return .invalid }
 
         let start = watch.anchorLocation
         guard start >= 0, start <= valueLength else { return .invalid }
-        let want = utf16Count(watch.finalText) + slack
+        let want = AXTextReader.utf16Count(watch.finalText) + slack
         let length = min(want, valueLength - start)
         guard length >= 0 else { return .invalid }
-        guard let text = string(in: element, range: CFRange(location: start, length: length)) else {
+        guard let text = AXTextReader.string(in: element, range: CFRange(location: start, length: length)) else {
             return .invalid
         }
         return .text(text)
     }
-
-    // MARK: - AX helpers (main actor)
-
-    @MainActor
-    private static func focusedElement() -> AXUIElement? {
-        let systemWide = AXUIElementCreateSystemWide()
-        var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success,
-              let focusedRef
-        else {
-            return nil
-        }
-        return (focusedRef as! AXUIElement)
-    }
-
-    @MainActor
-    private static func isSecure(_ element: AXUIElement) -> Bool {
-        var subroleRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subroleRef) == .success else {
-            return false
-        }
-        return CorrectionTarget.isSecureSubrole(subroleRef as? String)
-    }
-
-    @MainActor
-    private static func selectedRange(_ element: AXUIElement) -> CFRange? {
-        var ref: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &ref) == .success,
-              let ref else { return nil }
-        var range = CFRange()
-        guard AXValueGetValue(ref as! AXValue, .cfRange, &range) else { return nil }
-        return range
-    }
-
-    @MainActor
-    private static func numberOfCharacters(_ element: AXUIElement) -> Int? {
-        var ref: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &ref) == .success,
-              let count = ref as? Int
-        else {
-            return nil
-        }
-        return count
-    }
-
-    @MainActor
-    private static func string(in element: AXUIElement, range: CFRange) -> String? {
-        var mutableRange = range
-        guard let rangeValue = AXValueCreate(.cfRange, &mutableRange) else { return nil }
-        var ref: CFTypeRef?
-        guard AXUIElementCopyParameterizedAttributeValue(
-            element,
-            kAXStringForRangeParameterizedAttribute as CFString,
-            rangeValue,
-            &ref
-        ) == .success else { return nil }
-        return ref as? String
-    }
-
-    private static func utf16Count(_ text: String) -> Int { text.utf16.count }
 }

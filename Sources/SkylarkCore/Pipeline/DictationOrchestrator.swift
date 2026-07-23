@@ -56,6 +56,21 @@ public actor DictationOrchestrator {
     /// paste-fallback insertions (no AX signal to re-read).
     private var correctionSettled: (@Sendable (InsertionToken, String) -> Void)?
 
+    /// Reads the on-screen text around the caret at recording start for
+    /// context-aware cleanup (opt-in). nil = feature not wired (tests/headless).
+    private let fieldContextReader: (any FieldContextReading)?
+    /// Opt-in toggle (Settings → General). When on and a reader is wired, the AX
+    /// read is kicked off at recording start.
+    private var contextAwareCleanupEnabled = false
+    /// Field context captured during the CURRENT recording, or nil when the read
+    /// hasn't finished, wasn't enabled, or found nothing. Read — never awaited —
+    /// at cleanup time so the AX read never delays Fn-up→paste.
+    private var capturedFieldContext: FieldContext?
+    /// Monotonic recording id: a late read from a previous recording can't write
+    /// its context into a newer session.
+    private var fieldContextSession = 0
+    private var fieldContextTask: Task<Void, Never>?
+
     /// Resolved once per session at fn-down, consumed at paste time.
     private var sessionSetup: SessionSetup?
     private var setupTask: Task<SessionSetup, Never>?
@@ -108,6 +123,7 @@ public actor DictationOrchestrator {
         dictionary: any DictionaryProviding = InMemoryDictionaryProvider(),
         frontmostBundleID: @escaping @Sendable () -> String? = { nil },
         snippets: (@Sendable () async -> [SnippetRecord])? = nil,
+        fieldContextReader: (any FieldContextReading)? = nil,
         historyRecord: (@Sendable (HistoryRecord, AudioClip) -> Void)? = nil,
         historyUpdate: (@Sendable (HistoryRecord) -> Void)? = nil,
         replaceTimeout: Duration = .seconds(5),
@@ -123,6 +139,7 @@ public actor DictationOrchestrator {
         self.dictionary = dictionary
         self.frontmostBundleID = frontmostBundleID
         self.snippetProvider = snippets
+        self.fieldContextReader = fieldContextReader
         self.historyRecord = historyRecord
         self.historyUpdate = historyUpdate
         self.replaceTimeout = replaceTimeout
@@ -171,6 +188,12 @@ public actor DictationOrchestrator {
     /// pushed by `applyWhisperTuning` alongside the engines' clip-skip floors.
     public func setSilencePeakThreshold(_ threshold: Float) {
         silencePeakThreshold = threshold
+    }
+
+    /// Toggle context-aware cleanup (Settings → General). Applies to the next
+    /// recording; no effect without a wired `fieldContextReader`.
+    public func setContextAwareCleanupEnabled(_ enabled: Bool) {
+        contextAwareCleanupEnabled = enabled
     }
 
     /// Wire (or clear) the AX-settle signal that drives correction auto-learn.
@@ -235,8 +258,35 @@ public actor DictationOrchestrator {
         setupTask = Task { [modeProvider, dictionary, snippetProvider, cleanupIntensity] in
             await Self.buildSetup(bundleID: bundleID, modeProvider: modeProvider, dictionary: dictionary, snippets: snippetProvider, intensity: cleanupIntensity)
         }
+        // Context-aware cleanup (opt-in): read the on-screen text around the caret
+        // now, while the user speaks — detached, off the audio/paste path. The
+        // result is consumed at cleanup time ONLY if it has arrived; it must never
+        // delay Fn-up→paste, so it is never awaited on the pipeline path.
+        fieldContextSession &+= 1
+        capturedFieldContext = nil
+        fieldContextTask?.cancel()
+        fieldContextTask = nil
+        if contextAwareCleanupEnabled, let fieldContextReader {
+            let session = fieldContextSession
+            fieldContextTask = Task { [weak self] in
+                let context = await fieldContextReader.readFieldContext(
+                    bundleID: bundleID,
+                    precedingLimit: FieldContext.precedingLimit,
+                    followingLimit: FieldContext.followingLimit
+                )
+                await self?.storeFieldContext(context, session: session)
+            }
+        }
         publish(.listening(level: 0))
         startLevelForwarding()
+    }
+
+    /// Store the AX-read field context for the current recording. Rejected when a
+    /// newer recording started meanwhile (stale read), so context never bleeds
+    /// across sessions.
+    private func storeFieldContext(_ context: FieldContext?, session: Int) {
+        guard session == fieldContextSession else { return }
+        capturedFieldContext = context
     }
 
     /// Arm VAD endpointing for a hands-free (double-tap-lock) session. If VAD is
@@ -316,6 +366,11 @@ public actor DictationOrchestrator {
 
         // Resolve the session setup (usually already prepared during recording).
         let setup = await resolvedSetup()
+        // Merge the (off-path) field-context read into the cleanup context. nil
+        // when the toggle is off or the read hadn't finished by now — cleanup then
+        // behaves exactly as before. Read here, never awaited: absence just means
+        // no context for this dictation, never a delayed paste.
+        let cleanupContext = setup.context.withFieldContext(capturedFieldContext)
         // Dictionary correction is part of the raw text — always applied, even
         // Tier 0 (PRD §8). Off-path regex compile happened in setup; this is the
         // ≤5 ms apply.
@@ -373,7 +428,7 @@ public actor DictationOrchestrator {
             // edited), so wait for clean here even on AX targets.
             let cleaner = cleaners.cleaner(for: effectiveTier)
             let outcome = await cleanWithTimeout(
-                cleaner, rawText, context: setup.context, cap: waitForCleanTimeout
+                cleaner, rawText, context: cleanupContext, cap: waitForCleanTimeout
             )
             if let outcome {
                 syncCleanupEngine = outcome.engine
@@ -391,7 +446,7 @@ public actor DictationOrchestrator {
             // matters: Chrome claims writable AX selection but silently drops
             // writes, which previously pasted raw here and lost the cleanup.
             let cleaner = cleaners.cleaner(for: effectiveTier)
-            let context = setup.context
+            let context = cleanupContext
             Task { [weak self] in
                 await self?.runCleanupAndReplace(
                     token: token, rawText: rawText, cleaner: cleaner,
@@ -405,7 +460,7 @@ public actor DictationOrchestrator {
             // failure inject raw — and say so.
             let cleaner = cleaners.cleaner(for: effectiveTier)
             let outcome = await cleanWithTimeout(
-                cleaner, rawText, context: setup.context, cap: waitForCleanTimeout
+                cleaner, rawText, context: cleanupContext, cap: waitForCleanTimeout
             )
             if let outcome {
                 syncCleanupEngine = outcome.engine
@@ -527,6 +582,12 @@ public actor DictationOrchestrator {
         setupTask?.cancel()
         setupTask = nil
         sessionSetup = nil
+        // Drop any in-flight/late field-context read (bump the session so a
+        // completing read is ignored) and clear the captured value.
+        fieldContextSession &+= 1
+        fieldContextTask?.cancel()
+        fieldContextTask = nil
+        capturedFieldContext = nil
         _ = capture.stop() // discard audio
         phase = .idle
         publish(.idle)

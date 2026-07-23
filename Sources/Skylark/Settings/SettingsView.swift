@@ -274,6 +274,11 @@ private struct GeneralPane: View {
                 .pickerStyle(.segmented)
                 .disabled(controller.cleanupOverride == "raw")
                 Text(controller.cleanupIntensity.caption)
+                Toggle("Use on-screen context", isOn: Binding(
+                    get: { controller.contextAwareCleanupEnabled },
+                    set: { controller.setContextAwareCleanupEnabled($0) }
+                ))
+                Text("Reads the text around your cursor (via Accessibility) so dictation continues sentences naturally and matches spellings already in the field. The context is used only for this cleanup pass — never stored. With a cloud cleanup model it is sent to that model.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

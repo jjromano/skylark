@@ -10,6 +10,40 @@ public enum CleanupTier: Sendable, Equatable, Codable {
     case cloud(slug: String)
 }
 
+/// On-screen text surrounding the caret at dictation start, captured via
+/// Accessibility (opt-in, "context-aware cleanup"). Handed to the cleaner as
+/// reference DATA so a continuation gets the right capitalization/leading
+/// punctuation ("…finish the sentence" stays lowercase after a comma) and
+/// names/jargon already in the field are spelled consistently.
+///
+/// Both strings are already truncated at capture (the reader bounds them by
+/// `precedingLimit`/`followingLimit`) — the prompt builder never re-truncates.
+/// Privacy: this value lives only for the single cleanup call that consumes it;
+/// it is never logged, never persisted.
+public struct FieldContext: Sendable, Equatable {
+    /// Text immediately BEFORE the caret (up to `precedingLimit` UTF-16 units).
+    public let preceding: String
+    /// Text immediately AFTER the caret (up to `followingLimit` UTF-16 units).
+    public let following: String
+
+    /// Capture bounds (UTF-16 units). ~1200 before the caret gives the cleaner
+    /// enough of the sentence/paragraph to continue it; ~400 after is enough to
+    /// see the following word/sentence without pulling in a whole document.
+    public static let precedingLimit = 1200
+    public static let followingLimit = 400
+
+    public init(preceding: String, following: String) {
+        self.preceding = preceding
+        self.following = following
+    }
+
+    /// No usable context on either side (empty field / caret with nothing
+    /// around it) — treated as "no context" so nothing is added to the prompt.
+    public var isEmpty: Bool {
+        preceding.isEmpty && following.isEmpty
+    }
+}
+
 /// Context handed to a cleaner alongside the transcript.
 public struct CleanupContext: Sendable {
     /// Bundle ID of the app the text is going into (register matching).
@@ -21,17 +55,37 @@ public struct CleanupContext: Sendable {
     /// How aggressively the cleaner may edit (Settings → General). Defaulted
     /// so existing call sites compile unchanged.
     public let intensity: CleanupIntensity
+    /// On-screen text around the caret (opt-in context-aware cleanup). nil when
+    /// the toggle is off, the field isn't AX-readable, or the read hadn't
+    /// finished by cleanup time — the cleaner then behaves exactly as before.
+    public let fieldContext: FieldContext?
 
     public init(
         targetAppBundleID: String? = nil,
         registerHint: String? = nil,
         dictionaryTerms: [String] = [],
-        intensity: CleanupIntensity = .standard
+        intensity: CleanupIntensity = .standard,
+        fieldContext: FieldContext? = nil
     ) {
         self.targetAppBundleID = targetAppBundleID
         self.registerHint = registerHint
         self.dictionaryTerms = dictionaryTerms
         self.intensity = intensity
+        self.fieldContext = fieldContext
+    }
+
+    /// Copy carrying `fieldContext` — the orchestrator merges the (late,
+    /// off-path) AX read into the setup-built context at cleanup time. A nil or
+    /// empty context clears it, so an absent read leaves a plain context.
+    public func withFieldContext(_ fieldContext: FieldContext?) -> CleanupContext {
+        let resolved = (fieldContext?.isEmpty ?? true) ? nil : fieldContext
+        return CleanupContext(
+            targetAppBundleID: targetAppBundleID,
+            registerHint: registerHint,
+            dictionaryTerms: dictionaryTerms,
+            intensity: intensity,
+            fieldContext: resolved
+        )
     }
 }
 

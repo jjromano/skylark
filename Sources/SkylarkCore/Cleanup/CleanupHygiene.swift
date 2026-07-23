@@ -38,11 +38,19 @@ public enum CleanupHygiene {
     ///     separate guard against dropped clauses (filler + short self-
     ///     corrections can't legitimately shrink the count this much). Cloud
     ///     passes nil (no count guard, unchanged behavior); local passes ~0.60.
+    ///   - fieldContext: the on-screen context (opt-in) that was fed to the
+    ///     prompt, if any. Non-nil enables the leak guard: a long verbatim run of
+    ///     the surrounding field text that appears in the output but NOT in the
+    ///     transcript means the model dumped context instead of just cleaning the
+    ///     transcript — rejected so the raw transcript stands. The other guards
+    ///     already compare only transcript vs output, so context can't otherwise
+    ///     inflate the faithfulness ratios.
     public static func validate(
         _ output: String,
         transcript: String,
         retentionFloor: Double = 0.34,
-        contentLossFloor: Double? = nil
+        contentLossFloor: Double? = nil,
+        fieldContext: FieldContext? = nil
     ) throws -> String {
         let cleaned = sanitize(output)
         guard !cleaned.isEmpty, cleaned.count <= transcript.count * 3 else {
@@ -58,6 +66,9 @@ public enum CleanupHygiene {
             throw CleanerError.unusableOutput
         }
         if let contentLossFloor, losesContent(transcript, cleaned: cleaned, floor: contentLossFloor) {
+            throw CleanerError.unusableOutput
+        }
+        if let fieldContext, echoesFieldContext(cleaned, transcript: transcript, fieldContext: fieldContext) {
             throw CleanerError.unusableOutput
         }
         return cleaned
@@ -157,6 +168,40 @@ public enum CleanupHygiene {
         guard rawCount >= 4 else { return false }
         let cleanedCount = contentWords(cleaned).count
         return Double(cleanedCount) / Double(rawCount) < floor
+    }
+
+    /// Length (UTF-16-agnostic Character count) of a verbatim run of surrounding
+    /// field text that, if it shows up in the output but not the transcript,
+    /// counts as leaked context. Long enough that a legitimately short
+    /// continuation (matching a name's spelling, a few shared words) never trips
+    /// it — only a wholesale echo of the field's existing prose does.
+    static let fieldContextRunLength = 40
+
+    /// True when the cleaned output contains a long verbatim run of the
+    /// surrounding field context that is absent from the transcript — i.e. the
+    /// model regurgitated on-screen text instead of only cleaning what was
+    /// spoken. The other guards compare transcript vs output only, so this is the
+    /// dedicated check that opt-in field context can't leak into the result.
+    /// Runs absent from the transcript are the target: content the user genuinely
+    /// re-dictated (so it IS in the transcript) is exempt.
+    static func echoesFieldContext(_ cleaned: String, transcript: String, fieldContext: FieldContext) -> Bool {
+        let runLength = fieldContextRunLength
+        // Step by half a window so a leak that starts mid-window is still caught,
+        // while keeping the scan cheap (context is bounded to ~1600 chars).
+        let step = max(1, runLength / 2)
+        for context in [fieldContext.preceding, fieldContext.following] {
+            let chars = Array(context)
+            guard chars.count >= runLength else { continue }
+            var i = 0
+            while i + runLength <= chars.count {
+                let window = String(chars[i ..< i + runLength])
+                if cleaned.contains(window), !transcript.contains(window) {
+                    return true
+                }
+                i += step
+            }
+        }
+        return false
     }
 
     /// Filler + high-frequency function words carry no topical signal, so

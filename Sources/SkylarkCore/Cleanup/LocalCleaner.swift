@@ -101,7 +101,8 @@ public struct LocalCleaner: Cleaner {
                 raw,
                 transcript: transcript,
                 retentionFloor: Self.localRetentionFloor,
-                contentLossFloor: Self.localContentLossFloor
+                contentLossFloor: Self.localContentLossFloor,
+                fieldContext: context.fieldContext
             )
         }
 
@@ -125,7 +126,8 @@ public struct LocalCleaner: Cleaner {
                     raw,
                     transcript: chunk,
                     retentionFloor: Self.localRetentionFloor,
-                    contentLossFloor: Self.localContentLossFloor
+                    contentLossFloor: Self.localContentLossFloor,
+                    fieldContext: context.fieldContext
                 ))
             } catch {
                 parts.append(chunk) // keep this chunk's raw text; never fail the whole
