@@ -331,7 +331,7 @@ private struct GeneralPane: View {
             } header: {
                 Text("Translation")
             } footer: {
-                Text("Cleans up your dictation and translates it to the target language before typing it. Uses your selected cleanup model — with a Local tier this runs fully on-device (quality depends on the on-device model; cloud models translate better).")
+                Text("Cleans up your dictation and translates it to the target language before typing it. Uses your selected cleanup model — with a Local tier this runs fully on-device. Cloud models translate best; on-device translation is usable for European languages but unreliable for Japanese, Chinese, and Korean (failed translations fall back to your original words).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

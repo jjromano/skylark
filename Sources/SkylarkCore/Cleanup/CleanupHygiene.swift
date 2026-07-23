@@ -82,6 +82,15 @@ public enum CleanupHygiene {
             if let contentLossFloor, losesContent(transcript, cleaned: cleaned, floor: contentLossFloor) {
                 throw CleanerError.unusableOutput
             }
+        } else {
+            // Translated-only rejections, from live CJK probes of the on-device
+            // model: (a) leaked transcript fence tags mid-output (sanitize only
+            // strips them at the edges), (b) the untranslated cleaned text
+            // repeated with `---` separators. Both mean the model failed to
+            // translate — the faithful raw transcript is the better outcome.
+            if cleaned.contains("<transcript") || cleaned.contains("\n---\n") {
+                throw CleanerError.unusableOutput
+            }
         }
         if let fieldContext, echoesFieldContext(cleaned, transcript: transcript, fieldContext: fieldContext) {
             throw CleanerError.unusableOutput
