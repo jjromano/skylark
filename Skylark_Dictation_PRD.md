@@ -2,7 +2,7 @@
 
 **Working title:** Skylark (rename at will)
 **Owner:** JJ
-**Shared with:** Stephanie (must run for a second, non-technical user with her own credentials)
+**Shared with:** a second, non-technical user (must run for them with their own credentials)
 **Target platform:** macOS (Apple Silicon), primary device MacBook Air M3, 16GB RAM
 **Document status:** Final, ready for handoff to Claude Fable
 **Primary product goal:** A personal, open-source Mac dictation app that matches the best features of Wispr Flow and superwhisper, with lower latency, running fully local by default and cloud-capable on demand. Latency is the highest-priority attribute.
@@ -46,7 +46,7 @@ The reference apps are Wispr Flow (loved for accuracy plus AI cleanup at very lo
 
 ## 3. Target environment
 
-- **Hardware:** MacBook Air M3, 16GB unified memory, Apple Silicon Neural Engine. Must also run acceptably on Stephanie's Mac (assume comparable Apple Silicon).
+- **Hardware:** MacBook Air M3, 16GB unified memory, Apple Silicon Neural Engine. Must also run acceptably on a second user's Mac (assume comparable Apple Silicon).
 - **OS:** current macOS (assume macOS 15 or later; confirm during build).
 - **Network:** cloud features require internet; local mode must be fully functional offline.
 - **Credentials:** each user supplies their own OpenRouter API key. Keys are per-user, stored in the macOS Keychain, never committed and never shared between users.
@@ -56,7 +56,7 @@ The reference apps are Wispr Flow (loved for accuracy plus AI cleanup at very lo
 
 ## 4. Repository, licensing, and distribution
 
-Skylark must ship as a clean, shareable open-source project that a second, non-technical user (Stephanie) and other people can set up.
+Skylark must ship as a clean, shareable open-source project that a second, non-technical user and other people can set up.
 
 - **Version control:** initialize a Git repository from the first commit. Conventional structure, meaningful commit history, no secrets ever committed.
 - **License:** MIT. This keeps the project freely shareable and lets Skylark borrow from MIT-licensed references (see Section 5). Do not paste GPL-licensed code (for example from VoiceInk) into the repo, since that would force the whole project to GPL.

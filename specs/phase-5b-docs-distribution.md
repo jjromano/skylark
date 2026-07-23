@@ -42,7 +42,7 @@ Sections:
 - License: MIT.
 Keep it tight and skimmable; no marketing fluff.
 
-### 2. Scripts/install.sh (Stephanie path)
+### 2. Scripts/install.sh (non-technical user path)
 - Checks: Apple Silicon, macOS ≥ 26, CLT present (offer `xcode-select
   --install` and exit with clear instructions if missing).
 - Runs `make cert` (explaining the sudo prompt before it appears; skip if
