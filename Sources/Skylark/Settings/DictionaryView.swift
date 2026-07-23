@@ -101,7 +101,7 @@ struct DictionaryView: View {
     private func delete(_ entry: DictionaryEntry) {
         guard let id = entry.id else { return }
         Task {
-            try? await store.delete(id: id)
+            _ = try? await store.delete(id: id)
             await reload()
         }
     }

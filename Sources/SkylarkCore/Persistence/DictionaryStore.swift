@@ -110,8 +110,12 @@ public actor DictionaryStore: DictionaryProviding {
         }
     }
 
-    public func delete(id: Int64) async throws {
-        _ = try await db.dbQueue.write { db in
+    /// Returns whether a row actually existed to delete — the learned-banner
+    /// Undo (AppController) uses this to tell "deleted" from "already gone"
+    /// (e.g. the user removed it in Settings while the banner was showing).
+    @discardableResult
+    public func delete(id: Int64) async throws -> Bool {
+        try await db.dbQueue.write { db in
             try DictionaryRecord.deleteOne(db, key: id)
         }
     }

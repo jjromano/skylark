@@ -37,6 +37,20 @@ final class HUDModel {
     /// pulses to signal "not ready yet".
     var isPreparing = false
 
+    /// Auto-learn notice ("Learned "word"" + Undo), mirrored from
+    /// `bannerController` so SwiftUI observes it like any other stored
+    /// property. Set via `noteLearned`; dismissed via `undoLearnedBanner` or
+    /// `dismissLearnedBanner`. The state machine (combining, auto-dismiss,
+    /// undo) lives in SkylarkCore's `LearnedBannerController` — testable
+    /// there without SwiftUI.
+    private(set) var learnedBanner: LearnedBanner?
+
+    /// Fired whenever `learnedBanner` changes, so `HUDBannerPanelController`
+    /// can grow/reposition/order its own panel in step.
+    @ObservationIgnored var onLearnedBannerChange: (() -> Void)?
+
+    @ObservationIgnored private let bannerController: LearnedBannerController
+
     /// Rolling window of recent RMS levels; newest is last. Newest bar enters
     /// from the trailing edge. Seeded flat so the idle placeholder never pops.
     private(set) var waveform: [Float] = Array(repeating: 0, count: HUDModel.barCount)
@@ -44,6 +58,14 @@ final class HUDModel {
     var isRecording: Bool {
         if case .listening = state { return true }
         return false
+    }
+
+    init(bannerController: LearnedBannerController = LearnedBannerController()) {
+        self.bannerController = bannerController
+        bannerController.onChange = { [weak self] banner in
+            self?.learnedBanner = banner
+            self?.onLearnedBannerChange?()
+        }
     }
 
     /// Push a new level onto the waveform (FIFO, fixed width).
@@ -55,5 +77,29 @@ final class HUDModel {
     /// Reset the waveform to flat (leaving a recording session).
     func resetWaveform() {
         waveform = Array(repeating: 0, count: Self.barCount)
+    }
+
+    /// Wires the actual dictionary delete Undo needs. Deferred until
+    /// `AppController.start()` knows whether persistence is available (this
+    /// model is constructed before that's known); before it's called, Undo
+    /// harmlessly reports "already gone" and just dismisses.
+    func configureAutoLearnDelete(_ delete: @escaping @Sendable (Int64) async -> Bool) {
+        bannerController.delete = delete
+    }
+
+    /// A word was auto-learned; show (or fold into) the banner.
+    func noteLearned(word: String, entryID: Int64) {
+        bannerController.learned(word: word, entryID: entryID)
+    }
+
+    /// Undo tapped on the banner.
+    func undoLearnedBanner() {
+        bannerController.undo()
+    }
+
+    /// Dismiss early — used when a new dictation starts so the banner never
+    /// competes with the listening pill for attention.
+    func dismissLearnedBanner() {
+        bannerController.dismiss()
     }
 }

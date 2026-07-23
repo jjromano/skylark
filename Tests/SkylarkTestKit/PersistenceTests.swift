@@ -233,14 +233,25 @@ struct PersistenceTests {
         #expect(all.first?.misspellings == ["gitub", "guthub"])
     }
 
-    @Test("Dictionary delete removes the entry")
+    @Test("Dictionary delete removes the entry and reports it existed")
     func dictionaryDelete() async throws {
         let store = DictionaryStore(db: try makeDB())
         let entry = try await store.upsert(DictionaryEntry(phrase: "term", source: .manual))
         let id = try #require(entry.id)
-        try await store.delete(id: id)
+        let deleted = try await store.delete(id: id)
+        #expect(deleted)
         let all = try await store.entries()
         #expect(all.isEmpty)
+    }
+
+    @Test("Dictionary delete of an already-gone id reports false (no throw)")
+    func dictionaryDeleteAlreadyGone() async throws {
+        let store = DictionaryStore(db: try makeDB())
+        let entry = try await store.upsert(DictionaryEntry(phrase: "term", source: .manual))
+        let id = try #require(entry.id)
+        try await store.delete(id: id) // first delete succeeds
+        let deletedAgain = try await store.delete(id: id) // already gone
+        #expect(!deletedAgain)
     }
 
     @Test("v2 migration maps an old (phrase, replacement) row to (correctWord, [misspelling])")

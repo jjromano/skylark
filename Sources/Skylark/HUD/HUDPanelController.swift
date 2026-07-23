@@ -61,6 +61,12 @@ final class HUDPanelController {
 
     var canBecomeKey: Bool { false }
 
+    /// Exposed read-only so `HUDBannerPanelController` can anchor its own
+    /// panel just below this one and stay in sync with its position/size
+    /// (screen changes, hover expand/collapse) without this controller
+    /// needing to know the banner panel exists.
+    var window: NSWindow { panel }
+
     func show() {
         refreshLayout()
     }

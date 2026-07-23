@@ -420,6 +420,10 @@ final class AppController {
     @ObservationIgnored private var pendingStatusNote: String?
 
     @ObservationIgnored private lazy var hudPanel = HUDPanelController(model: hud, controller: self)
+    /// Learned-word notice, attached below the pill (see `HUDBannerPanelController`).
+    @ObservationIgnored private lazy var hudBannerPanel = HUDBannerPanelController(
+        model: hud, pillPanel: hudPanel, onUndo: { [weak self] in self?.hud.undoLearnedBanner() }
+    )
     @ObservationIgnored private var onboardingWindow: NSWindow?
     @ObservationIgnored private var settingsWindow: NSWindow?
     @ObservationIgnored private var started = false
@@ -578,6 +582,9 @@ final class AppController {
                 let isIdle: Bool = { if case .idle = state { return true } else { return false } }()
                 if isListening, !wasListening {
                     sounds.playStart()
+                    // A new dictation shouldn't compete with a lingering
+                    // learned-word banner for attention on the pill.
+                    hud.dismissLearnedBanner()
                     if self?.pauseMediaEnabled == true {
                         Task { await mediaPause.pauseIfPlaying() }
                     }
@@ -836,16 +843,49 @@ final class AppController {
             dictionary: dictionaryStore,
             isCommonWord: { checker.isCommonWord($0) },
             learn: { [weak self] entry in
-                // Upsert off the main actor, then surface a transient note.
-                _ = try? await self?.dictionaryStore?.upsert(entry)
-                await MainActor.run { self?.showNote("Learned “\(entry.phrase)” from your correction") }
+                // Upsert off the main actor to learn the row id Undo needs.
+                let upserted = try? await self?.dictionaryStore?.upsert(entry)
+                await MainActor.run {
+                    guard let self, let id = upserted?.id else {
+                        self?.showNote("Learned “\(entry.phrase)” from your correction")
+                        return
+                    }
+                    // Attach to the HUD pill when it's actually on screen;
+                    // otherwise (style .hidden, or idle pill toggled off with
+                    // nothing else showing) a banner nobody can see is no
+                    // notice at all — fall back to the plain status note.
+                    if self.hudPanelIsVisible {
+                        self.hud.noteLearned(word: entry.phrase, entryID: id)
+                    } else {
+                        self.showNote("Learned “\(entry.phrase)” from your correction")
+                    }
+                }
             }
         )
+        // Undo needs the store too; deferred here (rather than at HUDModel's
+        // construction) because dictionaryStore isn't known until start().
+        hud.configureAutoLearnDelete { [weak self] id in
+            guard let store = self?.dictionaryStore else { return false }
+            return (try? await store.delete(id: id)) ?? false
+        }
+        // Force the banner panel's lazy init now so it's wired before any
+        // word is ever learned.
+        _ = hudBannerPanel
+
         Task { [orchestrator, weak self] in
             await orchestrator.setCorrectionSettled { token, finalText in
                 Task { @MainActor in self?.handleCorrectionSettled(token: token, finalText: finalText) }
             }
         }
+    }
+
+    /// Whether the HUD panel is actually on screen right now (used to decide
+    /// between a HUD-attached learned banner and the plain status note).
+    private var hudPanelIsVisible: Bool {
+        HUDMetrics.isVisible(
+            state: hud.state, hovering: hud.isHovering, style: hud.style,
+            showIdlePill: hud.showIdlePill, isPreparing: hud.isPreparing
+        )
     }
 
     /// An AX insertion settled. If auto-learn is on and the target is watchable
