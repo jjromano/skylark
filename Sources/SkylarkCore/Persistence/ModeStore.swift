@@ -140,6 +140,16 @@ public actor ModeStore {
         }
     }
 
+    /// Adds a curated `ModePreset` (Settings → Modes "Suggested" section).
+    /// Upserts each of the preset's rows (one per bundle-id pattern); their
+    /// ids are deterministic (`ModePreset.recordID(for:)`), so calling this
+    /// again for the same preset replaces rather than duplicates them.
+    public func add(preset: ModePreset) async throws {
+        for record in preset.makeRecords() {
+            try await upsert(record)
+        }
+    }
+
     /// Seeds the two defaults iff the table is empty. Idempotent.
     public func seedIfEmpty() async throws {
         try await db.dbQueue.write { db in

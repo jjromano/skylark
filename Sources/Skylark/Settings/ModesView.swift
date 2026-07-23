@@ -44,6 +44,18 @@ struct ModesView: View {
             }
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
+
+            Text("Suggested").font(.headline).padding(.top, 4)
+            VStack(spacing: 0) {
+                ForEach(ModePresetCatalog.all) { preset in
+                    PresetRow(preset: preset, isAdded: preset.isAdded(in: modes), onAdd: { add(preset) })
+                    if preset.id != ModePresetCatalog.all.last?.id {
+                        Divider()
+                    }
+                }
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.4)))
         }
         .task { await reload() }
         .sheet(item: $editorTarget) { target in
@@ -86,6 +98,41 @@ struct ModesView: View {
             try? await store.delete(id: mode.id)
             await reload()
         }
+    }
+
+    private func add(_ preset: ModePreset) {
+        Task {
+            try? await store.add(preset: preset)
+            await reload()
+        }
+    }
+}
+
+/// One curated preset in the "Suggested" section: a one-line description plus
+/// either an "Add" button (not yet added) or a checkmark (already added, per
+/// name — see `ModePreset.isAdded(in:)`). Adding is explicit and one-click;
+/// nothing auto-applies beyond what modes already do.
+private struct PresetRow: View {
+    let preset: ModePreset
+    let isAdded: Bool
+    let onAdd: () -> Void
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(preset.name).font(.system(size: 13, weight: .medium))
+                Text(preset.summary).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if isAdded {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .help("Already added")
+            } else {
+                Button("Add", action: onAdd)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 
