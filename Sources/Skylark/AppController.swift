@@ -1261,6 +1261,9 @@ final class AppController {
             await orchestrator.setSilencePeakThreshold(
                 whisperModeOn ? SilenceDetector.whisperPeakThreshold : SilenceDetector.peakThreshold
             )
+            // Post-capture clip normalization runs only when whisper mode is on
+            // (mirrors the silence-floor push; the tap's fixed gain stays dumb).
+            await orchestrator.setWhisperNormalizationEnabled(whisperModeOn)
         }
     }
 

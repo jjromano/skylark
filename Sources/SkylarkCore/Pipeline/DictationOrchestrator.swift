@@ -82,6 +82,10 @@ public actor DictationOrchestrator {
     /// Temporary global cleanup override from the menu bar (nil = auto/use mode).
     private var tierOverride: CleanupTier?
     private var silencePeakThreshold: Float = SilenceDetector.peakThreshold
+    /// Whether Whisper Mode post-capture clip normalization runs. Pushed by
+    /// `applyWhisperTuning` alongside the silence floor, so it mirrors the same
+    /// whisper-on/off state the rest of the tuning uses. Off = clips untouched.
+    private var whisperNormalizationEnabled = false
     /// Global cleanup intensity (Settings → General, Cleanup section).
     private var cleanupIntensity: CleanupIntensity = .standard
     /// Spoken "press enter" command opt-in (Settings → General). When on, a
@@ -242,6 +246,12 @@ public actor DictationOrchestrator {
     /// pushed by `applyWhisperTuning` alongside the engines' clip-skip floors.
     public func setSilencePeakThreshold(_ threshold: Float) {
         silencePeakThreshold = threshold
+    }
+
+    /// Toggle Whisper Mode post-capture clip normalization. Pushed by
+    /// `applyWhisperTuning` (whisper on ⇒ true). Applies to the next dictation.
+    public func setWhisperNormalizationEnabled(_ enabled: Bool) {
+        whisperNormalizationEnabled = enabled
     }
 
     /// Toggle context-aware cleanup (Settings → General). Applies to the next
@@ -506,7 +516,7 @@ public actor DictationOrchestrator {
         let interval = signposter.beginInterval("fnup_to_inserted")
         defer { signposter.endInterval("fnup_to_inserted", interval) }
 
-        let clip = capture.stop()
+        var clip = capture.stop()
         let afterCapture = ContinuousClock.now
         phase = .transcribing
         publish(.processing)
@@ -527,6 +537,17 @@ public actor DictationOrchestrator {
             publish(.idle)
             noteContinuation.yield("No speech detected")
             return
+        }
+
+        // Whisper Mode only: normalize the finalized clip's peak up toward a
+        // healthy target before transcription. Deliberately AFTER the silence
+        // guard above (which judges the RAW tap-gained clip with the whisper
+        // threshold, so a boosted whisper can't wrongly clear it) and AFTER any
+        // VAD endpointing decision (hands-free VAD already saw the tap-gained
+        // signal; this only rescales what the transcriber hears, never re-runs
+        // endpointing). Off the audio thread (this actor); no-op when off.
+        if whisperNormalizationEnabled {
+            clip = normalizeWhisperClip(clip)
         }
 
         let text: String
@@ -1014,6 +1035,23 @@ public actor DictationOrchestrator {
         vadTask = nil
         if isHandsFree { capture.setFramesWanted(false) }
         isHandsFree = false
+    }
+
+    // MARK: - Whisper Mode normalization
+
+    /// Apply Whisper Mode post-capture peak normalization to `clip`. Returns the
+    /// original clip untouched when nothing was boosted (already-loud, clipped,
+    /// empty, or too-short), so whisper-off / no-op cases stay byte-identical.
+    /// Never logs audio content — only the clipped-sample count and applied gain.
+    private func normalizeWhisperClip(_ clip: AudioClip) -> AudioClip {
+        let result = WhisperClipNormalizer.normalize(clip.samples)
+        if result.leftClipped {
+            logger.debug("whisper normalize: clip left as-is (clipped samples=\(result.clippedSampleCount, privacy: .public))")
+        } else if result.appliedGain != 1 {
+            logger.debug("whisper normalize: boosted ×\(result.appliedGain, format: .fixed(precision: 2), privacy: .public)")
+        }
+        guard result.appliedGain != 1 else { return clip }
+        return AudioClip(samples: result.samples, sampleRate: clip.sampleRate, duration: clip.duration)
     }
 
     // MARK: - Latency
