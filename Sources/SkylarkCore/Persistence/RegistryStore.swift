@@ -92,8 +92,11 @@ public actor RegistryStore {
     ///   existing installs too;
     /// - never updates a row the user created/edited by hand (`seeded ==
     ///   false`), even when its slug matches a seed slug;
-    /// - never deletes rows — the user may be actively using one that later
-    ///   drops out of the seed list.
+    /// - retires rows IT previously seeded whose slug has dropped out of the
+    ///   seed (a deprecated catalog entry disappears from menus on the next
+    ///   launch after an update). A user-created row (`seeded == false`) is
+    ///   never deleted, and a persisted selection keeps its slug string, so
+    ///   an in-use retired model keeps working until the user picks another.
     public func syncSeed() async throws {
         try await ensureSeededColumn()
         try await db.dbQueue.write { db in
@@ -105,6 +108,10 @@ public actor RegistryStore {
                 }
                 try record.insert(db, onConflict: .replace)
             }
+            let seedSlugs = ModelRegistryEntry.seed.map(\.slug)
+            try RegistryRecord
+                .filter(Column("seeded") == true && !seedSlugs.contains(Column("slug")))
+                .deleteAll(db)
         }
     }
 

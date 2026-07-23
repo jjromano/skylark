@@ -1610,7 +1610,7 @@ final class AppController {
     func promptCustomCleanupSlug() {
         guard let slug = Self.promptForSlug(
             title: "Custom Cleanup Model",
-            message: "Enter an OpenRouter model slug (e.g. meta-llama/llama-3.3-70b-instruct)."
+            message: "Enter an OpenRouter model slug (e.g. openai/gpt-oss-120b)."
         ) else { return }
         selectCleanupSlug(slug)
     }

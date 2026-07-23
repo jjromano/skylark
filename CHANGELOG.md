@@ -6,6 +6,14 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.2 — 2026-07-22
+
+- Removed **Llama 3.3 70B (Groq)** from the cloud cleanup catalog (Groq
+  retires it 2026-08-16; GPT-OSS 120B is its successor). Retired catalog
+  entries now disappear from menus on the next launch after an update; a
+  model you added yourself is never removed, and an in-use retired model
+  keeps working until you pick another.
+
 ## 0.7.1 — 2026-07-22
 
 Hardening from the post-wave audit (adversarially reviewed and verified):

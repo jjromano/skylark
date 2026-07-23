@@ -111,11 +111,6 @@ enum ModelInfo {
             primary: 4, primaryLabel: "Quality", secondary: 4.5, secondaryLabel: "Speed",
             costPerMonth: "≈ $0.03/mo"
         ),
-        "meta-llama/llama-3.3-70b-instruct": Entry(
-            "Highest-quality cleanup here — best grammar and formatting, slightly slower.",
-            primary: 4.5, primaryLabel: "Quality", secondary: 4, secondaryLabel: "Speed",
-            costPerMonth: "≈ $0.08/mo"
-        ),
         "openai/gpt-oss-120b": Entry(
             "Big open model on Groq (~500 tok/s) — smartest cleanup option; Groq's successor to Llama 3.3 70B.",
             primary: 4.5, primaryLabel: "Quality", secondary: 4, secondaryLabel: "Speed",

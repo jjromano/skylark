@@ -31,10 +31,10 @@ public struct ModelRegistryEntry: Sendable, Equatable, Codable, Identifiable {
         // Cleanup (Tier 2) — Groq-pinned for speed; 8B is the default.
         .init(slug: "meta-llama/llama-3.1-8b-instruct", label: "Llama 3.1 8B (Groq)", providerPin: "groq", kind: .cleanup, sort: 0),
         .init(slug: "openai/gpt-oss-20b", label: "GPT-OSS 20B (Groq)", providerPin: "groq", kind: .cleanup, sort: 1),
-        .init(slug: "meta-llama/llama-3.3-70b-instruct", label: "Llama 3.3 70B (Groq)", providerPin: "groq", kind: .cleanup, sort: 2),
         // Groq deprecates llama-3.1-8b-instant / llama-3.3-70b-versatile on
-        // 2026-08-16; gpt-oss-120b is Groq's recommended replacement (~500 t/s,
-        // Cerebras/others as soft-pin fallbacks).
+        // 2026-08-16. llama-3.3-70b was retired from the seed 2026-07-22
+        // (syncSeed removes it from installs); gpt-oss-120b is the
+        // replacement (~500 t/s, Cerebras/others as soft-pin fallbacks).
         .init(slug: "openai/gpt-oss-120b", label: "GPT-OSS 120B (Groq)", providerPin: "groq", kind: .cleanup, sort: 3),
         // Cloud STT — Groq is whisper-large-v3-turbo's sole provider (no pin needed).
         .init(slug: "openai/whisper-large-v3-turbo", label: "Groq Fast Whisper", providerPin: nil, kind: .stt, sort: 0),

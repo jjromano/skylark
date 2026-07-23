@@ -342,6 +342,35 @@ struct PersistenceTests {
         #expect(stt.contains { $0.slug == "custom/not-in-seed" })
     }
 
+    @Test("Registry syncSeed retires a seeded row whose slug left the seed, keeping user rows")
+    func registrySyncSeedRetiresStaleSeededRow() async throws {
+        let db = try makeDB()
+        let store = RegistryStore(db: db)
+        try await store.syncSeed()
+
+        // Simulate a row an OLDER seed inserted (seeded=1) that the current
+        // seed no longer contains — e.g. a deprecated cloud model.
+        try await db.dbQueue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO model_registry (slug, label, provider_pin, kind, sort, seeded)
+                VALUES ('legacy/deprecated-model', 'Old Model', 'groq', 'cleanup', 9, 1)
+                """
+            )
+        }
+        // And a user-created row also absent from the seed (must survive).
+        try await store.upsert(entry: ModelRegistryEntry(
+            slug: "custom/kept-model", label: "Mine", providerPin: nil, kind: .cleanup, sort: 60
+        ))
+
+        try await store.syncSeed()
+
+        let cleanup = try await store.all(kind: .cleanup)
+        #expect(!cleanup.contains { $0.slug == "legacy/deprecated-model" })
+        #expect(cleanup.contains { $0.slug == "custom/kept-model" })
+        #expect(cleanup.count == ModelRegistryEntry.seed.filter { $0.kind == .cleanup }.count + 1)
+    }
+
     @Test("Registry syncSeed leaves a user's own row alone even if its slug collides with a seed slug")
     func registrySyncSeedPreservesUserOwnedRow() async throws {
         let store = RegistryStore(db: try makeDB())
