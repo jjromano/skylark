@@ -10,6 +10,9 @@ struct DictionaryView: View {
     /// Opt-in for learning words from in-place corrections (nil hides the toggle,
     /// e.g. in previews). Wired to `AppController.learnFromCorrectionsEnabled`.
     var learnFromCorrections: Binding<Bool>? = nil
+    /// Opt-in for deep vocabulary matching (nil hides the toggle). Wired to
+    /// `AppController.deepVocabEnabled`.
+    var deepVocabMatching: Binding<Bool>? = nil
 
     @State private var entries: [DictionaryEntry] = []
     @State private var newPhrase = ""
@@ -28,6 +31,18 @@ struct DictionaryView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Toggle("Learn words from your corrections", isOn: learnFromCorrections)
                     Text("After a dictation, if you fix a word Skylark misheard, the correction is added here automatically. Watching happens on-device via Accessibility and nothing but the corrected word is stored.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
+            }
+
+            if let deepVocabMatching {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Deep vocabulary matching", isOn: deepVocabMatching)
+                    Text("Runs a second, on-device acoustic pass against your dictionary so names and terms are recognized as spoken, not just fixed afterward. Downloads a ~100 MB helper model. Adds a moment to cleanup, never to the initial paste.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -46,6 +46,9 @@ enum ModelInfo {
         .vad: Entry(
             "Voice-activity detection for hands-free (double-tap-lock) dictation — detects when you stop speaking. Not a transcriber."
         ),
+        .deepVocab: Entry(
+            "Parakeet CTC 110M helper for deep vocabulary matching — a second on-device acoustic pass that recognizes your dictionary's names and terms as spoken. Downloaded only when you enable the feature (Settings → Dictionary). Not a transcriber."
+        ),
     ]
 
     // MARK: Cleanup · on device (hardcoded — not a `ManagedModel` or registry slug)

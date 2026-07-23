@@ -37,6 +37,27 @@ public struct TranscriptionHint: Sendable, Equatable {
     public static let none = TranscriptionHint()
 }
 
+/// One aligned recognition token from the most recent utterance. A Skylark-native
+/// mirror of FluidAudio's `TokenTiming`, kept here so the pipeline (and its tests)
+/// never import FluidAudio directly — the concrete engine converts to/from the
+/// FluidAudio type at its edge. Used only as the deep-vocabulary rescorer's side
+/// channel (PRD §8 deep matching); never logged.
+public struct TranscriptTiming: Sendable, Equatable {
+    public let token: String
+    public let tokenID: Int
+    public let startTime: TimeInterval
+    public let endTime: TimeInterval
+    public let confidence: Float
+
+    public init(token: String, tokenID: Int, startTime: TimeInterval, endTime: TimeInterval, confidence: Float) {
+        self.token = token
+        self.tokenID = tokenID
+        self.startTime = startTime
+        self.endTime = endTime
+        self.confidence = confidence
+    }
+}
+
 /// Speech-to-text engine. Phase 0 keeps this minimal (no streaming) per spec;
 /// `stream(_:hint:)` from ARCHITECTURE §2 lands in Phase 1.
 public protocol Transcriber: Sendable {
@@ -52,8 +73,17 @@ public protocol Transcriber: Sendable {
     /// `id`; wrappers that can fall back (cloud → local) override it so
     /// history rows record the engine that actually ran, not the one selected.
     var lastRunID: TranscriberID { get }
+
+    /// Token-level timings for the most recent `transcribe`, if the engine
+    /// produces alignment (Parakeet TDT). The orchestrator reads this once,
+    /// right after transcribing, and holds it for the current utterance to feed
+    /// the optional deep-vocabulary rescorer off the paste path; the engine may
+    /// clear it on read. Default `nil` — engines without alignment, or that
+    /// never rescore, opt out for free.
+    func lastTokenTimings() async -> [TranscriptTiming]?
 }
 
 public extension Transcriber {
     var lastRunID: TranscriberID { id }
+    func lastTokenTimings() async -> [TranscriptTiming]? { nil }
 }

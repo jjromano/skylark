@@ -46,6 +46,16 @@ public enum ModelPaths {
         appSupport.appendingPathComponent("parakeet-tdt-0.6b-v3", isDirectory: true)
     }
 
+    /// FluidAudio Parakeet CTC 110M repo folder — the deep-vocabulary rescorer's
+    /// helper model (~98 MB). Downloaded on first opt-in, loaded lazily, and
+    /// unloaded when the feature is off. Mirrors `parakeetModelDir`: FluidAudio's
+    /// `ModelHub` resolves the repo `folderName` against the PARENT of the leaf we
+    /// pass, so the models land directly under this directory (with `vocab.json`
+    /// and `tokenizer.json` fetched as root-level files).
+    public static var ctcModelDir: URL {
+        appSupport.appendingPathComponent("parakeet-ctc-110m-coreml", isDirectory: true)
+    }
+
     /// FluidAudio Silero VAD repo folder (`VadManager` appends `Models/` to the
     /// app-support base; the repo folder drops the `-coreml` suffix — verified
     /// on disk).

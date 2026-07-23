@@ -124,6 +124,12 @@ public actor DictationOrchestrator {
     /// its context into a newer session.
     private var fieldContextSession = 0
     private var fieldContextTask: Task<Void, Never>?
+    /// Optional deep-vocabulary rescorer (PRD §8, opt-in, default off). When set,
+    /// Parakeet utterances get a second on-device acoustic pass against the
+    /// dictionary in the DETACHED post-insert flow (never on fn-up→paste), whose
+    /// result feeds the cleanup stage. nil = feature off (nothing loaded, no work
+    /// on any path). Failure of the stage always falls through to un-rescored text.
+    private var rescorer: (any DeepVocabularyRescoring)?
 
     /// Resolved once per session at fn-down, consumed at paste time.
     private var sessionSetup: SessionSetup?
@@ -274,6 +280,12 @@ public actor DictationOrchestrator {
     public func setTranslateTo(_ code: String?) {
         translateTo = code
         translationNeedsCleanupNoteShown = false
+    }
+
+    /// Wire (or clear) the deep-vocabulary rescorer (Settings → Dictionary).
+    /// nil disables the stage entirely; the app layer also unloads the model.
+    public func setRescorer(_ rescorer: (any DeepVocabularyRescoring)?) {
+        self.rescorer = rescorer
     }
 
     /// Wire (or clear) the AX-settle signal that drives correction auto-learn.
@@ -559,6 +571,18 @@ public actor DictationOrchestrator {
             publish(.idle)
             return
         }
+        // Deep-vocabulary side channel: grab THIS utterance's TDT token timings
+        // right after decode (before a later dictation can overwrite the engine's
+        // stash), to feed the detached rescorer. Gated so a disabled feature — or
+        // any non-Parakeet engine — adds nothing to the paste path. The rescore
+        // itself runs later, detached (never on fn-up→paste).
+        let rescoreTimings: [TranscriptTiming]?
+        if rescorer != nil, transcriber.id == .parakeet {
+            rescoreTimings = await transcriber.lastTokenTimings()
+        } else {
+            rescoreTimings = nil
+        }
+
         let afterTranscribe = ContinuousClock.now
 
         // Empty transcript → no injection at all (nothing to paste).
@@ -660,10 +684,16 @@ public actor DictationOrchestrator {
             // writes, which previously pasted raw here and lost the cleanup.
             let cleaner = cleaners.cleaner(for: effectiveTier)
             let context = cleanupContext
+            // Only the detached AX path rescores: it already replaces in place, so
+            // the deep-vocabulary pass and the cleanup share one final replacement
+            // (never a second one, never any paste-path cost). rescoreTimings is
+            // nil unless the feature is on and this was a Parakeet utterance.
+            let rescoreSamples = rescoreTimings != nil ? clip.samples : []
             Task { [weak self] in
                 await self?.runCleanupAndReplace(
                     token: token, rawText: rawText, cleaner: cleaner,
-                    context: context, historyTimestamp: historyTimestamp
+                    context: context, historyTimestamp: historyTimestamp,
+                    rescoreSamples: rescoreSamples, rescoreTimings: rescoreTimings
                 )
             }
         } else {
@@ -956,9 +986,20 @@ public actor DictationOrchestrator {
         rawText: String,
         cleaner: any Cleaner,
         context: CleanupContext,
-        historyTimestamp: Date
+        historyTimestamp: Date,
+        rescoreSamples: [Float] = [],
+        rescoreTimings: [TranscriptTiming]? = nil
     ) async {
-        guard let outcome = await cleanWithTimeout(cleaner, rawText, context: context, cap: replaceTimeout) else {
+        // Deep-vocabulary pass (optional; detached, off the paste path). Rescore
+        // the raw text FIRST, then feed the (possibly corrected) text to cleanup.
+        // Any failure returns nil → we keep rawText (optional-stage invariant).
+        var sourceText = rawText
+        if let rescorer, let rescoreTimings, !rescoreSamples.isEmpty,
+           let rescored = await rescorer.rescore(rawText: rawText, samples: rescoreSamples, timings: rescoreTimings) {
+            sourceText = rescored
+        }
+
+        guard let outcome = await cleanWithTimeout(cleaner, sourceText, context: context, cap: replaceTimeout) else {
             // Timeout/failure: raw stands on screen — watch that.
             fireCorrectionSettled(token, finalText: token.text)
             return

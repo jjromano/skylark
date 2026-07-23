@@ -29,6 +29,13 @@ public actor FluidAudioParakeet: Transcriber {
     private var decoderState: TdtDecoderState?
     private var preparing: Task<Void, Error>?
 
+    /// Token timings from the MOST RECENT `transcribe`, surfaced to the
+    /// orchestrator via `lastTokenTimings()` for the deep-vocabulary rescorer
+    /// (its only consumer). Overwritten every utterance and consumed on read, so
+    /// a stale set can't outlive its clip. Never logged (alignment only, no text
+    /// beyond sub-word tokens the rescorer needs).
+    private var lastTimings: [TranscriptTiming]?
+
     public private(set) var isReady = false
 
     /// - Parameters:
@@ -135,6 +142,7 @@ public actor FluidAudioParakeet: Transcriber {
     public func transcribe(_ clip: AudioClip, hint: TranscriptionHint) async throws -> String {
         // Guard first — a too-short or silent clip returns "" without loading or
         // touching the model (privacy + latency: never throw for that).
+        lastTimings = nil
         if ClipGuard.shouldSkip(clip, minDuration: Self.minClipDuration, silenceFloor: silenceFloor) { return "" }
 
         guard let manager, decoderState != nil else {
@@ -144,11 +152,30 @@ public actor FluidAudioParakeet: Transcriber {
         var state = decoderState!
         let result = try await manager.transcribe(clip.samples, decoderState: &state, language: nil)
         decoderState = state
+        // Stash this utterance's token alignment for the optional deep-vocabulary
+        // rescorer (read once by the orchestrator, off the paste path). TDT always
+        // produces these; the map is a cheap value copy, no model round-trip.
+        lastTimings = result.tokenTimings?.map {
+            TranscriptTiming(
+                token: $0.token, tokenID: $0.tokenId,
+                startTime: $0.startTime, endTime: $0.endTime, confidence: $0.confidence
+            )
+        }
         // Clear decoder state between utterances; keep the models warm.
         await manager.reset()
         decoderState = try TdtDecoderState()
 
         return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Token timings from the most recent `transcribe`. Consumed on read so a
+    /// later utterance (or a non-rescoring caller) never sees a stale alignment.
+    /// Explicitly `async` to match the `Transcriber` requirement exactly — a
+    /// sync actor method would leave a second async overload (the protocol default)
+    /// visible at concrete call sites and silently win, yielding nil.
+    public func lastTokenTimings() async -> [TranscriptTiming]? {
+        defer { lastTimings = nil }
+        return lastTimings
     }
 
     // MARK: - Clip guard (pure, unit-tested)

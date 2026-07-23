@@ -121,6 +121,10 @@ struct SettingsView: View {
                         learnFromCorrections: Binding(
                             get: { controller.learnFromCorrectionsEnabled },
                             set: { controller.setLearnFromCorrections($0) }
+                        ),
+                        deepVocabMatching: Binding(
+                            get: { controller.deepVocabEnabled },
+                            set: { controller.setDeepVocabEnabled($0) }
                         )
                     )
                     .padding(20)
@@ -666,8 +670,13 @@ private struct ModelsPane: View {
 
             Section {
                 ModelRow(controller: controller, model: .vad)
+                ModelRow(controller: controller, model: .deepVocab)
             } header: {
                 Text("Utility")
+            } footer: {
+                Text("Deep Vocabulary is downloaded only when you turn on deep vocabulary matching in Dictionary. Deleting it turns that feature off.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

@@ -220,6 +220,52 @@ final class AppController {
         UserDefaults.standard.set(on, forKey: Self.learnFromCorrectionsKey)
     }
 
+    /// Deep vocabulary matching (Settings → Dictionary, opt-in, default OFF).
+    /// Runs a second on-device acoustic pass against the dictionary so names/terms
+    /// are recognised as spoken. Needs the ~98 MB CTC helper model.
+    static let deepVocabKey = "dictionary.deepVocabMatching"
+    private(set) var deepVocabEnabled: Bool = UserDefaults.standard.bool(forKey: AppController.deepVocabKey)
+
+    /// Enable/disable deep vocabulary matching. On first enable, downloads the CTC
+    /// helper model (progress shows in Models); once present, the rescorer is wired
+    /// into the pipeline. Disabling clears it and unloads the model.
+    func setDeepVocabEnabled(_ on: Bool) {
+        deepVocabEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.deepVocabKey)
+        if on {
+            enableDeepVocab()
+        } else {
+            Task { [orchestrator, deepVocabRescorer] in
+                await orchestrator.setRescorer(nil)
+                await deepVocabRescorer.unload()
+            }
+        }
+    }
+
+    /// Ensure the CTC model is present (downloading with progress if needed), then
+    /// wire the rescorer into the orchestrator. No-op parts are cheap when already
+    /// prepared. Any failure surfaces as a note and leaves the stage unwired.
+    private func enableDeepVocab() {
+        if !deepVocabRescorer.isModelDownloaded {
+            modelStates[.deepVocab] = .preparing
+            showNote("Downloading the deep-vocabulary model (~98 MB)…")
+        }
+        Task { [orchestrator, deepVocabRescorer, weak self] in
+            do {
+                try await deepVocabRescorer.prepareModel()
+                await orchestrator.setRescorer(deepVocabRescorer)
+                self?.refreshModelStates()
+            } catch {
+                await MainActor.run {
+                    self?.deepVocabEnabled = false
+                    UserDefaults.standard.set(false, forKey: Self.deepVocabKey)
+                    self?.showNote("Deep vocabulary model failed to download — feature stays off.")
+                    self?.refreshModelStates()
+                }
+            }
+        }
+    }
+
     // MARK: - HUD appearance (Settings → General)
 
     static let hudStyleKey = "hud.style"
@@ -250,7 +296,7 @@ final class AppController {
 
     /// A local model the settings model-manager can download/delete.
     enum ManagedModel: String, CaseIterable, Identifiable {
-        case parakeet, whisper, appleSpeech, vad
+        case parakeet, whisper, appleSpeech, vad, deepVocab
         var id: String { rawValue }
         var label: String {
             switch self {
@@ -258,6 +304,7 @@ final class AppController {
             case .whisper: return "Whisper large-v3-turbo"
             case .appleSpeech: return "Apple Speech"
             case .vad: return "Silero VAD"
+            case .deepVocab: return "Deep Vocabulary (CTC 110M)"
             }
         }
         var approxSize: String {
@@ -266,6 +313,7 @@ final class AppController {
             case .whisper: return "~626 MB"
             case .appleSpeech: return "system-managed"
             case .vad: return "few MB"
+            case .deepVocab: return "~98 MB"
             }
         }
         var directory: URL {
@@ -276,6 +324,7 @@ final class AppController {
             // under our Models dir). Placeholder — never measured for size.
             case .appleSpeech: return ModelPaths.appSupport
             case .vad: return ModelPaths.vadModelDir
+            case .deepVocab: return ModelPaths.ctcModelDir
             }
         }
         /// Apple-provided model managed by the OS (`AssetInventory`) — no local
@@ -533,6 +582,11 @@ final class AppController {
 
     private let capture = AudioCaptureService()
     private let parakeet: FluidAudioParakeet
+    /// Deep-vocabulary rescorer (Settings → Dictionary, opt-in). Built once;
+    /// wired into the orchestrator only while the toggle is on, and it keeps the
+    /// CTC helper model resident only when actually rescoring (idle-unload +
+    /// unload-on-off). See `setDeepVocabEnabled`.
+    private let deepVocabRescorer: FluidAudioDeepVocabularyRescorer
     private let whisper: WhisperKitWhisper
     private let appleSpeech: SpeechAnalyzerTranscriber
     private let endpointer = FluidAudioVAD()
@@ -693,6 +747,12 @@ final class AppController {
             Task { @MainActor in relay.post(message) }
         }
 
+        // Deep-vocabulary rescorer reads the same dictionary the pipeline uses;
+        // its model prep reports through the shared prep stream like other models.
+        deepVocabRescorer = FluidAudioDeepVocabularyRescorer(
+            dictionary: dictionaryProvider,
+            progress: { state in cont.yield((.deepVocab, state)) }
+        )
         // Voice Command Mode runner: cloud via the shared OpenRouter client (the
         // user's cleanup model), local via the on-device backend. Selection text
         // reaches the cloud only when the cleanup tier is cloud (privacy §7).
@@ -880,6 +940,15 @@ final class AppController {
             await orchestrator.setLivePreviewEnabled(livePreviewEnabled)
         }
         applyTranslationSetting()
+        // Re-arm deep vocabulary if it was left on and the model is still present
+        // (no auto-download at launch — a missing model just leaves it dormant
+        // until re-enabled). The rescorer loads the CTC model lazily on first use.
+        if deepVocabEnabled, deepVocabRescorer.isModelDownloaded {
+            Task { [orchestrator, deepVocabRescorer] in await orchestrator.setRescorer(deepVocabRescorer) }
+        } else if deepVocabEnabled {
+            deepVocabEnabled = false
+            UserDefaults.standard.set(false, forKey: Self.deepVocabKey)
+        }
         pruneHistory()
         pruneAudio()
         refreshStats()
@@ -1409,6 +1478,7 @@ final class AppController {
         case .whisper: return activeSpeechModel == .whisper
         case .appleSpeech: return activeSpeechModel == .appleSpeech
         case .vad: return false
+        case .deepVocab: return false
         }
     }
 
@@ -1444,6 +1514,15 @@ final class AppController {
                 let size = ModelPaths.installedSize(at: ManagedModel.vad.directory)
                 self?.modelStates[.vad] = size > 0 ? .ready(bytes: size) : .notDownloaded
             }
+        case .deepVocab:
+            modelStates[.deepVocab] = .preparing
+            Task { [deepVocabRescorer, weak self] in
+                try? await deepVocabRescorer.prepareModel()
+                // Downloaded-but-off keeps nothing resident; unload unless the
+                // toggle is on (in which case the orchestrator holds it warm).
+                if self?.deepVocabEnabled != true { await deepVocabRescorer.unload() }
+                self?.refreshModelStates()
+            }
         }
     }
 
@@ -1459,6 +1538,12 @@ final class AppController {
             showNote("Can't delete the speech engine in use")
             return
         }
+        // Deleting the deep-vocabulary model force-disables the feature (it can't
+        // run without the model); do it before the confirm so the toggle and the
+        // wired stage never outlive the files.
+        if model == .deepVocab, deepVocabEnabled {
+            setDeepVocabEnabled(false)
+        }
         let alert = NSAlert()
         alert.messageText = "Delete \(model.label)?"
         alert.informativeText = "The model files will be removed from disk. It re-downloads the next time it's used."
@@ -1466,12 +1551,13 @@ final class AppController {
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        Task { [parakeet, whisper, weak self] in
+        Task { [parakeet, whisper, deepVocabRescorer, weak self] in
             switch model {
             case .parakeet: await parakeet.shutdown()
             case .whisper: await whisper.shutdown()
             case .appleSpeech: break // guarded above — never reached
             case .vad: break
+            case .deepVocab: await deepVocabRescorer.unload()
             }
             try? ModelPaths.removeFromDisk(at: model.directory)
             self?.refreshModelStates()
