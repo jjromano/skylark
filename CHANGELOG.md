@@ -6,6 +6,45 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.0 — 2026-07-22
+
+A large feature wave. Everything new that watches, stores, or sends anything
+is **off by default**.
+
+- **Voice command mode**: bind a second shortcut (Settings → General), hold
+  it, and speak an instruction — "make this shorter", "translate to
+  Spanish" — to rewrite the selected text in place (or generate text at the
+  cursor). Uses your cleanup model; the pill turns blue while listening.
+- **Cleanup intensity** (Light / Standard / High): control how much the
+  cleanup stage edits. Light = punctuation, capitalization, and numbers
+  only; High adds gentle grammar smoothing. Standard is unchanged.
+- **On-screen context** (opt-in): cleanup can read the text around your
+  cursor so mid-sentence dictation continues naturally and names already in
+  the field keep their spelling.
+- **Translation mode** (opt-in): dictate in one language, paste in another
+  (9 languages). Cloud models translate best; on-device handles European
+  languages, and a failed translation falls back to your original words.
+- **Deep vocabulary matching** (opt-in): a second on-device acoustic pass
+  re-checks each dictation against your dictionary so names are recognized
+  as spoken, not just fixed afterward (~100 MB helper model download).
+- **Learned-word banner**: auto-learned dictionary words now announce
+  themselves under the recording pill with an Undo button (5 s).
+- **Keep audio & re-transcribe** (opt-in): retain dictation audio locally
+  (7/30/90 days) to replay or re-run any history entry through a different
+  engine.
+- **Live preview** (experimental, opt-in, Parakeet): see words appear in
+  the pill while you speak; the pasted text is untouched.
+- **Per-app style presets**: one-click suggested modes (casual chat,
+  polished mail, verbatim terminals/editors, notes, and more) in
+  Settings → Modes.
+- **`skylark://` automation**: `skylark://record/start|stop|toggle|cancel`
+  and `skylark://settings` for Raycast/Shortcuts/Stream Deck.
+- **No more silent-clip hallucinations**: a push-to-talk clip with no
+  detectable speech shows "No speech detected" instead of pasting whatever
+  the model imagined.
+- **Whisper Mode** now adaptively normalizes very quiet clips (up to ×8)
+  before transcription, so near-silent whispering transcribes reliably.
+
 ## 0.6.1 — 2026-07-22
 
 - Local cleanup, tuned against the real on-device model: spoken numbers are
