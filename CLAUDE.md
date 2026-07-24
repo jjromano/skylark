@@ -65,6 +65,13 @@ changes under an unchanged version.
 - Local mode must work fully offline; an optional stage failing never blocks
   the core paste.
 - Swift 6 strict concurrency: keep the build free of concurrency warnings.
+- Any `AppController` setting bound to SwiftUI must be a STORED
+  `private(set) var` (init from UserDefaults, setter assigns + persists).
+  A computed property reading UserDefaults is invisible to `@Observable`,
+  so the control writes the value but never re-renders — toggles/pickers
+  appear dead or stuck. This bug shipped twice (v0.2.2 cleanupOverride,
+  v0.7.3 dictionary/history toggles); grep for `UserDefaults` inside
+  computed vars before adding a settings control.
 
 ## State that does not travel between worktrees
 

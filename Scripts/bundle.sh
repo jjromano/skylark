@@ -21,6 +21,14 @@ echo "→ swift build -c release --product Skylark"
 swift build -c release --product Skylark
 
 echo "→ Assembling $APP"
+# Launch Services registers every .app bundle Spotlight indexes, so this build
+# artifact — same bundle ID as the installed copy — would otherwise appear as a
+# second "Skylark" in Launchpad and Spotlight after every build. This marker
+# keeps dist/ out of the index entirely. (install.sh additionally unregisters
+# dist/ for builds made before the marker existed.)
+mkdir -p "$DIST"
+touch "$DIST/.metadata_never_index"
+
 rm -rf "$APP"
 mkdir -p "$CONTENTS/MacOS" "$CONTENTS/Resources"
 

@@ -6,6 +6,34 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.3 — 2026-07-23
+
+- **Update Now actually gives you the new build.** The installer now quits the
+  running Skylark before overwriting it and relaunches afterwards, so an update
+  no longer finishes with the *old* version still running and no sign anything
+  was wrong. If Skylark can't be quit, the installer stops with instructions
+  instead of overwriting a running app.
+- The installer prints the version and build number of the Skylark it just
+  launched, so you can confirm the update took.
+- **No more duplicate Skylark icon** in Launchpad and Spotlight. The build
+  artifact under `dist/` is kept out of Spotlight's index and unregistered from
+  Launch Services after it's copied to `/Applications`, instead of being listed
+  as a second copy of the app after every build.
+
+## 0.7.3 — 2026-07-23
+
+- Fixed: the Settings → Dictionary checkboxes ("Learn words from your
+  corrections", and by the same defect the History retention controls and
+  the auto-learn-from-history toggle) wrote their value but never redrew —
+  appearing dead, stuck, or seemingly toggled by a neighboring control.
+  Five settings were rebuilt on the observable pattern; a repo rule now
+  guards against this class recurring.
+- Fixed: opening Settings could hang the entire app — the window's cloud
+  warning read the Keychain on the main thread while a background Keychain
+  read held the same lock. Key presence is now cached off-main; no UI code
+  touches the Keychain anymore. (This also made skylark://settings reliable
+  on cold launch.)
+
 ## 0.7.2 — 2026-07-22
 
 - Removed **Llama 3.3 70B (Groq)** from the cloud cleanup catalog (Groq

@@ -13,13 +13,54 @@ cd "$REPO_ROOT"
 
 APP_NAME="Skylark"
 IDENTITY="Skylark Dev Signing"
-DIST_APP="dist/$APP_NAME.app"
+BUNDLE_ID="com.jjromano.skylark"
+DIST_APP="$REPO_ROOT/dist/$APP_NAME.app"
 INSTALLED_APP="/Applications/$APP_NAME.app"
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
 fail() {
     echo ""
     echo "✗ $1" >&2
     exit 1
+}
+
+# PIDs of any running Skylark build (installed copy or a dist/ dev build).
+skylark_pids() {
+    pgrep -f "$APP_NAME\.app/Contents/MacOS/$APP_NAME" 2>/dev/null || true
+}
+
+# True while the *installed* copy has a live process.
+installed_running() {
+    pgrep -f "$INSTALLED_APP/Contents/MacOS/$APP_NAME" >/dev/null 2>&1
+}
+
+# `open` on a bundle whose process is already running just foregrounds that
+# process — it does NOT relaunch against the new binary on disk. So installing
+# over a running Skylark would silently leave the old build running. Quit it
+# first, and via AppleScript rather than a kill so the app's own shutdown path
+# runs (clipboard restore, pending state flushed).
+quit_running_skylark() {
+    [[ -n "$(skylark_pids)" ]] || return 0
+
+    echo "→ Quitting the running Skylark…"
+    osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+
+    # AppleScript returns as soon as the quit event is accepted, not when the
+    # process is gone — poll for the real exit (10s).
+    for _ in $(seq 1 50); do
+        if [[ -z "$(skylark_pids)" ]]; then
+            echo "  ✓ Skylark quit"
+            return 0
+        fi
+        sleep 0.2
+    done
+
+    fail "Skylark is still running and wouldn't quit on its own (waited 10s).
+Overwriting a running app would leave you on the old build, so nothing was changed.
+
+Quit Skylark from its menu bar icon, then re-run this script.
+If macOS asked whether Terminal may control Skylark and you chose Don't Allow,
+re-enable it in System Settings → Privacy & Security → Automation."
 }
 
 echo "→ Checking system requirements…"
@@ -107,23 +148,55 @@ if [[ -d "$INSTALLED_APP" ]]; then
     read -r -p "→ $INSTALLED_APP already exists — overwrite it? [y/N] " REPLY
     case "$REPLY" in
         [yY]|[yY][eE][sS])
-            rm -rf "$INSTALLED_APP"
-            ;;
+            ;;  # removal happens below, after the running app has quit
+
         *)
             echo "  Skipped install — leaving the existing $INSTALLED_APP in place."
-            echo "  Your new build is still available at $REPO_ROOT/$DIST_APP."
+            echo "  Your new build is still available at $DIST_APP."
             exit 0
             ;;
     esac
 fi
 
+# Quit before touching the bundle — also covers the case where /Applications is
+# empty but a dist/ dev build is running under the same bundle ID (LaunchServices
+# would activate that one instead of launching the new install).
+quit_running_skylark
+rm -rf "$INSTALLED_APP"
+
 cp -R "$DIST_APP" "$INSTALLED_APP" || fail "Could not copy $DIST_APP to /Applications. Check disk space and permissions on /Applications."
 echo "  ✓ Installed to $INSTALLED_APP"
+
+# Launch Services registers every .app bundle Spotlight indexes — including the
+# build artifact in dist/, which carries the same bundle ID as the installed
+# copy and so shows up as a second "Skylark" in Launchpad and Spotlight.
+# Unregister it here; bundle.sh's .metadata_never_index marker keeps it from
+# being re-indexed on later builds.
+if [[ -x "$LSREGISTER" ]]; then
+    "$LSREGISTER" -u "$DIST_APP" >/dev/null 2>&1 || true
+    "$LSREGISTER" -gc >/dev/null 2>&1 || true
+    echo "  ✓ Unregistered the dist/ build copy (no duplicate Launchpad icon)"
+fi
 
 # --- Launch ------------------------------------------------------------
 echo ""
 echo "→ Launching Skylark…"
 open "$INSTALLED_APP"
+
+# Confirm the new build actually came up, and say which version it is — after an
+# update the whole question is "did it take?", and the version number answers it.
+INSTALLED_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED_APP/Contents/Info.plist" 2>/dev/null || echo "?")"
+INSTALLED_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INSTALLED_APP/Contents/Info.plist" 2>/dev/null || echo "?")"
+for _ in $(seq 1 25); do
+    installed_running && break
+    sleep 0.2
+done
+if installed_running; then
+    echo "  ✓ Skylark $INSTALLED_VERSION (build $INSTALLED_BUILD) is now running"
+else
+    echo "  ⚠️  Skylark $INSTALLED_VERSION was installed but hasn't appeared yet —"
+    echo "     open it from /Applications if the menu bar icon doesn't show up."
+fi
 
 cat <<'EOF'
 

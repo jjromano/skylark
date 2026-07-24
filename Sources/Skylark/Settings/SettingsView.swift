@@ -980,7 +980,7 @@ private struct AccountPane: View {
                       systemImage: "arrow.down.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.blue)
-                Text("Updating opens Terminal, pulls the latest code, and rebuilds — about two minutes.")
+                Text("Updating opens Terminal, pulls the latest code, and rebuilds — about two minutes. Skylark quits and relaunches itself at the end; the Terminal window prints the version that came back up.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             case let .failed(reason):

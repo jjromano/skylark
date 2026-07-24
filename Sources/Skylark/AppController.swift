@@ -199,11 +199,13 @@ final class AppController {
 
     /// Auto-learn dictionary corrections from history edits (off = confirm chips).
     static let dictionaryAutoLearnKey = "dictionary.autoLearn"
-    var dictionaryAutoLearn: Bool {
-        UserDefaults.standard.bool(forKey: Self.dictionaryAutoLearnKey)
-    }
+    /// Stored (not computed) so `@Observable` tracks it — a computed property
+    /// reading UserDefaults never triggers SwiftUI re-renders, leaving the
+    /// toggle visually stuck (the v0.2.2 cleanupOverride bug class).
+    private(set) var dictionaryAutoLearn: Bool
 
     func setDictionaryAutoLearn(_ on: Bool) {
+        dictionaryAutoLearn = on
         UserDefaults.standard.set(on, forKey: Self.dictionaryAutoLearnKey)
     }
 
@@ -212,11 +214,12 @@ final class AppController {
     /// opt-in. `nonisolated` so the orchestrator settle handler can read it off
     /// the main actor without hopping.
     nonisolated static let learnFromCorrectionsKey = "dictionary.learnFromCorrections"
-    var learnFromCorrectionsEnabled: Bool {
-        UserDefaults.standard.bool(forKey: Self.learnFromCorrectionsKey)
-    }
+    /// Stored (not computed) so `@Observable` tracks it (v0.2.2 bug class);
+    /// off-main-actor readers use the UserDefaults key directly.
+    private(set) var learnFromCorrectionsEnabled: Bool
 
     func setLearnFromCorrections(_ on: Bool) {
+        learnFromCorrectionsEnabled = on
         UserDefaults.standard.set(on, forKey: Self.learnFromCorrectionsKey)
     }
 
@@ -376,11 +379,11 @@ final class AppController {
     /// closure, not main-actor-isolated) can read it directly.
     nonisolated static let historyAudioRetentionKey = "history.audioRetentionEnabled"
 
-    var audioRetentionEnabled: Bool {
-        UserDefaults.standard.bool(forKey: Self.historyAudioRetentionKey)
-    }
+    /// Stored (not computed) so `@Observable` tracks it (v0.2.2 bug class).
+    private(set) var audioRetentionEnabled: Bool
 
     func setAudioRetentionEnabled(_ enabled: Bool) {
+        audioRetentionEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: Self.historyAudioRetentionKey)
         if enabled {
             // Newly on: apply the retention window to anything already on disk.
@@ -394,13 +397,11 @@ final class AppController {
     /// Audio retention window in days (default 7). Applies to retained audio
     /// *files* only — pruning nulls `audio_path` and deletes the file, keeping
     /// the text row. Never 0 (there is no "forever" for audio).
-    var audioRetentionDays: Int {
-        HistoryStore.audioRetentionDays(
-            stored: UserDefaults.standard.integer(forKey: HistoryStore.audioRetentionDefaultsKey)
-        )
-    }
+    /// Stored (not computed) so `@Observable` tracks it (v0.2.2 bug class).
+    private(set) var audioRetentionDays: Int
 
     func setAudioRetentionDays(_ days: Int) {
+        audioRetentionDays = HistoryStore.audioRetentionDays(stored: days)
         UserDefaults.standard.set(days, forKey: HistoryStore.audioRetentionDefaultsKey)
         pruneAudio()
     }
@@ -465,11 +466,11 @@ final class AppController {
 
     /// History retention window in days (0 = keep forever). Prunes immediately
     /// on change and at every launch.
-    var retentionDays: Int {
-        UserDefaults.standard.integer(forKey: HistoryStore.retentionDefaultsKey)
-    }
+    /// Stored (not computed) so `@Observable` tracks it (v0.2.2 bug class).
+    private(set) var retentionDays: Int
 
     func setRetentionDays(_ days: Int) {
+        retentionDays = days
         UserDefaults.standard.set(days, forKey: HistoryStore.retentionDefaultsKey)
         pruneHistory()
     }
@@ -671,6 +672,13 @@ final class AppController {
             .flatMap(HotkeyBinding.init(rawValue:))
 
         pressEnterEnabled = UserDefaults.standard.bool(forKey: Self.pressEnterKey)
+        dictionaryAutoLearn = UserDefaults.standard.bool(forKey: Self.dictionaryAutoLearnKey)
+        learnFromCorrectionsEnabled = UserDefaults.standard.bool(forKey: Self.learnFromCorrectionsKey)
+        audioRetentionEnabled = UserDefaults.standard.bool(forKey: Self.historyAudioRetentionKey)
+        audioRetentionDays = HistoryStore.audioRetentionDays(
+            stored: UserDefaults.standard.integer(forKey: HistoryStore.audioRetentionDefaultsKey)
+        )
+        retentionDays = UserDefaults.standard.integer(forKey: HistoryStore.retentionDefaultsKey)
         contextAwareCleanupEnabled = UserDefaults.standard.bool(forKey: Self.contextAwareCleanupKey)
         livePreviewEnabled = UserDefaults.standard.bool(forKey: Self.livePreviewKey)
         pauseMediaEnabled = UserDefaults.standard.bool(forKey: Self.pauseMediaKey)
@@ -940,6 +948,9 @@ final class AppController {
             await orchestrator.setLivePreviewEnabled(livePreviewEnabled)
         }
         applyTranslationSetting()
+        // Cache key presence off-main so no SwiftUI body ever touches the
+        // keychain (main-thread mutex hang; see hasAPIKey).
+        refreshAPIKeyPresence()
         // Re-arm deep vocabulary if it was left on and the model is still present
         // (no auto-download at launch — a missing model just leaves it dormant
         // until re-enabled). The rescorer loads the CTC model lazily on first use.
@@ -1711,15 +1722,36 @@ final class AppController {
     }
 
     /// Whether an OpenRouter key is currently stored (drives cloud warnings).
-    var hasAPIKey: Bool { KeychainStore().exists() }
+    /// CACHED, never read from the keychain here: SwiftUI bodies evaluate this
+    /// on the main thread, and a synchronous `SecItemCopyMatching` can block on
+    /// the Security framework's keychain mutex while a background read (e.g.
+    /// `rebuildTranscriber`) holds it — a whole-app main-thread hang, observed
+    /// live opening Settings (v0.7.3). Refreshed off-main at launch and on any
+    /// key change.
+    private(set) var hasAPIKey: Bool = false
+
+    /// Re-read key presence OFF the main actor and publish the cached flag.
+    /// `completion` (if any) runs on the main actor after the flag updates.
+    func refreshAPIKeyPresence(completion: (@MainActor () -> Void)? = nil) {
+        Task.detached(priority: .utility) {
+            let exists = KeychainStore().exists()
+            await MainActor.run { [weak self] in
+                self?.hasAPIKey = exists
+                completion?()
+            }
+        }
+    }
 
     /// Called when the stored API key changes (added/replaced/removed). The
     /// transcriber was built against the OLD key state — a cloud STT selection
     /// made while keyless silently ran local until now, so rebuild it.
     func apiKeyDidChange() {
-        rebuildTranscriber()
-        if case .cloud = modelSelection.sttChoice {
-            showNote(hasAPIKey ? "Cloud speech engine active" : "Key removed — using local speech engine")
+        refreshAPIKeyPresence { [weak self] in
+            guard let self else { return }
+            self.rebuildTranscriber()
+            if case .cloud = self.modelSelection.sttChoice {
+                self.showNote(self.hasAPIKey ? "Cloud speech engine active" : "Key removed — using local speech engine")
+            }
         }
     }
 
