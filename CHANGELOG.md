@@ -6,6 +6,25 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.4 — 2026-07-23
+
+- Fixed a regression in 0.7.3's installer: after updating, Skylark did not
+  relaunch and disappeared from Launchpad, Spotlight and the Applications
+  folder until macOS re-scanned `/Applications` on its own. The installer had
+  been unregistering the `dist/` build copy and then garbage-collecting the
+  whole Launch Services database — and because both bundles share one bundle
+  ID, that briefly left the app with no registration at all, so there was
+  nothing for the relaunch to open. The app itself was always installed
+  correctly on disk; only its registration was missing. The installer now
+  explicitly registers the installed copy before launching it (no
+  database-wide garbage collection), and reports a failed launch instead of
+  exiting silently.
+- The duplicate-Launchpad-icon cleanup from 0.7.3 now actually holds: rather
+  than trying to unregister the `dist/` build copy — which macOS kept
+  re-registering as long as the signed bundle sat on disk — the installer now
+  deletes that redundant copy after installing to `/Applications`. `make app`
+  and `make run` rebuild it on demand, so nothing is lost.
+
 ## 0.7.3 — 2026-07-23
 
 - **Update Now actually gives you the new build.** The installer now quits the
