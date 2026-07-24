@@ -6,6 +6,33 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.7 — 2026-07-24
+
+Cleanup-quality overhaul, informed by an eval against the real on-device model
+and cleanup techniques from open-source dictation apps (OpenWhispr, Handy — MIT;
+VoiceInk, nerd-dictation — GPL, ideas only). On-device exact-match rate on the
+new cleanup corpus rose from 8/15 to 13/17.
+
+- **Self-corrections now resolve reliably on the local model.** "I want to
+  restructure, I mean refactor the code" now becomes "I want to refactor the
+  code" (previously kept both). The local prompt gained a fuller replacement-cue
+  list, an "'actually' used for emphasis is not a correction" carve-out, and
+  worked examples — small models follow examples, not rule lists.
+- **Cleanup no longer turns questions into commands or drops polite framing.**
+  "Can you investigate what happened?" stayed a question instead of becoming
+  "Investigate what happened." Both prompts now explicitly preserve sentence
+  type, pronouns, and "can you"/"could you"/"please" (the cloud prompt had no
+  such protection before).
+- **Stopped a prompt example leaking into output** ("…because last time it
+  broke" appearing on unrelated dictations), and added a deterministic output
+  filter that strips reasoning/thinking blocks, a wrapping code fence, and
+  leading "Output:"-style labels that small local models emit.
+- **Added a deterministic spoken-number→digit/currency/percent pass** as a
+  safety net after cleanup, so numbers the model leaves unformatted still come
+  out right; idempotent, so correctly-formatted digits are untouched.
+- Re-anchored the output contract immediately after the transcript in the user
+  message, which improves instruction-following on small models.
+
 ## 0.7.6 — 2026-07-24
 
 - Fixed cleanup silently keeping raw, unformatted text when the transcript

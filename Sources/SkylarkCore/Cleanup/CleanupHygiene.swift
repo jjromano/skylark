@@ -15,11 +15,19 @@ import Foundation
 ///   - dropped a negation present in the raw text (meaning inversion — the
 ///     dangerous failure: "I can't see anything" → "I can see anything").
 public enum CleanupHygiene {
-    /// Trim surrounding whitespace, strip any echoed transcript fence tags, and
-    /// remove a single layer of wrapping quotes the model sometimes adds.
+    /// Trim, then peel off the scaffolding small local models leak even when told
+    /// not to (observed on the on-device model): reasoning/thinking blocks, a
+    /// wrapping markdown code fence, echoed transcript fence tags, a leading
+    /// "Output:"-style label, and a single layer of wrapping quotes. Every strip
+    /// is conservative — it only removes a recognized wrapper, never speaker
+    /// content. (Adapted from VoiceInk's `AIEnhancementOutputFilter` and
+    /// OpenWhispr's `stripThinkingTags`, both MIT-adjacent references.)
     public static func sanitize(_ output: String) -> String {
         var s = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        s = stripReasoningBlocks(s)
+        s = stripCodeFence(s)
         s = stripTranscriptTags(s)
+        s = stripLeadingLabel(s)
         s = stripSurroundingQuotes(s)
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -105,7 +113,13 @@ public enum CleanupHygiene {
         if let fieldContext, echoesFieldContext(cleaned, transcript: transcript, fieldContext: fieldContext) {
             throw CleanerError.unusableOutput
         }
-        return cleaned
+        // Deterministic spoken-number → digit/currency/percent pass as a safety
+        // net for anything the model left unformatted (small local models are
+        // unreliable here). Runs only on already-trusted output, and is
+        // idempotent, so digits the model formatted correctly are untouched.
+        // Skipped for translations (English number words don't appear in the
+        // translated result).
+        return translated ? cleaned : SpokenNumbers.format(cleaned)
     }
 
     // MARK: - Guards
@@ -339,6 +353,57 @@ public enum CleanupHygiene {
                     && !numberWords.contains($0)
                     && !isNumericToken($0)
             }
+    }
+
+    /// Remove `<think>…</think>`, `<thinking>…</thinking>`, and
+    /// `<reasoning>…</reasoning>` blocks a reasoning-capable local model emits
+    /// before its answer. Case-insensitive, spans newlines, and tolerates the
+    /// closing tag being absent (an unterminated block runs to end-of-string).
+    static func stripReasoningBlocks(_ s: String) -> String {
+        var out = s
+        for tag in ["think", "thinking", "reasoning"] {
+            let pattern = "(?is)<\(tag)\\b[^>]*>.*?(</\(tag)>|$)"
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            let range = NSRange(out.startIndex..., in: out)
+            out = regex.stringByReplacingMatches(in: out, range: range, withTemplate: "")
+        }
+        return out.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Unwrap a single fenced code block when the ENTIRE output is one — a
+    /// ```` ```lang … ``` ```` wrapper the model adds around the transcript.
+    /// Leaves inline back-ticks and partial fences alone (speaker content).
+    static func stripCodeFence(_ s: String) -> String {
+        let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard t.hasPrefix("```"), t.hasSuffix("```"), t.count > 6 else { return s }
+        var body = String(t.dropFirst(3).dropLast(3))
+        // Drop an opening language tag / the newline after the opening fence.
+        if let nl = body.firstIndex(of: "\n") {
+            let firstLine = body[body.startIndex..<nl].trimmingCharacters(in: .whitespaces)
+            if !firstLine.contains(" "), firstLine.count < 16 { body = String(body[body.index(after: nl)...]) }
+        }
+        return body.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Known label prefixes the model prepends. Removed ONLY when the label is
+    /// the start of the output (its own line or immediately before the text), so
+    /// a legitimately-dictated "Output: 3.4V" is untouched unless the whole
+    /// thing begins with a bare label token.
+    private static let leadingLabels = [
+        "cleaned transcript:", "cleaned text:", "cleaned:", "output:",
+        "here is the cleaned transcript:", "here's the cleaned transcript:",
+        "here is the cleaned text:", "corrected transcript:",
+    ]
+
+    /// Strip one recognized leading label (e.g. "Output:") plus the whitespace
+    /// after it. Case-insensitive; only the known set above, so it can't eat
+    /// real content that merely contains a colon.
+    static func stripLeadingLabel(_ s: String) -> String {
+        let lower = s.lowercased()
+        for label in leadingLabels where lower.hasPrefix(label) {
+            return String(s.dropFirst(label.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return s
     }
 
     /// Remove transcript fence delimiters the model sometimes echoes from the

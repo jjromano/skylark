@@ -318,3 +318,37 @@ struct LocalStrictnessTests {
         #expect(try CleanupHygiene.validate(cleaned, transcript: raw) == cleaned)
     }
 }
+
+@Suite("CleanupHygiene — output scaffolding strips")
+struct CleanupHygieneScaffoldingTests {
+    @Test("Reasoning / thinking blocks are stripped")
+    func stripsReasoning() {
+        #expect(CleanupHygiene.sanitize("<think>the user said x</think>Send it Friday.") == "Send it Friday.")
+        #expect(CleanupHygiene.sanitize("<reasoning>\nplan\n</reasoning>\nHello there.") == "Hello there.")
+        #expect(CleanupHygiene.sanitize("<THINKING>upper</THINKING>Done.") == "Done.")
+        // Unterminated block runs to end-of-string; earlier content survives.
+        #expect(CleanupHygiene.sanitize("Done.\n<think>oops no close tag") == "Done.")
+        // No tags → untouched (a bare "a < b" is not a reasoning block).
+        #expect(CleanupHygiene.sanitize("a < b and c > d") == "a < b and c > d")
+    }
+
+    @Test("A whole-output markdown code fence is unwrapped; inline back-ticks are kept")
+    func stripsCodeFence() {
+        #expect(CleanupHygiene.sanitize("```\nHello there.\n```") == "Hello there.")
+        #expect(CleanupHygiene.sanitize("```text\nHello there.\n```") == "Hello there.")
+        #expect(CleanupHygiene.sanitize("Use the `git` command.") == "Use the `git` command.")
+    }
+
+    @Test("A recognized leading label is removed; a mid-sentence colon is not")
+    func stripsLeadingLabel() {
+        #expect(CleanupHygiene.sanitize("Output: Send it Friday.") == "Send it Friday.")
+        #expect(CleanupHygiene.sanitize("Cleaned transcript:\nHello there.") == "Hello there.")
+        #expect(CleanupHygiene.sanitize("Note to self: buy milk.") == "Note to self: buy milk.")
+    }
+
+    @Test("Strips compose: fence + reasoning + label together")
+    func stripsCompose() {
+        let raw = "```\n<think>hmm</think>\nOutput: Send it Friday.\n```"
+        #expect(CleanupHygiene.sanitize(raw) == "Send it Friday.")
+    }
+}
