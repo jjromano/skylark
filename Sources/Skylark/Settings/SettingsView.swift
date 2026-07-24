@@ -309,6 +309,22 @@ private struct GeneralPane: View {
                 .pickerStyle(.segmented)
                 .disabled(controller.cleanupOverride == "raw")
                 Text(controller.cleanupIntensity.caption)
+                Picker("Cleanup timeout", selection: Binding(
+                    get: { controller.cleanupTimeoutSeconds },
+                    set: { controller.setCleanupTimeout(seconds: $0) }
+                )) {
+                    Text("1 second").tag(1)
+                    Text("2 seconds").tag(2)
+                    Text("3 seconds").tag(3)
+                    Text("5 seconds").tag(5)
+                    Text("10 seconds").tag(10)
+                    Text("30 seconds").tag(30)
+                    Text("Off — wait for cleanup").tag(0)
+                }
+                .disabled(controller.cleanupOverride == "raw")
+                Text("How long a paste waits for cleanup before falling back. A slow cloud cleanup first degrades to the local model, then to raw text — and now tells you when it does. “Off” waits with no cap.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle("Use on-screen context", isOn: Binding(
                     get: { controller.contextAwareCleanupEnabled },
                     set: { controller.setContextAwareCleanupEnabled($0) }

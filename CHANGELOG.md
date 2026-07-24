@@ -6,6 +6,18 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.9 — 2026-07-24
+
+- Cleanup no longer silently switches between cloud, local, and no-cleanup. When
+  a cloud cleanup is **too slow**, it now falls back to the **local** engine
+  instead of pasting raw (previously a slow cloud → no cleanup at all), and the
+  formerly-silent timeout keeps now surface a note. Combined with the existing
+  cloud→local degrade on errors, every fallback is visible instead of feeling
+  random.
+- Added a **Cleanup timeout** setting (Settings → General): 1–30 seconds, or
+  "Off" to wait for cleanup with no cap. Raise it for a slow-but-preferred cloud
+  model, or disable the cap entirely.
+
 ## 0.7.8 — 2026-07-24
 
 - Fixed the Full History window's search field overlapping the list. It used

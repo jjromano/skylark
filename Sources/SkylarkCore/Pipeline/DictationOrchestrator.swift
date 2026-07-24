@@ -138,7 +138,14 @@ public actor DictationOrchestrator {
     /// Cap on the cleanup+replace path (AX targets); raw already stands.
     private let replaceTimeout: Duration
     /// Cap on wait-for-clean before pasting (paste targets, deliberate wait).
-    private let waitForCleanTimeout: Duration
+    /// Configurable from Settings (raise it, or `nil` to disable and wait with no
+    /// cap). Also the budget after which a slow CLOUD cleanup degrades to the
+    /// local engine instead of keeping raw text.
+    private var cleanupTimeout: Duration?
+    /// Fixed hard cap for the LOCAL fallback that runs after a cloud timeout, so a
+    /// wedged on-device model can't hang the paste even when the user disabled the
+    /// main cleanup timeout.
+    private let localFallbackTimeout: Duration = .seconds(6)
 
     public private(set) var phase: Phase = .idle
 
@@ -207,7 +214,7 @@ public actor DictationOrchestrator {
         self.historyRecord = historyRecord
         self.historyUpdate = historyUpdate
         self.replaceTimeout = replaceTimeout
-        self.waitForCleanTimeout = waitForCleanTimeout
+        self.cleanupTimeout = waitForCleanTimeout
         let (stream, continuation) = AsyncStream<HUDState>.makeStream(bufferingPolicy: .bufferingNewest(1))
         hudStates = stream
         hudContinuation = continuation
@@ -235,6 +242,14 @@ public actor DictationOrchestrator {
     /// resolved mode's tier); a value forces that tier for every dictation.
     public func setTierOverride(_ tier: CleanupTier?) {
         tierOverride = tier
+    }
+
+    /// Cleanup timeout (Settings → General). A value caps how long a paste waits
+    /// for cleanup before falling back (to local, then raw); `nil` disables the
+    /// cap so the paste waits for cleanup however long it takes. Takes effect on
+    /// the next dictation.
+    public func setCleanupTimeout(_ timeout: Duration?) {
+        cleanupTimeout = timeout
     }
 
     /// Set the global cleanup intensity (Settings → General, Cleanup
@@ -664,9 +679,7 @@ public actor DictationOrchestrator {
             // would race the keystroke (a chat message would send, then get
             // edited), so wait for clean here even on AX targets.
             let cleaner = cleaners.cleaner(for: effectiveTier)
-            let outcome = await cleanWithTimeout(
-                cleaner, rawText, context: cleanupContext, cap: waitForCleanTimeout
-            )
+            let outcome = await cleanForPaste(cleaner, tier: effectiveTier, text: rawText, context: cleanupContext)
             if let outcome {
                 syncCleanupEngine = outcome.engine
                 if outcome.text != rawText { syncCleanText = outcome.text }
@@ -689,9 +702,10 @@ public actor DictationOrchestrator {
             // (never a second one, never any paste-path cost). rescoreTimings is
             // nil unless the feature is on and this was a Parakeet utterance.
             let rescoreSamples = rescoreTimings != nil ? clip.samples : []
+            let tier = effectiveTier
             Task { [weak self] in
                 await self?.runCleanupAndReplace(
-                    token: token, rawText: rawText, cleaner: cleaner,
+                    token: token, rawText: rawText, cleaner: cleaner, tier: tier,
                     context: context, historyTimestamp: historyTimestamp,
                     rescoreSamples: rescoreSamples, rescoreTimings: rescoreTimings
                 )
@@ -702,14 +716,10 @@ public actor DictationOrchestrator {
             // unsafe here). Race the cleaner against a 2 s clock; on timeout/
             // failure inject raw — and say so.
             let cleaner = cleaners.cleaner(for: effectiveTier)
-            let outcome = await cleanWithTimeout(
-                cleaner, rawText, context: cleanupContext, cap: waitForCleanTimeout
-            )
+            let outcome = await cleanForPaste(cleaner, tier: effectiveTier, text: rawText, context: cleanupContext)
             if let outcome {
                 syncCleanupEngine = outcome.engine
                 if outcome.text != rawText { syncCleanText = outcome.text }
-            } else {
-                noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
             }
             let final = outcome?.text ?? rawText
             if let token = await insertRaw(final) {
@@ -982,13 +992,15 @@ public actor DictationOrchestrator {
         return setup
     }
 
-    /// Run the cleaner on `rawText` (capped at `replaceTimeout`) and, on a
-    /// changed result, replace the AX-inserted range in place. Every failure is
-    /// silent-to-the-user: raw stands, one log line.
+    /// Run the cleaner on `rawText` (capped at the cleanup timeout) and, on a
+    /// changed result, replace the AX-inserted range in place. A slow cloud
+    /// degrades to local cleanup; if even that yields nothing, raw stands and a
+    /// note says so (no longer a silent keep).
     private func runCleanupAndReplace(
         token: InsertionToken,
         rawText: String,
         cleaner: any Cleaner,
+        tier: CleanupTier,
         context: CleanupContext,
         historyTimestamp: Date,
         rescoreSamples: [Float] = [],
@@ -1003,8 +1015,14 @@ public actor DictationOrchestrator {
             sourceText = rescored
         }
 
-        guard let outcome = await cleanWithTimeout(cleaner, sourceText, context: context, cap: replaceTimeout) else {
-            // Timeout/failure: raw stands on screen — watch that.
+        var outcome = await cleanWithTimeout(cleaner, sourceText, context: context, cap: cleanupTimeout)
+        if outcome == nil {
+            // Cloud too slow → degrade to local cleanup (it replaces the on-screen
+            // raw in place) instead of leaving raw silently.
+            outcome = await localFallbackAfterTimeout(sourceText, context: context, timedOutTier: tier)
+        }
+        guard let outcome else {
+            noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
             fireCorrectionSettled(token, finalText: token.text)
             return
         }
@@ -1051,9 +1069,14 @@ public actor DictationOrchestrator {
         _ cleaner: any Cleaner,
         _ text: String,
         context: CleanupContext,
-        cap: Duration
+        cap: Duration?
     ) async -> CleanOutcome? {
-        await withTaskGroup(of: CleanOutcome?.self) { group in
+        guard let cap else {
+            // Timeout disabled (Settings): wait for the cleaner however long it
+            // takes. A failed cleaner still returns nil, so raw stands.
+            return try? await cleaner.cleanTracked(text, context: context)
+        }
+        return await withTaskGroup(of: CleanOutcome?.self) { group in
             group.addTask {
                 try? await cleaner.cleanTracked(text, context: context)
             }
@@ -1065,6 +1088,39 @@ public actor DictationOrchestrator {
             group.cancelAll()
             return first
         }
+    }
+
+    /// After a (cloud) cleanup timed out, try the LOCAL engine before giving up to
+    /// raw — a slow cloud degrades to on-device cleanup, not none. Returns nil if
+    /// the timed-out tier already WAS local, or local is unavailable / a no-op /
+    /// also times out. Emits a status note on success so the switch is never
+    /// silent (the invisible-degrade complaint).
+    private func localFallbackAfterTimeout(
+        _ text: String, context: CleanupContext, timedOutTier: CleanupTier
+    ) async -> CleanOutcome? {
+        guard timedOutTier != .local else { return nil }
+        let local = cleaners.cleaner(for: .local)
+        guard let outcome = await cleanWithTimeout(local, text, context: context, cap: localFallbackTimeout),
+              outcome.text != text
+        else { return nil }
+        noteContinuation.yield("Cloud cleanup was slow — used local cleanup instead")
+        return outcome
+    }
+
+    /// Wait-for-clean for a paste target: run `cleaner` under the configurable
+    /// cleanup timeout, then degrade to local, then to raw — noting each step.
+    /// `nil` return means raw should stand.
+    private func cleanForPaste(
+        _ cleaner: any Cleaner, tier: CleanupTier, text: String, context: CleanupContext
+    ) async -> CleanOutcome? {
+        if let outcome = await cleanWithTimeout(cleaner, text, context: context, cap: cleanupTimeout) {
+            return outcome
+        }
+        if let local = await localFallbackAfterTimeout(text, context: context, timedOutTier: tier) {
+            return local
+        }
+        noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
+        return nil
     }
 
     // MARK: - Hands-free lifecycle

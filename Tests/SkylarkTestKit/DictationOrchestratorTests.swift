@@ -352,6 +352,42 @@ struct DictationOrchestratorCleanupTests {
         await #expect(spy.replaceCount() == 0)
     }
 
+    @Test("Slow cloud cleanup degrades to LOCAL (not raw) on timeout")
+    func slowCloudDegradesToLocal() async {
+        let spy = SpyInjector(direct: false) // paste target → wait-for-clean path
+        let cloud = SpyCleaner(tier: .cloud(slug: "test"), behaviour: .hang)
+        let local = SpyCleaner(tier: .local, behaviour: .transform("LOCAL"))
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: local, cloud: ["test": cloud]),
+            modeProvider: modes(defaultTier: .cloud(slug: "test")),
+            waitForCleanTimeout: .milliseconds(50)
+        )
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        // Cloud hangs past the 50 ms cap → local cleanup is used, not raw.
+        await #expect(spy.first() == "LOCAL")
+    }
+
+    @Test("Disabled timeout (nil) waits for the cleaner instead of falling back")
+    func disabledTimeoutWaits() async {
+        let spy = SpyInjector(direct: false)
+        let cleaner = SpyCleaner(tier: .local, behaviour: .transform("CLEANED"))
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: cleaner),
+            modeProvider: modes(defaultTier: .local)
+        )
+        await orchestrator.setCleanupTimeout(nil) // disabled
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        await #expect(spy.first() == "CLEANED")
+    }
+
     @Test("Paste target: wait-for-clean inserts the cleaned text")
     func pasteWaitForCleanSucceeds() async {
         let spy = SpyInjector(direct: false)

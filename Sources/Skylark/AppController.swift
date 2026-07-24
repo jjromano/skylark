@@ -372,6 +372,16 @@ final class AppController {
     static let cleanupIntensityKey = CleanupIntensity.defaultsKey
     private(set) var cleanupIntensity: CleanupIntensity
 
+    /// Cleanup timeout in seconds; 0 = disabled (wait for cleanup with no cap).
+    /// Settings → General. Stored (not computed) so `@Observable` tracks changes
+    /// made via `setCleanupTimeout` — see the hard rule on settings bindings.
+    static let cleanupTimeoutKey = "cleanup.timeoutSeconds"
+    private(set) var cleanupTimeoutSeconds: Int
+    /// Map the seconds setting to the orchestrator's optional cap (0 → nil).
+    static func cleanupTimeoutDuration(_ seconds: Int) -> Duration? {
+        seconds <= 0 ? nil : .seconds(seconds)
+    }
+
     // MARK: - History (Settings → History)
 
     /// Audio retention opt-in (default OFF — PRD §8, phase-5a spec §2).
@@ -687,6 +697,7 @@ final class AppController {
             ?? Self.translateDefaultLanguage
         cleanupOverride = UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto"
         cleanupIntensity = CleanupIntensity.persisted()
+        cleanupTimeoutSeconds = (UserDefaults.standard.object(forKey: Self.cleanupTimeoutKey) as? Int) ?? 2
 
         // Composition root: one on-disk database; fall back to in-memory
         // providers (no history/persisted modes) if it can't open.
@@ -1003,6 +1014,7 @@ final class AppController {
 
         applyCleanupOverride(cleanupOverride)
         Task { [orchestrator, cleanupIntensity] in await orchestrator.setCleanupIntensity(cleanupIntensity) }
+        Task { [orchestrator, cleanupTimeoutSeconds] in await orchestrator.setCleanupTimeout(Self.cleanupTimeoutDuration(cleanupTimeoutSeconds)) }
         rebuildTranscriber()
     }
 
@@ -1268,6 +1280,15 @@ final class AppController {
         cleanupIntensity = intensity
         UserDefaults.standard.set(intensity.rawValue, forKey: Self.cleanupIntensityKey)
         Task { [orchestrator] in await orchestrator.setCleanupIntensity(intensity) }
+    }
+
+    /// Set the cleanup timeout (Settings → General). `0` disables the cap so a
+    /// paste waits for cleanup however long it takes. Persists and pushes to the
+    /// orchestrator; takes effect next dictation.
+    func setCleanupTimeout(seconds: Int) {
+        cleanupTimeoutSeconds = seconds
+        UserDefaults.standard.set(seconds, forKey: Self.cleanupTimeoutKey)
+        Task { [orchestrator] in await orchestrator.setCleanupTimeout(Self.cleanupTimeoutDuration(seconds)) }
     }
 
     // MARK: - Quick-switch (menu bar)
