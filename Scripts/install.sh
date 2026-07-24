@@ -167,35 +167,68 @@ rm -rf "$INSTALLED_APP"
 cp -R "$DIST_APP" "$INSTALLED_APP" || fail "Could not copy $DIST_APP to /Applications. Check disk space and permissions on /Applications."
 echo "  ✓ Installed to $INSTALLED_APP"
 
-# Launch Services registers every .app bundle Spotlight indexes — including the
-# build artifact in dist/, which carries the same bundle ID as the installed
-# copy and so shows up as a second "Skylark" in Launchpad and Spotlight.
-# Unregister it here; bundle.sh's .metadata_never_index marker keeps it from
-# being re-indexed on later builds.
+# Make sure Launch Services knows about the freshly-installed copy before we try
+# to launch it. Both this and the dist/ build carry the same bundle ID
+# (com.jjromano.skylark); if the only registration LS holds points at dist/ (or
+# at nothing), `open` below has nothing to launch and the app is missing from
+# Launchpad/Spotlight until macOS rescans /Applications on its own schedule.
+# Registering the installed copy here closes that window.
+#
+# The dist/ duplicate is dropped later, at the very end of the script — not here.
+# Deliberately NOT using `lsregister -gc`: it garbage-collects the entire
+# system-wide Launch Services database, which is far too blunt for an installer
+# and was what left the app unlaunchable and missing from Launchpad in v0.7.3.
 if [[ -x "$LSREGISTER" ]]; then
-    "$LSREGISTER" -u "$DIST_APP" >/dev/null 2>&1 || true
-    "$LSREGISTER" -gc >/dev/null 2>&1 || true
-    echo "  ✓ Unregistered the dist/ build copy (no duplicate Launchpad icon)"
+    "$LSREGISTER" -f "$INSTALLED_APP" >/dev/null 2>&1 || true
+    echo "  ✓ Registered $INSTALLED_APP with Launch Services"
 fi
 
 # --- Launch ------------------------------------------------------------
 echo ""
 echo "→ Launching Skylark…"
-open "$INSTALLED_APP"
+
+INSTALLED_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED_APP/Contents/Info.plist" 2>/dev/null || echo "?")"
+INSTALLED_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INSTALLED_APP/Contents/Info.plist" 2>/dev/null || echo "?")"
+
+# `open` must be status-checked: unchecked under `set -e` a failure aborts the
+# script instantly, skipping both the confirmation below and the first-run
+# checklist — so a failed launch would look like a silent success.
+if ! open "$INSTALLED_APP" 2>/dev/null; then
+    echo "  … first launch attempt failed; re-registering and retrying"
+    [[ -x "$LSREGISTER" ]] && "$LSREGISTER" -f "$INSTALLED_APP" >/dev/null 2>&1 || true
+    open "$INSTALLED_APP" 2>/dev/null || true
+fi
 
 # Confirm the new build actually came up, and say which version it is — after an
 # update the whole question is "did it take?", and the version number answers it.
-INSTALLED_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED_APP/Contents/Info.plist" 2>/dev/null || echo "?")"
-INSTALLED_BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INSTALLED_APP/Contents/Info.plist" 2>/dev/null || echo "?")"
-for _ in $(seq 1 25); do
+# 15s: a cold launch of the release binary is well under that, but a 5s budget
+# false-alarmed on slower starts.
+for _ in $(seq 1 75); do
     installed_running && break
     sleep 0.2
 done
 if installed_running; then
     echo "  ✓ Skylark $INSTALLED_VERSION (build $INSTALLED_BUILD) is now running"
 else
-    echo "  ⚠️  Skylark $INSTALLED_VERSION was installed but hasn't appeared yet —"
-    echo "     open it from /Applications if the menu bar icon doesn't show up."
+    echo ""
+    echo "  ⚠️  Skylark $INSTALLED_VERSION (build $INSTALLED_BUILD) is installed at"
+    echo "     $INSTALLED_APP but did not launch. Open it from Finder → Applications."
+    echo "     (Skylark is a menu-bar app — look for the mic icon, not a Dock icon.)"
+fi
+
+# The dist/ build copy has now been copied to /Applications and that copy is
+# running, so the one under dist/ is redundant — and as long as a signed
+# Skylark.app physically sits there, `lsd` keeps re-registering it (codesigning
+# it during the build triggers an async registration that no amount of
+# `lsregister -u` can reliably outrun — that whack-a-mole is what produced the
+# duplicate "Skylark" in Launchpad and Spotlight). So delete the bundle instead
+# of fighting to unregister it: with nothing on disk there, the duplicate can't
+# come back. `make run` / `make app` rebuild it on demand, so nothing is lost.
+# Best-effort — a leftover build artifact must never fail an otherwise-good install.
+if [[ -d "$DIST_APP" ]]; then
+    rm -rf "$DIST_APP" 2>/dev/null || true
+    [[ -x "$LSREGISTER" ]] && "$LSREGISTER" -u "$DIST_APP" >/dev/null 2>&1 || true
+    echo "  ✓ Cleaned up the redundant dist/ build copy (no duplicate Launchpad icon)"
 fi
 
 cat <<'EOF'

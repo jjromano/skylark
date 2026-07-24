@@ -21,11 +21,11 @@ echo "→ swift build -c release --product Skylark"
 swift build -c release --product Skylark
 
 echo "→ Assembling $APP"
-# Launch Services registers every .app bundle Spotlight indexes, so this build
-# artifact — same bundle ID as the installed copy — would otherwise appear as a
-# second "Skylark" in Launchpad and Spotlight after every build. This marker
-# keeps dist/ out of the index entirely. (install.sh additionally unregisters
-# dist/ for builds made before the marker existed.)
+# Keep dist/ out of the Spotlight index. This build artifact shares the installed
+# copy's bundle ID (com.jjromano.skylark); on macOS 26 the Applications view /
+# Spotlight is what would show it as a second "Skylark", and this marker excludes
+# dist/ from that index. (The install path in install.sh goes further and deletes
+# dist/ outright after copying it to /Applications.) Cheap belt-and-braces.
 mkdir -p "$DIST"
 touch "$DIST/.metadata_never_index"
 
@@ -113,5 +113,19 @@ fi
 
 echo "→ codesign -dv:"
 codesign -dv "$APP" 2>&1 | sed 's/^/    /'
+
+# Keeping this build artifact from surfacing as a second "Skylark" in the
+# Applications view / Spotlight (it shares the installed copy's bundle id,
+# com.jjromano.skylark) is handled by the `.metadata_never_index` marker written
+# at the top: on macOS 26 the app browser is Spotlight-driven, so excluding
+# dist/ from the Spotlight index keeps it out of what the user actually sees.
+#
+# We deliberately do NOT try to `lsregister -u` this bundle here: codesigning it
+# makes `lsd` register it asynchronously a beat later, so an unregister loses that
+# race and can even re-add it — chasing the raw Launch Services database is
+# whack-a-mole and, since that database isn't the user-visible surface, pointless.
+# The install path (install.sh) additionally deletes dist/ after copying it to
+# /Applications, which removes the bundle outright.
+echo "  • dist/ excluded from the Spotlight index (.metadata_never_index)"
 
 echo "✓ Built $APP"
