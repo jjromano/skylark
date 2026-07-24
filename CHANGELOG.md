@@ -6,6 +6,23 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.6 — 2026-07-24
+
+- Fixed cleanup silently keeping raw, unformatted text when the transcript
+  contained spoken numbers — most visibly on the local (on-device) tier, e.g.
+  "reserve an A ten G GPU" stayed "A ten G" instead of "A10G", and "one dollar
+  and ninety nine cents" stayed spelled out instead of "$1.99". The
+  faithfulness guard that protects against a dropped numbers-heavy clause
+  (v0.7.1) counted spoken number "runs" and rejected any output with fewer than
+  the raw — but legitimate number formatting reduces that count: currency
+  collapses two spoken runs into one figure, and a spoken number fused into a
+  word ("A ten G" → "A10G") wasn't recognized as a number at all. The model's
+  correctly-formatted output was thrown away and raw kept. The guard now fires
+  only when every spoken number vanishes (the genuine dropped-amount case),
+  and any digit-bearing token counts as a number. Cloud output was unaffected
+  only because its speech-to-text already emits digits. Added regression tests
+  for both cases.
+
 ## 0.7.5 — 2026-07-24
 
 - Fixed press-and-hold dictation clipping a sentence mid-hold ("captured the

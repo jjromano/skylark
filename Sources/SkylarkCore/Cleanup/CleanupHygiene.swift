@@ -204,16 +204,23 @@ public enum CleanupHygiene {
         return Double(cleanedCount) / Double(rawCount) < floor
     }
 
-    /// True when the cleaned text preserves fewer distinct number *units* than
-    /// the raw — a numbers-heavy clause was dropped. A "number unit" is one
-    /// maximal consecutive run of number tokens (spoken number words or numeric/
-    /// symbol tokens): converting "twenty three" → "23" collapses one run into
-    /// one token = the SAME unit count (a faithful repair, allowed), whereas
-    /// dropping a spoken money amount deletes an entire run = fewer units
-    /// (rejected). Runs at every non-translated tier — it's what lets numbers be
-    /// excluded from the vocabulary/count ratios without opening a hole.
+    /// True when the raw had spoken numbers but the cleaned text has NONE left —
+    /// a numbers-heavy clause was dropped wholesale ("transfer twenty three
+    /// thousand dollars to vendor" → "Transfer to vendor"). Runs at every
+    /// non-translated tier — it's what lets numbers be excluded from the
+    /// vocabulary/count ratios without opening a hole.
+    ///
+    /// Deliberately fires only when the count reaches ZERO, not on any decrease:
+    /// legitimate number FORMATTING routinely reduces the run count without
+    /// losing information — currency collapses multiple spoken runs into one
+    /// figure ("one dollar and ninety nine cents", 2 runs → "$1.99", 1), and a
+    /// spoken number fused into a word ("A ten G" → "A10G") stays a single unit
+    /// (see `isNumberToken`, which counts any digit-bearing token). An earlier
+    /// strict `<` comparison rejected both of those, so the model's formatted
+    /// output was thrown away and raw kept — the local-tier "A ten G"/"$1.99"
+    /// regression.
     static func dropsNumberUnit(from raw: String, to cleaned: String) -> Bool {
-        numberUnitCount(cleaned) < numberUnitCount(raw)
+        numberUnitCount(raw) > 0 && numberUnitCount(cleaned) == 0
     }
 
     /// Count maximal consecutive runs of number tokens as one unit each.
@@ -231,17 +238,17 @@ public enum CleanupHygiene {
         return units
     }
 
-    /// A whitespace-delimited token that reads as (part of) a number: a spoken
-    /// number word (`numberWords`, tolerating attached punctuation like a
-    /// trailing comma), or a numeric/symbol token that carries a digit
-    /// ("23", "$20", "99.9%", "23,456"). A token with non-number letters
-    /// ("vendor", "3rd") is not a number token, so it breaks a run.
+    /// A whitespace-delimited token that reads as (part of) a number: any token
+    /// carrying a digit ("23", "$20", "99.9%", "23,456", and a digit fused into a
+    /// word like "A10G" or "v2" — whose letters would otherwise mask it, the
+    /// "A ten G" → "A10G" case), or a spoken number word (`numberWords`,
+    /// tolerating attached punctuation like a trailing comma). A purely
+    /// alphabetic non-number word ("vendor") is not a number token, so it breaks
+    /// a run.
     private static func isNumberToken(_ token: String) -> Bool {
+        if token.contains(where: { $0.isNumber }) { return true }
         let letters = token.filter { $0.isLetter }
-        if letters.isEmpty {
-            return token.contains { $0.isNumber }
-        }
-        return numberWords.contains(letters)
+        return !letters.isEmpty && numberWords.contains(letters)
     }
 
     /// Length (UTF-16-agnostic Character count) of a verbatim run of surrounding

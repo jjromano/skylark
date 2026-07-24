@@ -133,6 +133,28 @@ struct CleanupHygieneTests {
             transcript: "i ate one banana and two apples"
         ) == "I ate 1 banana and 2 apples.")
     }
+
+    // Regression (v0.7.x): legitimate number formatting that REDUCES the spoken
+    // number-run count was wrongly rejected as a dropped number unit, so raw
+    // (unformatted) text was kept — the local-tier "A ten G" / "one dollar and
+    // ninety nine cents" bug. Formatting must pass at both the cloud (0.34) and
+    // strict local (0.55/0.60) floors.
+    @Test("Currency formatting (2 spoken runs → 1 figure) must not be rejected")
+    func currencyFormattingPasses() throws {
+        #expect(try CleanupHygiene.validate("$1.99", transcript: "one dollar and ninety nine cents") == "$1.99")
+        #expect(try CleanupHygiene.validate(
+            "$1.99", transcript: "one dollar and ninety nine cents",
+            retentionFloor: 0.55, contentLossFloor: 0.60) == "$1.99")
+    }
+
+    @Test("A spoken number fused into a word (A ten G → A10G) must not be rejected")
+    func digitFusedIntoWordPasses() throws {
+        let raw = "i need to reserve an a ten g gpu"
+        let cleaned = "I need to reserve an A10G GPU."
+        #expect(try CleanupHygiene.validate(cleaned, transcript: raw) == cleaned)
+        #expect(try CleanupHygiene.validate(
+            cleaned, transcript: raw, retentionFloor: 0.55, contentLossFloor: 0.60) == cleaned)
+    }
 }
 
 @Suite("CleanupPrompt — transcript fencing")
