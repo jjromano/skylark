@@ -7,40 +7,39 @@ audio or paste path.
 
 ## Machines
 
-- **Build/dev box:** JJ's always-on headless Mac Mini (M4, 24GB, macOS 26).
-  Apple Intelligence is OFF here by choice — Foundation Models reports
-  `.appleIntelligenceNotEnabled`; treat that as a supported runtime state, not
-  an error. No interactive testing here (no mic/keyboard/screen use).
-- **Target machines:** the primary MacBook Air (M3, 16GB) and a second
-  user's MacBook Pro. Latency/memory acceptance (PRD §12) is judged on the M3 Air, not the
-  Mini — Mini benchmarks are advisory.
-- Distribution = build from source on each target machine (planned
-  `Scripts/install.sh`); never assume a binary built on one machine is
-  trusted on another.
+- **Verify the machine before assuming what you can do** — `sysctl -n hw.model`,
+  and check `SystemLanguageModel.default.availability` when it matters. Sessions
+  run on the **Air** (Apple Intelligence ON, Skylark installed), where
+  interactive and on-device-model testing works — don't assume you're on the
+  headless Mini. On the **Mini**, Apple Intelligence is OFF: Foundation Models
+  reports `.appleIntelligenceNotEnabled` — a supported runtime state, not an
+  error — and there's no mic/keyboard/screen to test with.
+- Latency/memory acceptance (PRD §12) is judged on the M3 Air; Mini benchmarks
+  are advisory.
+- Distribution = build from source on each machine (`Scripts/install.sh`); never
+  trust a binary built on one machine on another.
 
-## Build (SwiftPM only — no Xcode on this machine)
+## Build (SwiftPM only — no xcodebuild/.xcodeproj)
 
 ```sh
 swift build                 # debug build
-swift test                  # unit tests
+make test                   # run the unit suite (NOT `swift test` — see below)
 make app                    # release build → dist/Skylark.app (bundled + signed)
 make run                    # build app bundle and launch it
 ```
 
+- **`swift test` does NOT run the tests here.** The CLT-only box has no XCTest
+  host, so `swift test` builds the bundle and exits 0 having executed nothing —
+  a silent no-op that looks green. Use `make test`, which runs the standalone
+  swift-testing runner (`swift run SkylarkTestRunner --testing-library
+  swift-testing`); pass `--filter <name>` to it to run a subset.
 - Toolchain: Swift 6.2.x via Command Line Tools, macOS 26. Do NOT introduce
   anything requiring xcodebuild or an .xcodeproj.
 - Signing uses the local self-signed "Skylark Dev" cert (`Scripts/make-cert.sh`
   creates it once). Never switch to ad-hoc signing — it breaks TCC permission
   persistence across rebuilds.
 
-## Orchestration
-
-This project is built by a Fable orchestrator delegating to subagents defined
-in `.claude/agents/` (`opus-implementer` for latency/system-API work,
-`sonnet-implementer` for views/stores/tests/docs). Specs come from the
-orchestrator; implementers report deviations rather than silently redesigning.
-
-## Versioning (v0.1.0 is complete — bump on every change)
+## Versioning (bump on every behavior/UI change)
 
 Any change that lands on `main` after v0.1.0 and alters app behavior or UI
 MUST, in the same commit or PR:
@@ -73,8 +72,8 @@ changes under an unchanged version.
   v0.7.3 dictionary/history toggles); grep for `UserDefaults` inside
   computed vars before adding a settings control.
 
-## State that does not travel between worktrees
+## State that lives outside the repo
 
-Runtime state lives outside the repo: downloaded CoreML models
-(~/Library/Application Support/Skylark/… once implemented), Keychain entries,
-TCC grants. Nothing to copy between worktrees; all worktrees share them.
+Downloaded models (`~/Library/Application Support/Skylark/…`), Keychain entries,
+and TCC grants live outside the repo and are shared across all worktrees —
+nothing to copy between them.
