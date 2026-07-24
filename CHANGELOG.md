@@ -6,6 +6,22 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.5 — 2026-07-24
+
+- Fixed press-and-hold dictation clipping a sentence mid-hold ("captured the
+  first part, the rest vanished"). When the OS momentarily disabled the event
+  tap (e.g. a main-run-loop hitch during recording), Skylark re-read whether the
+  Fn/globe trigger was still held using only the secondary-Fn device flag —
+  which reads 0 unreliably while the key is physically held — and would
+  synthesize a false key-up, finalizing the utterance while the user was still
+  holding the key. Reconcile now treats a modifier trigger as released only when
+  BOTH the device flag and the physical key state agree it is up, biasing toward
+  "still held" so a flag misread can no longer truncate an active hold. Added
+  hotkey diagnostics (tap-disable reason, reconcile flag/key reads, synthetic
+  key-ups) to the `hotkey` log category. Note: if the macOS "Press 🌐 key to"
+  setting is not "Do Nothing", macOS acts on the Fn key below Skylark's tap and
+  can steal focus/mic mid-hold — set it to Do Nothing for reliable Fn dictation.
+
 ## 0.7.4 — 2026-07-23
 
 - Fixed a regression in 0.7.3's installer: after updating, Skylark did not

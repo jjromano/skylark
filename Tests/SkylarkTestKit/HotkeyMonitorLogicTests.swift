@@ -34,6 +34,34 @@ struct HotkeyMonitorLogicTests {
     }
 }
 
+// A modifier trigger (esp. Fn/globe) must count as still held if EITHER the
+// device flag OR the physical key reports down: the secondary-Fn flag reads 0
+// unreliably in combinedSessionState while the key is physically held, and
+// trusting it alone would synthesize a false triggerUp that clips an in-progress
+// hold. This is the pure policy behind HotkeyMonitor.liveTriggerHeld.
+@Suite("HotkeyMonitor modifier still-held policy")
+struct HotkeyMonitorModifierHeldTests {
+    @Test("Flag up but physical key still down → still held (Fn-flag misread guard)")
+    func keyDownFlagUp() {
+        #expect(HotkeyMonitor.modifierStillHeld(flagDown: false, keyDown: true))
+    }
+
+    @Test("Flag down but key read up → still held")
+    func flagDownKeyUp() {
+        #expect(HotkeyMonitor.modifierStillHeld(flagDown: true, keyDown: false))
+    }
+
+    @Test("Both report down → still held")
+    func bothDown() {
+        #expect(HotkeyMonitor.modifierStillHeld(flagDown: true, keyDown: true))
+    }
+
+    @Test("Both report up → genuinely released")
+    func bothUp() {
+        #expect(!HotkeyMonitor.modifierStillHeld(flagDown: false, keyDown: false))
+    }
+}
+
 // The chord keyDown decision — does the event's modifier state EXACTLY match the
 // bound chord — is the load-bearing bit of HotkeyMonitor.handle for chords. It is
 // factored into a pure static so it's testable without a live CGEventTap.

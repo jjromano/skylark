@@ -248,6 +248,8 @@ public final class HotkeyMonitor: @unchecked Sendable {
         // flips the trigger pressed→released while a recording is live, feed a
         // synthetic triggerUp so the session can't get stuck recording forever.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+            let reason = type == .tapDisabledByTimeout ? "timeout" : "userInput"
+            logger.notice("event tap disabled (\(reason, privacy: .public)); re-enabling + reconciling trigger state")
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
             reconcileTriggerState()
             return Unmanaged.passUnretained(event)
@@ -400,19 +402,11 @@ public final class HotkeyMonitor: @unchecked Sendable {
     /// pressed→released while we were disabled.
     private func reconcileTriggerState() {
         let kb = keyboardBinding
-        let kbNow: Bool
-        if kb.isModifier, let mask = flagMask(for: kb) {
-            kbNow = CGEventSource.flagsState(.combinedSessionState).contains(mask)
-        } else if (kb.isFunctionKey || kb.isChord), let code = kb.keyCode {
-            // Chords reconcile on the physical key state only (same as F-keys);
-            // the modifier state is irrelevant to whether the press is still held.
-            kbNow = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
-        } else {
-            kbNow = keyboardPressed
-        }
+        let kbNow = liveTriggerHeld(for: kb, fallback: keyboardPressed)
         let kbWas = keyboardPressed
         keyboardPressed = kbNow
         if Self.reconcileNeedsSyntheticUp(wasPressed: kbWas, nowPressed: kbNow) {
+            logger.notice("reconcile: synthetic triggerUp for keyboard \(kb.rawValue, privacy: .public) (was held, now reads released)")
             emit(processor.process(.triggerUp, at: ContinuousClock.now))
             return
         }
@@ -430,20 +424,51 @@ public final class HotkeyMonitor: @unchecked Sendable {
         // Command trigger (keyboard only): reconcile the same way and synthesize
         // a command triggerUp if it flipped pressed→released while disabled.
         if let cmd = commandBinding {
-            let cmdNow: Bool
-            if cmd.isModifier, let mask = flagMask(for: cmd) {
-                cmdNow = CGEventSource.flagsState(.combinedSessionState).contains(mask)
-            } else if (cmd.isFunctionKey || cmd.isChord), let code = cmd.keyCode {
-                cmdNow = CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
-            } else {
-                cmdNow = commandPressed
-            }
+            let cmdNow = liveTriggerHeld(for: cmd, fallback: commandPressed)
             let cmdWas = commandPressed
             commandPressed = cmdNow
             if Self.reconcileNeedsSyntheticUp(wasPressed: cmdWas, nowPressed: cmdNow) {
+                logger.notice("reconcile: synthetic triggerUp for command \(cmd.rawValue, privacy: .public) (was held, now reads released)")
                 emitCommand(commandProcessor.process(.triggerUp, at: ContinuousClock.now))
             }
         }
+    }
+
+    /// Whether the bound keyboard trigger is *still physically held*, queried from
+    /// live hardware state after a tap re-enable.
+    ///
+    /// For a MODIFIER trigger the device flag is OR'd with the physical key state:
+    /// the secondary-Fn (globe) flag is unreliable in `combinedSessionState` — it
+    /// frequently reads 0 while the key is physically held — so trusting the flag
+    /// alone lets a misread synthesize a false triggerUp that clips an in-progress
+    /// press-and-hold (the reported "sentence gets cut off mid-hold" bug). Treating
+    /// the key as released only when BOTH the flag and the key report up biases
+    /// toward "still held": a wrongly-missed release merely leaves recording on
+    /// (recoverable by releasing), whereas a wrong release silently truncates the
+    /// user's utterance. Function-keys/chords reconcile on physical key state only
+    /// (as before); anything without a keycode falls back to the sticky flag.
+    private func liveTriggerHeld(for binding: HotkeyBinding, fallback: Bool) -> Bool {
+        if binding.isModifier, let mask = flagMask(for: binding) {
+            let flagDown = CGEventSource.flagsState(.combinedSessionState).contains(mask)
+            let keyDown = binding.keyCode.map {
+                CGEventSource.keyState(.combinedSessionState, key: CGKeyCode($0))
+            } ?? false
+            let held = Self.modifierStillHeld(flagDown: flagDown, keyDown: keyDown)
+            logger.debug("reconcile read \(binding.rawValue, privacy: .public): flag=\(flagDown, privacy: .public) key=\(keyDown, privacy: .public) → held=\(held, privacy: .public)")
+            return held
+        }
+        if (binding.isFunctionKey || binding.isChord), let code = binding.keyCode {
+            return CGEventSource.keyState(.combinedSessionState, key: CGKeyCode(code))
+        }
+        return fallback
+    }
+
+    /// A modifier trigger counts as still held if EITHER the device flag or the
+    /// physical key reports down — the flag/key-reconcile policy that keeps an
+    /// unreliable Fn-flag read from clipping an active hold. Pure so it's unit-
+    /// tested without a live event source.
+    public static func modifierStillHeld(flagDown: Bool, keyDown: Bool) -> Bool {
+        flagDown || keyDown
     }
 
     private func emit(_ event: HotkeyEvent?) {
