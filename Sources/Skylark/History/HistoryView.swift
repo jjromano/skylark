@@ -35,10 +35,17 @@ struct HistoryView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            List(records, selection: $selectedID) { record in
-                HistoryRow(record: record)
+            // A fixed search header ABOVE the list, not `.searchable(.sidebar)`:
+            // that placement floats a translucent field over the scroll area, so
+            // rows slide behind it and read as overlapping. A pinned opaque header
+            // keeps the field and the list in separate, non-overlapping regions.
+            VStack(spacing: 0) {
+                searchField
+                List(records, selection: $selectedID) { record in
+                    HistoryRow(record: record)
+                }
+                .scrollContentBackground(.hidden)
             }
-            .searchable(text: $query, placement: .sidebar, prompt: "Search history")
             .navigationSplitViewColumnWidth(min: 260, ideal: 320)
             .toolbar {
                 ToolbarItem {
@@ -91,6 +98,33 @@ struct HistoryView: View {
         .frame(minWidth: 640, minHeight: 420)
         .task { await loadModeNames() }
         .task(id: query) { await reload() }
+    }
+
+    /// Pinned search field for the sidebar header. A plain field in a filled
+    /// capsule with a leading glyph and a clear button — a fixed region above the
+    /// list, so it never overlaps the scrolling rows.
+    private var searchField: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField("Search history", text: $query)
+                .textFieldStyle(.plain)
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Clear search")
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 6)
     }
 
     private func reload() async {

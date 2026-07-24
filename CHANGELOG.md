@@ -6,6 +6,14 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.8 — 2026-07-24
+
+- Fixed the Full History window's search field overlapping the list. It used
+  `.searchable(.sidebar)`, which floats a translucent field over the sidebar so
+  rows scroll behind it. Replaced it with a pinned search header (with a clear
+  button) above the list, so the field and the rows occupy separate,
+  non-overlapping regions.
+
 ## 0.7.7 — 2026-07-24
 
 Cleanup-quality overhaul, informed by an eval against the real on-device model
