@@ -138,8 +138,16 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
             captureSignpostID = nil
         }
         if let start = captureStart {
-            let wall = start.duration(to: .now)
-            logger.debug("capture wall time: \(wall.seconds, privacy: .public)s, samples=\(count, privacy: .public)")
+            let wall = start.duration(to: .now).seconds
+            // Divergence guard: the sample-derived duration should track wall time.
+            // If far fewer samples arrived than the hold lasted, the input tap
+            // stalled mid-capture (mic seized by another app, coreaudiod hiccup) —
+            // surface it (content-free) so the diagnostics export can show it.
+            if wall > 1.0, duration < wall * 0.6 {
+                logger.notice("capture sample duration \(duration, format: .fixed(precision: 2), privacy: .public)s ≪ wall \(wall, format: .fixed(precision: 2), privacy: .public)s — input tap likely stalled (possible mic interruption)")
+            } else {
+                logger.debug("capture wall time: \(wall, privacy: .public)s, samples=\(count, privacy: .public)")
+            }
             captureStart = nil
         }
         if overflowed.load(ordering: .relaxed) {

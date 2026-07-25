@@ -46,9 +46,14 @@ private actor SpyInjector: TextInjecting {
     private(set) var inserted: [String] = []
     private(set) var replaced: [String] = []
     private let direct: Bool
+    private let replaceShouldFail: Bool
     /// When true, insert reports an AX token so the orchestrator uses the
-    /// replace path; otherwise a paste token.
-    init(direct: Bool = false) { self.direct = direct }
+    /// replace path; otherwise a paste token. `replaceShouldFail` makes the
+    /// in-place replace throw (an app that dropped the AX write).
+    init(direct: Bool = false, replaceShouldFail: Bool = false) {
+        self.direct = direct
+        self.replaceShouldFail = replaceShouldFail
+    }
 
     func insert(_ text: String) async throws -> InsertionToken {
         inserted.append(text)
@@ -58,6 +63,7 @@ private actor SpyInjector: TextInjecting {
 
     func replace(_ token: InsertionToken, with text: String) async throws {
         replaced.append(text)
+        if replaceShouldFail { throw InjectionError.replaceFailed }
     }
 
     func canInsertDirectly() async -> Bool { direct }
@@ -314,6 +320,28 @@ struct DictationOrchestratorCleanupTests {
         await settle()
         await #expect(spy.replaceCount() == 1)
         await #expect(spy.firstReplaced() == "CLEANED")
+    }
+
+    @Test("A failed AX replace keeps raw and surfaces a note (never records clean as applied)")
+    func failedReplaceKeepsRawWithNote() async {
+        let spy = SpyInjector(direct: true, replaceShouldFail: true)
+        let cleaner = SpyCleaner(tier: .local, behaviour: .transform("CLEANED"))
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: cleaner),
+            modeProvider: modes(defaultTier: .local)
+        )
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        await settle() // let the detached cleanup+replace run
+        // Raw was inserted; the replace was attempted but threw → raw stands and
+        // the user is told, instead of silently claiming the clean text applied.
+        await #expect(spy.first() == StubTranscriber.output)
+        await #expect(spy.replaceCount() == 1)
+        let note = await firstNote(orchestrator)
+        #expect(note == "This app doesn't support in-place cleanup — raw text kept")
     }
 
     @Test("Cleaner failure leaves the raw text; no replace")

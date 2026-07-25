@@ -151,8 +151,13 @@ public struct CmdVPasteExecutor: PasteExecutor {
         else {
             return false
         }
+        // Set flags EXPLICITLY on every event so a modifier still physically held
+        // at paste time (e.g. a hotkey key) can't merge in and corrupt the chord
+        // into ⌘⇧V etc. cmdUp clears to no modifiers.
+        cmdDown.flags = .maskCommand
         vDown.flags = .maskCommand
         vUp.flags = .maskCommand
+        cmdUp.flags = []
         cmdDown.post(tap: .cghidEventTap)
         vDown.post(tap: .cghidEventTap)
         vUp.post(tap: .cghidEventTap)
@@ -165,6 +170,10 @@ public enum InjectionError: Error, Sendable {
     /// In-place replacement isn't available for paste-inserted text; the
     /// orchestrator handles paste targets with wait-for-clean instead.
     case replaceUnsupported
+    /// An AX in-place replace didn't land (range no longer matched / the app
+    /// dropped the write) — raw text still stands, so the caller must not record
+    /// the clean text as applied.
+    case replaceFailed
 }
 
 /// AX-first text injection with a clipboard-preserving paste fallback.
@@ -274,10 +283,13 @@ public final class TextInjector: TextInjecting {
         case .paste:
             throw InjectionError.replaceUnsupported
         case let .ax(element):
-            // Any failed precondition aborts silently — the raw text stands.
             // Re-apply the smart-spacing separator so the cleaned text keeps the
-            // leading space the raw insertion had.
-            _ = Self.performAXReplace(element: element, original: token.text, replacement: token.leadingSeparator + text)
+            // leading space the raw insertion had. A false result means the range
+            // no longer matched (focus moved, or the app dropped the AX write) —
+            // THROW so the caller keeps the "raw kept" note instead of recording
+            // the clean text as if it landed (it didn't; raw is still on screen).
+            let landed = Self.performAXReplace(element: element, original: token.text, replacement: token.leadingSeparator + text)
+            if !landed { throw InjectionError.replaceFailed }
         }
     }
 
@@ -596,7 +608,13 @@ public final class TextInjector: TextInjecting {
 
         let before = pasteboard.changeCount
         pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
+        // Mark the transcript transient so clipboard managers (Maccy/Paste/Alfred…)
+        // don't capture it into their history — it's only here to paste and is
+        // restored moments later.
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+        pasteboard.writeObjects([item])
         var target = pasteboard.changeCount
         if target == before { target = before + 1 }
 
@@ -605,8 +623,14 @@ public final class TextInjector: TextInjecting {
         let pasted = await executor.synthesizePaste()
 
         if pasted {
-            try? await Task.sleep(for: restoreGrace)
-            snapshot.restore(to: pasteboard)
+            // Restore the clipboard AFTER the paste, OFF the injection path: the
+            // text is on screen the instant Cmd+V posts, so blocking the return
+            // (and any following "press enter" keystroke) on the restore grace is
+            // pure added latency. Restore in the background.
+            Task { @MainActor in
+                try? await Task.sleep(for: restoreGrace)
+                snapshot.restore(to: pasteboard)
+            }
             return InsertionToken(method: .paste, text: text, pasteUncertain: false)
         } else {
             // Leave the text on the clipboard as the user's fallback (do NOT restore).

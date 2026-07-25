@@ -126,6 +126,14 @@ public final class HotkeyMonitor: @unchecked Sendable {
         } else if !trusted, tapIsBuilt {
             logger.notice("accessibility revoked; tearing down hotkey tap")
             teardownTap()
+        } else if trusted, tapIsBuilt, let tap = eventTap, !CGEvent.tapIsEnabled(tap: tap) {
+            // The tap was silently disabled (sleep/wake, or a stall) WITHOUT a
+            // .tapDisabled callback ever arriving — the hotkey is dead with no
+            // recovery. The 1 s watchdog catches it and re-enables. (Hex polls
+            // tapIsEnabled the same way.)
+            logger.notice("hotkey tap found disabled by watchdog; re-enabling")
+            CGEvent.tapEnable(tap: tap, enable: true)
+            reconcileTriggerState()
         }
     }
 

@@ -6,6 +6,29 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.8.1 — 2026-07-25
+
+Robustness/latency quick wins from a comparison against peer dictation apps
+(Hex, Handy, VoiceInk, OpenWhispr):
+
+- **Fixed a correctness bug:** when an in-place cleanup replace failed (focus
+  moved, or an Electron/Chrome/terminal app dropped the AX write), Skylark kept
+  the raw text on screen but recorded the *cleaned* text in history — history
+  now correctly reflects that raw was kept, and you're told.
+- **Hotkey self-heals:** a 1s watchdog now re-enables the global-hotkey event tap
+  if macOS silently disabled it (sleep/wake or a stall) without a callback —
+  previously the hotkey could die with no recovery.
+- **Lower paste latency:** the clipboard is now restored *after* the paste on a
+  background task instead of blocking for 500ms on the injection path (which also
+  delayed a spoken "press enter").
+- Dictated transcripts are marked transient on the clipboard so clipboard
+  managers don't capture them into their history.
+- Synthesized Cmd+V now sets explicit modifier flags so a stray held key can't
+  corrupt the paste chord.
+- Capture logs a content-free warning when far fewer audio samples arrived than
+  the hold lasted (input tap stalled — a possible mic interruption), visible in
+  the diagnostics export.
+
 ## 0.8.0 — 2026-07-24
 
 - New **Export Diagnostics…** button (Settings → Account → Diagnostics). Saves a
