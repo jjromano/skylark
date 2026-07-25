@@ -10,6 +10,10 @@ public enum OpenRouterError: Error, Sendable {
     case network(any Error)
     case server(status: Int, message: String)
     case decoding
+    /// The model hit its token cap mid-answer (`finish_reason == "length"`) — the
+    /// returned text is truncated, so callers should treat it as a failure (e.g.
+    /// cleanup degrades to local) rather than use a half-answer.
+    case responseTruncated
 }
 
 /// One chat message for `/api/v1/chat/completions`.
@@ -287,6 +291,13 @@ public struct OpenRouterClient: Sendable {
             let content = message["content"] as? String
         else {
             throw OpenRouterError.decoding
+        }
+        // A "length" finish means the generation was cut at the token cap — the
+        // content is a truncated fragment (the reasoning-model "first few words
+        // only" bug). Surface it as an error so cleanup degrades to local instead
+        // of pasting half an answer.
+        if first["finish_reason"] as? String == "length" {
+            throw OpenRouterError.responseTruncated
         }
         return content
     }

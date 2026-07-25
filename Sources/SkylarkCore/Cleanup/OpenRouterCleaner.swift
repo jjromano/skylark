@@ -24,10 +24,15 @@ public struct OpenRouterCleaner: Cleaner {
             ChatMessage(role: .system, content: CleanupPrompt.instructions(context: context)),
             ChatMessage(role: .user, content: CleanupPrompt.userMessage(transcript: transcript)),
         ]
-        // ~2× transcript tokens, estimating 4 chars/token; floor so short
-        // transcripts still get room for punctuation/capitalization fixes.
+        // Budget covers BOTH the cleaned answer AND any reasoning tokens. gpt-oss
+        // models reason before answering, so a stingy cap (the old max(64, …·2) —
+        // just 64 tokens for a short sentence) let the reasoning consume the whole
+        // budget and TRUNCATE the answer to its first few words — the "only the
+        // first 5-7 words survive" bug. This is a CAP, not a target: a
+        // non-reasoning model still stops as soon as it finishes, so the generous
+        // floor costs nothing there while giving reasoning models room to answer.
         let estimatedTokens = max(1, transcript.count / 4)
-        let maxTokens = max(64, estimatedTokens * 2)
+        let maxTokens = max(1024, estimatedTokens * 4)
 
         let output: String
         do {

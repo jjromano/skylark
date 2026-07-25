@@ -6,6 +6,19 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.7.10 — 2026-07-25
+
+- Fixed cloud cleanup dropping most of a sentence — keeping only the first ~5-7
+  words. The cleanup request's token cap was sized for the answer alone
+  (`max(64, …)`), but gpt-oss are reasoning models that spend tokens *thinking*
+  before answering, so the reasoning consumed the budget and the answer was
+  truncated mid-sentence. The cap is now generous enough for reasoning + the full
+  answer (it's a ceiling, not a target, so non-reasoning models still stop
+  early). Also: a response the model cut off at the token limit
+  (`finish_reason: length`) is now rejected and degrades to local cleanup instead
+  of pasting half an answer. This primarily hit cloud reasoning models; raw text
+  was always intact.
+
 ## 0.7.9 — 2026-07-24
 
 - Cleanup no longer silently switches between cloud, local, and no-cleanup. When

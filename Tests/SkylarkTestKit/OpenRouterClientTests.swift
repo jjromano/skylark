@@ -184,6 +184,41 @@ struct OpenRouterClientTests {
         }
     }
 
+    // MARK: - Truncation guard (non-streaming)
+
+    @Test("complete() throws responseTruncated when finish_reason is length")
+    func completeRejectsLengthTruncation() async throws {
+        try await withStubbedClient({ _ in
+            .init(status: 200, headers: ["Content-Type": "application/json"],
+                  body: Data(#"{"choices":[{"finish_reason":"length","message":{"content":"the first few"}}]}"#.utf8))
+        }) { client, _ in
+            await #expect(throws: OpenRouterError.self) {
+                _ = try await client.complete(
+                    messages: [ChatMessage(role: .user, content: "clean this")],
+                    model: "openai/gpt-oss-20b", providerPin: "groq",
+                    stream: false, temperature: 0.1, maxTokens: 64
+                )
+            }
+        }
+    }
+
+    @Test("complete() returns full content when finish_reason is stop")
+    func completeReturnsWhenComplete() async throws {
+        try await withStubbedClient({ _ in
+            .init(status: 200, headers: ["Content-Type": "application/json"],
+                  body: Data(#"{"choices":[{"finish_reason":"stop","message":{"content":"Clean sentence."}}]}"#.utf8))
+        }) { client, _ in
+            let stream = try await client.complete(
+                messages: [ChatMessage(role: .user, content: "clean this")],
+                model: "openai/gpt-oss-20b", providerPin: "groq",
+                stream: false, temperature: 0.1, maxTokens: 1024
+            )
+            var collected = ""
+            for try await chunk in stream { collected += chunk }
+            #expect(collected == "Clean sentence.")
+        }
+    }
+
     // MARK: - Reasoning effort (gpt-oss)
 
     @Test("complete() sends reasoning: {effort: low} for gpt-oss model slugs")
