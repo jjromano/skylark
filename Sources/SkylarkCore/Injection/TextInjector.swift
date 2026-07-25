@@ -190,6 +190,11 @@ public final class TextInjector: TextInjecting {
     private var lastInsertPid: pid_t = 0
     private var lastInsertEndedWithWhitespace = true
 
+    /// The most recent paste's clipboard-restore coordinator, kept alive until it
+    /// restores (it also owns the pasteboard data provider, which the pasteboard
+    /// item only references weakly). Flushed at the start of the next paste.
+    private var pendingRestore: PasteRestoreCoordinator?
+
     public init(executor: PasteExecutor = CmdVPasteExecutor()) {
         self.executor = executor
     }
@@ -593,7 +598,8 @@ public final class TextInjector: TextInjecting {
 
     // MARK: - Paste path (testable choreography)
 
-    /// snapshot → write → poll changeCount → paste → grace → restore.
+    /// snapshot → write promise → poll changeCount → paste → restore when the
+    /// target READS (or the fallback ceiling fires).
     /// Exposed for unit tests with an injected `PasteExecutor` and short delays.
     @MainActor
     func performClipboardPaste(
@@ -602,19 +608,31 @@ public final class TextInjector: TextInjecting {
         executor: PasteExecutor,
         pollInterval: Duration = .milliseconds(5),
         pollCap: Duration = .milliseconds(150),
-        restoreGrace: Duration = .milliseconds(500)
+        readGrace: Duration = .milliseconds(100),
+        fallbackRestore: Duration = .milliseconds(500)
     ) async -> InsertionToken {
+        // A previous paste's restore may still be pending (two dictations inside
+        // the fallback window). Flush it BEFORE snapshotting, or this snapshot
+        // captures the PREVIOUS transcript as "the user's clipboard" and hands it
+        // back at the end.
+        pendingRestore?.supersede()
+        pendingRestore = nil
+
         let snapshot = PasteboardSnapshot(pasteboard: pasteboard)
+        let restore = PasteRestoreCoordinator(
+            snapshot: snapshot,
+            pasteboard: pasteboard,
+            readGrace: readGrace,
+            fallback: fallbackRestore,
+            logger: logger
+        )
 
         let before = pasteboard.changeCount
         pasteboard.clearContents()
-        // Mark the transcript transient so clipboard managers (Maccy/Paste/Alfred…)
-        // don't capture it into their history — it's only here to paste and is
-        // restored moments later.
-        let item = NSPasteboardItem()
-        item.setString(text, forType: .string)
-        item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
-        pasteboard.writeObjects([item])
+        // The transcript is a PROMISE (lazy data provider) plus an eager transient
+        // marker so clipboard managers (Maccy/Paste/Alfred…) can skip it without
+        // reading — a read is our "the target pasted" signal.
+        pasteboard.writeObjects([restore.makeItem(text: text)])
         var target = pasteboard.changeCount
         if target == before { target = before + 1 }
 
@@ -623,18 +641,23 @@ public final class TextInjector: TextInjecting {
         let pasted = await executor.synthesizePaste()
 
         if pasted {
-            // Restore the clipboard AFTER the paste, OFF the injection path: the
-            // text is on screen the instant Cmd+V posts, so blocking the return
-            // (and any following "press enter" keystroke) on the restore grace is
-            // pure added latency. Restore in the background.
-            Task { @MainActor in
-                try? await Task.sleep(for: restoreGrace)
-                snapshot.restore(to: pasteboard)
-            }
+            // Arm AFTER the keystroke: only reads that follow Cmd-V are the target
+            // consuming our text. Everything from here is off the injection path —
+            // the text is on screen the instant Cmd-V posts.
+            restore.arm()
+            pendingRestore = restore
             return InsertionToken(method: .paste, text: text, pasteUncertain: false)
         } else {
-            // Leave the text on the clipboard as the user's fallback (do NOT restore).
+            // Leave the text on the clipboard as the user's fallback (do NOT
+            // restore) — but as REAL data, not a promise: nothing keeps the
+            // provider alive for a manual Cmd-V minutes later, and a broken
+            // promise pastes nothing.
             logger.notice("paste could not be synthesized; text left on clipboard as fallback")
+            pasteboard.clearContents()
+            let item = NSPasteboardItem()
+            item.setString(text, forType: .string)
+            item.setData(Data(), forType: PasteRestoreCoordinator.transientType)
+            pasteboard.writeObjects([item])
             return InsertionToken(method: .paste, text: text, pasteUncertain: true)
         }
     }

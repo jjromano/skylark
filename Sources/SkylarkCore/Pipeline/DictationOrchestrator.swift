@@ -78,6 +78,12 @@ public actor DictationOrchestrator {
     private let modeProvider: any ModeProviding
     private let dictionary: any DictionaryProviding
     private let frontmostBundleID: @Sendable () -> String?
+    /// Captured-target focus guard (WS3). nil = not wired (tests/headless) and
+    /// injection proceeds exactly as before, with no extra reads.
+    private let focusGuard: CapturedTargetGuard?
+    /// The app that was frontmost at record start (fn-down) — the app the user
+    /// dictated INTO. The guard compares it against frontmost before injecting.
+    private var capturedTargetBundleID: String?
     /// Current snippets (loaded per session in `buildSetup`, off the paste
     /// path). Nil = snippets feature not wired (tests/headless).
     private let snippetProvider: (@Sendable () async -> [SnippetRecord])?
@@ -209,6 +215,7 @@ public actor DictationOrchestrator {
         modeProvider: any ModeProviding = InMemoryModeProvider(),
         dictionary: any DictionaryProviding = InMemoryDictionaryProvider(),
         frontmostBundleID: @escaping @Sendable () -> String? = { nil },
+        focusGuard: CapturedTargetGuard? = nil,
         snippets: (@Sendable () async -> [SnippetRecord])? = nil,
         fieldContextReader: (any FieldContextReading)? = nil,
         commandRunner: (any CommandRunning)? = nil,
@@ -229,6 +236,7 @@ public actor DictationOrchestrator {
         self.modeProvider = modeProvider
         self.dictionary = dictionary
         self.frontmostBundleID = frontmostBundleID
+        self.focusGuard = focusGuard
         self.snippetProvider = snippets
         self.fieldContextReader = fieldContextReader
         self.historyRecord = historyRecord
@@ -410,6 +418,7 @@ public actor DictationOrchestrator {
         // Capture the target app AT dictation start (fn-down) and resolve the
         // mode + dictionary off the paste path while the user speaks.
         let bundleID = frontmostBundleID()
+        capturedTargetBundleID = bundleID
         sessionSetup = nil
         setupTask?.cancel()
         setupTask = Task { [modeProvider, dictionary, snippetProvider, cleanupIntensity, translateTo] in
@@ -717,7 +726,19 @@ public actor DictationOrchestrator {
         var injectMethod = "none"
         var cleanupEngineRan = "none"
 
-        if let snippetReplacement {
+        // Captured-target focus guard (WS3): don't type into the wrong app. One
+        // frontmost read; only a focus change pays for re-activation.
+        let focusLost = await capturedTargetLost()
+
+        if focusLost {
+            // Abort every write (text AND the "press enter" Return — a stray
+            // Return in the wrong app can send a message). The transcript is not
+            // lost: the history row below is still emitted, exactly like the
+            // replace-failure path keeps its text and reports the degrade.
+            injectMethod = "aborted-focus"
+            cleanupEngineRan = "skipped"
+            noteContinuation.yield("Focus moved to another app — text not pasted, kept in History")
+        } else if let snippetReplacement {
             syncCleanText = snippetReplacement
             syncCleanupEngine = "snippet"
             cleanupEngineRan = "snippet"
@@ -794,7 +815,7 @@ public actor DictationOrchestrator {
             }
         }
 
-        if pressEnter {
+        if pressEnter, !focusLost {
             await injector.pressReturn()
         }
 
@@ -1096,6 +1117,14 @@ public actor DictationOrchestrator {
             return
         }
 
+        // Same captured-target guard as dictation: a command rewrites the text of
+        // the app the user spoke to, so refuse (nothing destructive) rather than
+        // rewrite a selection in whatever app grabbed focus meanwhile.
+        if await capturedTargetLost() {
+            finishCommandIdle(note: "Focus moved to another app — command not applied")
+            return
+        }
+
         // Read the selection BEFORE the LLM call so any failure leaves it as-is.
         // nil = no readable selection → generate text at the cursor.
         let selection = await injector.readSelection()
@@ -1196,6 +1225,38 @@ public actor DictationOrchestrator {
         }
     }
 
+    // MARK: - Captured-target focus guard
+
+    /// The one check the injection boundary makes before writing anything: is the
+    /// app the user dictated INTO still frontmost? If focus moved, re-activate it
+    /// (bounded, ~300 ms) and only inject once it is verifiably back.
+    ///
+    /// Returns true when injection must be ABORTED. Costs a single NSWorkspace
+    /// frontmost read on the happy path (no AX, no activation, no sleeps), so the
+    /// fn-up→paste path is unchanged for the overwhelmingly common case. Nil guard
+    /// (tests/headless) → never aborts.
+    ///
+    /// Covers both injection paths: it runs before the AX-vs-paste decision, so an
+    /// AX-verified in-place insert and a synthesized paste are equally gated. The
+    /// *detached* cleanup replace needs no guard — `performAXReplace` re-verifies
+    /// that the token's element is still focused and no-ops otherwise.
+    private func capturedTargetLost() async -> Bool {
+        guard let focusGuard else { return false }
+        switch await focusGuard.decide(captured: capturedTargetBundleID) {
+        case .proceed:
+            return false
+        case .reactivated:
+            logger.notice("focus guard: captured target re-activated before injection")
+            return false
+        case let .abort(current):
+            logger.notice("""
+                focus guard: injection aborted — frontmost=\(current ?? "nil", privacy: .public) \
+                captured=\(self.capturedTargetBundleID ?? "nil", privacy: .public)
+                """)
+            return true
+        }
+    }
+
     /// AX-verified in-place insert attempt (nil = nothing inserted, caller
     /// should wait-for-clean). Failures degrade to nil, never wedge.
     private func insertDirectRaw(_ text: String) async -> InsertionToken? {
@@ -1232,6 +1293,7 @@ public actor DictationOrchestrator {
         fieldContextTask?.cancel()
         fieldContextTask = nil
         capturedFieldContext = nil
+        capturedTargetBundleID = nil
         sessionInterruption = nil
         _ = capture.stop() // discard audio
         phase = .idle

@@ -6,6 +6,27 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.12.0 — 2026-07-25
+
+**Injection correctness: your clipboard back sooner, your text never in the
+wrong app.**
+
+- **Read-signaled clipboard restore:** after a synthesized paste, your
+  original clipboard is restored the moment the target app actually reads
+  the transcript (plus a 100 ms grace for apps that read twice), instead of
+  on a blind 500 ms timer. Fast apps get your clipboard back in tens of
+  milliseconds; slow apps can no longer race the restore and paste your old
+  clipboard by mistake. The 500 ms timer survives only as a ceiling for
+  targets that never read. Transcripts stay marked transient/concealed for
+  clipboard managers.
+- **Focus guard:** the transcript belongs to the app that was frontmost when
+  you started dictating. If focus moved by paste time (Cmd-Tab, a
+  notification, a focus steal), Skylark re-activates that app and verifies
+  it's frontmost before pasting — and if it can't, it aborts the paste
+  (including any press-enter Return) with a note instead of typing into the
+  wrong window. The text is kept in History. Voice commands get the same
+  guard. No change and no added cost when focus never moved.
+
 ## 0.11.0 — 2026-07-25
 
 **Local cleanup, upgraded: optional on-device Qwen models via llama.cpp.**

@@ -939,6 +939,16 @@ final class AppController {
             modeProvider: modeProvider,
             dictionary: dictionaryProvider,
             frontmostBundleID: frontmost.snapshot,
+            // Captured-target focus guard: the transcript belongs to the app that
+            // was frontmost at fn-down. If focus moved by paste time, bring that
+            // app back (bounded) or abort rather than type into the wrong window.
+            focusGuard: CapturedTargetGuard(
+                // Live read, not the monitor's cached snapshot: the guard has to
+                // verify a just-requested activation, and the cache only updates
+                // when the didActivateApplication notification is delivered.
+                frontmost: CapturedTargetGuard.liveFrontmost,
+                activate: CapturedTargetGuard.liveActivator
+            ),
             snippets: snippetsProvider,
             fieldContextReader: AXFieldContextReader(),
             commandRunner: commandRunner,

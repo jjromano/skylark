@@ -108,10 +108,19 @@ latency bar is proven.
    trust the AX path when the text matches (`axInsertLanded`). Unconfirmed
    inserts fall through to the paste path below.
 2. On any AX failure **or unconfirmed insert**: full multi-item `NSPasteboard` snapshot (all types) →
-   write text → poll `changeCount` until committed (5 ms poll, 150 ms cap) →
+   write text as a **lazy `NSPasteboardItem` promise** (transient marker written
+   eagerly) → poll `changeCount` until committed (5 ms poll, 150 ms cap) →
    synthesized Cmd-V (explicit Cmd down, layout-resolved V, Cmd up, posted to
-   `.cghidEventTap`) → 500 ms grace → restore snapshot. If the paste itself
-   fails, leave the text on the clipboard as the user's fallback.
+   `.cghidEventTap`) → **restore when the target actually READS** the promise
+   (+100 ms grace for apps that read twice), with the old 500 ms timer kept only
+   as a ceiling for targets that never read (`PasteRestoreDecider`). If the paste
+   itself fails, the text is written eagerly (no dangling promise) and left on the
+   clipboard as the user's fallback.
+3. Before either path runs, the **captured-target focus guard** compares the
+   frontmost app (one `NSWorkspace` read) against the app captured at record
+   start: same app → inject; different → re-activate and verify (bounded
+   ~300 ms) → inject; unrecoverable → abort with a note, transcript still
+   recorded to History (`CapturedTargetGuard`).
 
 **In-place replacement strategy** (Tier 1/2 cleanup): when insertion went via
 AX we can rewrite the inserted range precisely. When insertion used the paste
