@@ -87,4 +87,14 @@ public struct AudioClip: Sendable, Equatable {
         guard count >= 0, count < samples.count else { return self }
         return replacingSamples(Array(samples[0..<count]))
     }
+
+    /// Copy keeping only `range` (no-op when `range` covers the whole clip or
+    /// falls outside it). The head-and-tail counterpart of
+    /// `trimmed(toSampleCount:)`, used by the VAD trim (WS2); one slice copy.
+    public func trimmed(toSampleRange range: Range<Int>) -> AudioClip {
+        let lower = max(0, range.lowerBound)
+        let upper = min(samples.count, range.upperBound)
+        guard lower < upper, lower > 0 || upper < samples.count else { return self }
+        return replacingSamples(Array(samples[lower..<upper]))
+    }
 }

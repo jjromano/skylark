@@ -15,6 +15,22 @@ public protocol SpeechEndpointer: Sendable {
     func beginSession() async
     /// Feed raw 16 kHz frames; returns true once end-of-speech is detected.
     func feed(_ frames: [Float]) async -> Bool
+
+    /// Batch-scan an ALREADY-CAPTURED 16 kHz clip for unpadded speech regions, so
+    /// the finalize path can trim non-speech head/tail (WS2). Independent of the
+    /// streaming session state above — safe to call between sessions.
+    ///
+    /// MUST return nil (never load a model, never block) when the VAD isn't
+    /// already resident: this runs on the fn-up→paste path, where a cold CoreML
+    /// load would be a latency disaster. nil = "no opinion", and the caller leaves
+    /// the clip exactly as captured.
+    func scanSpeechRegions(_ samples: [Float]) async -> [SpeechRegion]?
+}
+
+extension SpeechEndpointer {
+    /// Endpointers that only do streaming (test doubles, future backends) opt out
+    /// of clip trimming for free.
+    public func scanSpeechRegions(_ samples: [Float]) async -> [SpeechRegion]? { nil }
 }
 
 /// FluidAudio Silero-VAD endpointer.
@@ -92,5 +108,34 @@ public actor FluidAudioVAD: SpeechEndpointer {
         }
         streamState = state
         return ended
+    }
+
+    /// Batch scan for the finalize-path trim (WS2). Reuses the SAME warm
+    /// `VadManager` the hands-free endpointer uses — if it isn't loaded yet we
+    /// return nil rather than pay a CoreML load on the fn-up→paste path.
+    ///
+    /// Padding is deliberately zeroed here: FluidAudio's segmenter would happily
+    /// pad the regions itself, but `VadClipTrimmer` owns the prefill/hangover rule
+    /// (one rule, unit-tested, shared floor with the WS1 dead-tail trim), so the
+    /// scan reports raw speech bounds only. The duration knobs whisper mode tunes
+    /// (`minSpeechDuration`, `minSilenceDuration`) still apply.
+    public func scanSpeechRegions(_ samples: [Float]) async -> [SpeechRegion]? {
+        guard let vad, !samples.isEmpty else { return nil }
+        var config = segmentationConfig
+        config.speechPadding = 0
+        do {
+            let segments = try await vad.segmentSpeech(samples, config: config)
+            let rate = VadManager.sampleRate
+            return segments.map {
+                SpeechRegion(
+                    startSample: $0.startSample(sampleRate: rate),
+                    endSample: $0.endSample(sampleRate: rate)
+                )
+            }
+        } catch {
+            // No opinion beats a wrong one: the caller leaves the clip untouched.
+            logger.debug("VAD clip scan failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
     }
 }

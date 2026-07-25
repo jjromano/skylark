@@ -155,6 +155,12 @@ public actor DictationOrchestrator {
     /// Dictation attempted while false is discarded with a status note (no hang).
     private var transcriberReady = true
 
+    /// Whether the finalize path VAD-trims the quiet head/tail of a clip (WS2).
+    /// Default ON — the scan is measured at ≈3.5 ms for a 5 s clip and only runs on
+    /// clips ≥ 2 s with a resident model (see `vadTrim`). No Settings control;
+    /// `VadClipTrimmer.enabledKey` is a diagnostics kill switch.
+    private var vadTrimEnabled = VadClipTrimmer.persistedEnabled()
+
     /// True while the active session is hands-free (double-tap-lock): VAD, not a
     /// key release, ends it.
     private var isHandsFree = false
@@ -278,6 +284,12 @@ public actor DictationOrchestrator {
     /// pushed by `applyWhisperTuning` alongside the engines' clip-skip floors.
     public func setSilencePeakThreshold(_ threshold: Float) {
         silencePeakThreshold = threshold
+    }
+
+    /// Enable/disable the finalize-path VAD trim (WS2). Exists for tests and the
+    /// diagnostics kill switch; there is no Settings control (see `vadTrimEnabled`).
+    public func setVadTrimEnabled(_ enabled: Bool) {
+        vadTrimEnabled = enabled
     }
 
     /// Toggle Whisper Mode post-capture clip normalization. Pushed by
@@ -566,7 +578,7 @@ public actor DictationOrchestrator {
         // THE finalize decision (WS1): every interruption signal converges here
         // and every trim of the captured audio happens here, for both push-to-talk
         // and hands-free.
-        let finalization = resolveFinalization(clip)
+        let finalization = await resolveFinalization(clip)
         clip = finalization.clip
 
         guard !clip.isEmpty else {
@@ -866,7 +878,7 @@ public actor DictationOrchestrator {
         var trimmed: TimeInterval
     }
 
-    /// The ONE place a finalized clip is decided. Four independent signals
+    /// The ONE place a finalized clip is decided. Five independent signals
     /// converge here:
     ///
     /// 1. `sessionInterruption` — hotkey tap stalled mid-hold, or capture failed
@@ -875,18 +887,20 @@ public actor DictationOrchestrator {
     ///    (restart preserved the recording, so the marker is all that's left).
     /// 3. `clip.tapStalled` — wall-clock ≫ sample duration: the tap stopped
     ///    delivering with NO silent tail to detect (samples just stop).
-    /// 4. `TrailingSilenceAnalyzer` — "energy early, long dead tail": the
-    ///    speech-then-silence clip this workstream exists for. Also the only
-    ///    signal that trims.
+    /// 4. `TrailingSilenceAnalyzer` (WS1) — "energy early, long dead tail": the
+    ///    speech-then-silence clip an interruption leaves behind. Trims the DEAD
+    ///    tail, and is the only signal that also raises the interruption note.
+    /// 5. `VadClipTrimmer` over a Silero scan (WS2) — trims the QUIET head and
+    ///    tail a human leaves around an utterance. See `vadTrim`.
     ///
-    /// Pure decision + one O(n) prefix copy; no I/O, no locks, nothing that can
-    /// block the fn-up→paste path. On a clean clip the analyzer finds nothing to
-    /// trim and this returns the input unchanged.
+    /// Signals 1–4 are a pure decision + one O(n) prefix copy: no I/O, no locks,
+    /// nothing that can block the fn-up→paste path. On a clean clip the analyzer
+    /// finds nothing to trim and they return the input unchanged.
     ///
-    /// WS2 SEAM: VAD-based trimming plugs in immediately after the trailing-tail
-    /// trim below — consume `working`, return a shorter clip, and add the trimmed
-    /// amount to `trimmed`. Nothing else in the finalize path changes.
-    private func resolveFinalization(_ clip: AudioClip) -> Finalization {
+    /// Signal 5 is the one step here that isn't pure, so it is gated and bounded
+    /// (short clips and a non-resident model skip it outright, before any await)
+    /// and it may only ever shrink pauses, never veto an utterance.
+    private func resolveFinalization(_ clip: AudioClip) async -> Finalization {
         var interrupted = false
         var reasons: [String] = []
 
@@ -918,6 +932,16 @@ public actor DictationOrchestrator {
             }
         }
 
+        // WS2: VAD trim of the quiet head/tail, composed on top of the dead-tail
+        // trim above (which already handled the digital-silence case, so the VAD
+        // never sees a stolen mic's zeros).
+        let vad = await vadTrim(working)
+        if vad.trimmed > 0 {
+            working = vad.clip
+            trimmed += vad.trimmed
+            reasons.append("vad")
+        }
+
         // Content-free: reasons, durations and trimmed length only.
         if interrupted || trimmed > 0 {
             logger.notice("""
@@ -929,6 +953,72 @@ public actor DictationOrchestrator {
                 """)
         }
         return Finalization(clip: working, interrupted: interrupted, trimmed: trimmed)
+    }
+
+    /// VAD trim of a finalized clip (WS2), for both push-to-talk and hands-free.
+    ///
+    /// Why this is safe on the fn-up→paste path:
+    /// - **Bounded work.** Silero runs on 4096-sample (256 ms) chunks, so the scan
+    ///   is ~4 CoreML inferences per second of audio and scales linearly. Measured
+    ///   on the M3 Air (`VadClipTrimTests.liveScanLatency`): **3.5 ms for a 5 s
+    ///   clip, 8.3 ms for 11.4 s** (≈0.73 ms per second of audio). The same 11.4 s
+    ///   real-speech clip lost 1.60 s of head and 1.72 s of tail — 29 % less audio
+    ///   for STT to decode. It pays for itself by an order of magnitude; that
+    ///   measurement is why the default is ON.
+    /// - **Never a cold load.** `available()` reports whether the model is already
+    ///   resident and never loads one. Not resident (VAD download pending, load
+    ///   failed, no endpointer wired) ⇒ skip, don't wait.
+    /// - **Short clips skip entirely**, before any await: under 2 s there is
+    ///   nothing worth cutting, and that's the latency-sensitive quick utterance.
+    /// - **A failure is a no-op** — `scanSpeechRegions` returns nil, and nil means
+    ///   "leave the clip as captured".
+    ///
+    /// Returns the (possibly identical) clip plus how much was removed.
+    private func vadTrim(_ clip: AudioClip) async -> (clip: AudioClip, trimmed: TimeInterval) {
+        let configuration = vadTrimConfiguration
+        guard vadTrimEnabled,
+              let endpointer,
+              VadClipTrimmer.isWorthScanning(
+                  durationSeconds: clip.duration, configuration: configuration
+              ),
+              await endpointer.available()
+        else { return (clip, 0) }
+
+        let started = ContinuousClock.now
+        let state = signposter.beginInterval("vad_trim")
+        let regions = await endpointer.scanSpeechRegions(clip.samples)
+        signposter.endInterval("vad_trim", state)
+        guard let regions else { return (clip, 0) }
+
+        let verdict = VadClipTrimmer.decide(
+            regions: regions,
+            sampleCount: clip.samples.count,
+            sampleRate: clip.sampleRate,
+            configuration: configuration
+        )
+        let scanMs = started.duration(to: .now).milliseconds
+        // Content-free: how long the scan took and how much air it removed. Logged
+        // for every scan (not just trims) so the paste-path cost stays auditable in
+        // the diagnostics export.
+        logger.info("""
+            vad trim — scan-ms: \(scanMs, format: .fixed(precision: 1), privacy: .public), \
+            regions: \(regions.count, privacy: .public), \
+            head-ms: \(Int((verdict.headTrimmed * 1000).rounded()), privacy: .public), \
+            tail-ms: \(Int((verdict.tailTrimmed * 1000).rounded()), privacy: .public)
+            """)
+
+        guard let keep = verdict.keepRange else { return (clip, 0) }
+        let trimmedClip = clip.trimmed(toSampleRange: keep)
+        return (trimmedClip, max(0, clip.duration - trimmedClip.duration))
+    }
+
+    /// VAD-trim configuration for the active mode, with both pads floored at the
+    /// current VAD speech padding — the same floor the dead-tail trim uses, so the
+    /// two never disagree about how much air to keep.
+    private var vadTrimConfiguration: VadClipTrimmer.Configuration {
+        VadClipTrimmer.Configuration.default.withPaddingFloor(
+            WhisperModeTuning.forWhisperMode(whisperNormalizationEnabled).vadSpeechPadding
+        )
     }
 
     /// Dead-tail configuration for the active mode. The keep-padding floor is the
@@ -956,7 +1046,7 @@ public actor DictationOrchestrator {
 
         // Same single finalize decision as dictation (a stolen mic truncates a
         // spoken command just as badly), then the command pipeline proceeds.
-        let finalization = resolveFinalization(capture.stop())
+        let finalization = await resolveFinalization(capture.stop())
         let clip = finalization.clip
         if finalization.interrupted { noteContinuation.yield(Self.interruptedNote) }
         phase = .transcribing

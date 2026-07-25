@@ -6,6 +6,19 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.10.0 — 2026-07-25
+
+- **VAD trimming of finalized clips:** the already-resident Silero VAD now
+  trims the quiet head and tail off every finalized recording (push-to-talk
+  and hands-free) before transcription — less audio to decode means faster
+  results, and Whisper models hallucinate less on leading/trailing silence.
+  Measured cost ≈3.5 ms for a 5 s clip on the M3 Air; clips under 2 s are
+  never scanned, the trim is skipped entirely if the VAD model isn't already
+  loaded, and it can only ever shrink pauses — a clip VAD thinks is all
+  silence is left untouched for the normal no-speech handling. Diagnostics
+  kill switch: `defaults write com.jjromano.skylark vadClipTrimEnabled -bool
+  false`.
+
 ## 0.9.0 — 2026-07-25
 
 **Interruption-proof dictation.** When something steals the mic or input path
