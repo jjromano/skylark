@@ -6,6 +6,24 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.8.0 — 2026-07-24
+
+- New **Export Diagnostics…** button (Settings → Account → Diagnostics). Saves a
+  single plain-text file — app version and build, machine/macOS/Apple
+  Intelligence status, your current settings, a metadata table of recent
+  dictations (per-dictation timestamps, app, engine, clip duration, raw/clean
+  **word counts**, cleanup engine, and latency), and the last ~2 hours of
+  content-free app logs — so you can hand it to a developer to debug a problem on
+  a machine where you can't develop. **No audio and no transcript text are ever
+  included** — only counts and timings. The report also flags likely
+  cloud-cleanup truncation (clean words < half the raw words) and likely
+  mic/silent-tail clips (very few words over a long recording).
+- Added richer, content-free diagnostic logging: a per-dictation summary line
+  (engine, clip duration, cleanup tier, the cleanup engine that actually ran,
+  how the text was injected, and total latency) plus explicit lines when a cloud
+  cleanup response is truncated or a cloud→local / timeout→raw degrade happens —
+  all of which now surface in the exported diagnostics file.
+
 ## 0.7.10 — 2026-07-25
 
 - Fixed cloud cleanup dropping most of a sentence — keeping only the first ~5-7

@@ -539,6 +539,62 @@ final class AppController {
         }
     }
 
+    // MARK: - Diagnostics export (Settings → Account)
+
+    /// Assemble a single hand-off diagnostics file — app version, settings,
+    /// recent-dictation METADATA (counts/timings, never transcript text), and
+    /// content-free log lines — and prompt the user to save it. All the gathering
+    /// (OSLogStore + history reads) runs off the main actor; only the save panel
+    /// and note posting are main-actor. Off any latency path (a Settings button).
+    func exportDiagnostics() {
+        let settings = diagnosticsSettingsSnapshot()
+        let version = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "—"
+        let info = buildInfo
+        let store = historyStore
+        Task { [weak self] in
+            let report = await DiagnosticsExporter.buildReport(
+                appVersion: version, buildInfo: info, settings: settings, historyStore: store
+            )
+            DiagnosticsExporter.save(report: report) { note in self?.showNote(note) }
+        }
+    }
+
+    /// Snapshot the user's current, non-secret configuration for the report.
+    /// Reads only in-memory settings state (no keychain, no file paths).
+    private func diagnosticsSettingsSnapshot() -> DiagnosticsReport.Settings {
+        DiagnosticsReport.Settings(
+            sttEngine: Self.sttEngineLabel(modelSelection.sttChoice),
+            cleanupOverride: cleanupOverride,
+            cleanupModelSlug: modelSelection.cleanupSlug,
+            cleanupIntensity: cleanupIntensity.rawValue,
+            cleanupTimeoutSeconds: cleanupTimeoutSeconds,
+            whisperModeOn: whisperModeOn,
+            hotkeyKeyboard: hotkeyKeyboard.displayName,
+            hotkeyMouse: hotkeyMouse?.displayName,
+            hotkeyCommand: hotkeyCommand?.displayName,
+            contextAwareCleanup: contextAwareCleanupEnabled,
+            translationEnabled: translateEnabled,
+            translationLanguage: translateTargetLanguage,
+            audioRetentionEnabled: audioRetentionEnabled,
+            audioRetentionDays: audioRetentionDays,
+            historyRetentionDays: retentionDays,
+            pressEnterEnabled: pressEnterEnabled,
+            livePreviewEnabled: livePreviewEnabled,
+            pauseMediaEnabled: pauseMediaEnabled,
+            deepVocabEnabled: deepVocabEnabled,
+            inputDeviceSelected: selectedDeviceUID?.isEmpty == false
+        )
+    }
+
+    private static func sttEngineLabel(_ choice: STTChoice) -> String {
+        switch choice {
+        case .localParakeet: return "Parakeet (local)"
+        case .localWhisper: return "Whisper (local)"
+        case .localApple: return "Apple Speech (local)"
+        case .cloud(let slug): return "Cloud: \(slug)"
+        }
+    }
+
     /// Opens Terminal running `git pull --ff-only && Scripts/install.sh` from
     /// the repo this build was made from.
     func runUpdate() {

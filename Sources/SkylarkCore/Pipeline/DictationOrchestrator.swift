@@ -659,20 +659,29 @@ public actor DictationOrchestrator {
         // watched — a user edit there isn't a dictation correction.
         var settledToken: InsertionToken?
         var settledFinalText: String?
+        // Diagnostics summary (content-free): how the text landed and which
+        // cleanup engine actually ran. "detached" = the AX in-place path where
+        // cleanup runs after the paste-measurement (its own log line lands when
+        // it resolves); "none" = nothing inserted (bare "press enter").
+        var injectMethod = "none"
+        var cleanupEngineRan = "none"
 
         if let snippetReplacement {
             syncCleanText = snippetReplacement
             syncCleanupEngine = "snippet"
-            await insertRaw(snippetReplacement)
+            cleanupEngineRan = "snippet"
+            if let token = await insertRaw(snippetReplacement) { injectMethod = Self.methodString(token) }
         } else if rawText.isEmpty {
             // The whole utterance was the "press enter" command — nothing to
             // insert; the Return below is the entire action.
         } else if effectiveTier == .raw {
             // Tier 0: raw stands, no cleanup stage.
             syncCleanupEngine = "raw"
+            cleanupEngineRan = "raw"
             if let token = await insertRaw(rawText) {
                 settledToken = token
                 settledFinalText = token.text
+                injectMethod = Self.methodString(token)
             }
         } else if pressEnter {
             // Return must land after the FINAL text: the detached AX replace
@@ -684,10 +693,12 @@ public actor DictationOrchestrator {
                 syncCleanupEngine = outcome.engine
                 if outcome.text != rawText { syncCleanText = outcome.text }
             }
+            cleanupEngineRan = outcome?.engine ?? "raw"
             let final = outcome?.text ?? rawText
             if let token = await insertRaw(final) {
                 settledToken = token
                 settledFinalText = token.text
+                injectMethod = Self.methodString(token)
             }
         } else if let token = await insertDirectRaw(rawText) {
             // The AX write landed VERIFIED — raw is on screen (latency bar);
@@ -703,6 +714,8 @@ public actor DictationOrchestrator {
             // nil unless the feature is on and this was a Parakeet utterance.
             let rescoreSamples = rescoreTimings != nil ? clip.samples : []
             let tier = effectiveTier
+            injectMethod = Self.methodString(token)
+            cleanupEngineRan = "detached"
             Task { [weak self] in
                 await self?.runCleanupAndReplace(
                     token: token, rawText: rawText, cleaner: cleaner, tier: tier,
@@ -721,10 +734,12 @@ public actor DictationOrchestrator {
                 syncCleanupEngine = outcome.engine
                 if outcome.text != rawText { syncCleanText = outcome.text }
             }
+            cleanupEngineRan = outcome?.engine ?? "raw"
             let final = outcome?.text ?? rawText
             if let token = await insertRaw(final) {
                 settledToken = token
                 settledFinalText = token.text
+                injectMethod = Self.methodString(token)
             }
         }
 
@@ -739,6 +754,18 @@ public actor DictationOrchestrator {
             inject: afterTranscribe.duration(to: afterInject),
             total: t0.duration(to: afterInject)
         )
+
+        // Content-free per-dictation summary for diagnostics export: which
+        // engine/tier ran, how the text landed, and total latency. Never any
+        // transcript text — only ids, counts, and the resolved routing.
+        logger.notice("""
+            dictation summary — stt: \(Self.engineString(self.transcriber.lastRunID), privacy: .public), \
+            clip-ms: \(Int((clip.duration * 1000).rounded()), privacy: .public), \
+            tier: \(Self.tierString(effectiveTier), privacy: .public), \
+            cleanup-ran: \(cleanupEngineRan, privacy: .public), \
+            inject: \(injectMethod, privacy: .public), \
+            latency-ms: \(summary.totalMs, format: .fixed(precision: 1), privacy: .public)
+            """)
 
         // A bare "press enter" (no remaining text, no snippet) inserts nothing —
         // don't record an empty history row for it.
@@ -900,6 +927,23 @@ public actor DictationOrchestrator {
         id.historyColumn
     }
 
+    /// Content-free label for how an insertion landed (diagnostics logging).
+    private static func methodString(_ token: InsertionToken) -> String {
+        switch token.method {
+        case .ax: return "ax"
+        case .paste: return "paste"
+        }
+    }
+
+    /// Content-free label for a resolved cleanup tier (diagnostics logging).
+    private static func tierString(_ tier: CleanupTier) -> String {
+        switch tier {
+        case .raw: return "raw"
+        case .local: return "local"
+        case .cloud(let slug): return "cloud:\(slug)"
+        }
+    }
+
     /// AX-verified in-place insert attempt (nil = nothing inserted, caller
     /// should wait-for-clean). Failures degrade to nil, never wedge.
     private func insertDirectRaw(_ text: String) async -> InsertionToken? {
@@ -1022,6 +1066,7 @@ public actor DictationOrchestrator {
             outcome = await localFallbackAfterTimeout(sourceText, context: context, timedOutTier: tier)
         }
         guard let outcome else {
+            logger.notice("cleanup degraded: timeout→raw kept (tier \(Self.tierString(tier), privacy: .public))")
             noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
             fireCorrectionSettled(token, finalText: token.text)
             return
@@ -1103,6 +1148,7 @@ public actor DictationOrchestrator {
         guard let outcome = await cleanWithTimeout(local, text, context: context, cap: localFallbackTimeout),
               outcome.text != text
         else { return nil }
+        logger.notice("cleanup degraded: cloud→local after timeout (from tier \(Self.tierString(timedOutTier), privacy: .public))")
         noteContinuation.yield("Cloud cleanup was slow — used local cleanup instead")
         return outcome
     }
@@ -1119,6 +1165,7 @@ public actor DictationOrchestrator {
         if let local = await localFallbackAfterTimeout(text, context: context, timedOutTier: tier) {
             return local
         }
+        logger.notice("cleanup degraded: timeout→raw kept for paste target (tier \(Self.tierString(tier), privacy: .public))")
         noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
         return nil
     }

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Tier 2 cleanup: cloud model via OpenRouter (ARCHITECTURE §2, §6). Uses the
 /// fuller `CleanupPrompt.instructions` and the shared `CleanupHygiene` guards
@@ -12,6 +13,7 @@ public struct OpenRouterCleaner: Cleaner {
 
     private let client: OpenRouterClient
     private let entry: ModelRegistryEntry
+    private static let logger = Logger(subsystem: "com.jjromano.skylark", category: "pipeline")
 
     public init(client: OpenRouterClient, entry: ModelRegistryEntry) {
         self.client = client
@@ -51,6 +53,12 @@ public struct OpenRouterCleaner: Cleaner {
             output = collected
         } catch OpenRouterError.noKey {
             throw CleanerError.unavailable(reason: "No OpenRouter API key")
+        } catch OpenRouterError.responseTruncated {
+            // The model hit its token cap mid-answer (finish_reason: length).
+            // Content-free diagnostics line so the export shows the cleanup
+            // degraded for this reason (never the transcript or the answer).
+            Self.logger.notice("cloud cleanup response truncated (finish_reason length) — degrading to local/raw")
+            throw CleanerError.unavailable(reason: "OpenRouter cleanup response truncated")
         } catch is OpenRouterError {
             throw CleanerError.unavailable(reason: "OpenRouter cleanup request failed")
         }

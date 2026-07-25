@@ -948,6 +948,7 @@ private struct AccountPane: View {
                     controller.apiKeyDidChange()
                 }
                 updatesCard
+                diagnosticsCard
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .padding(20)
@@ -1015,6 +1016,28 @@ private struct AccountPane: View {
     private var buildDateSuffix: String {
         guard let date = controller.buildInfo?.date else { return "" }
         return " · " + date.formatted(date: .abbreviated, time: .omitted)
+    }
+
+    private var diagnosticsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Diagnostics", systemImage: "stethoscope")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            HStack {
+                Text("Share a diagnostics file")
+                    .font(.system(size: 13, weight: .medium))
+                Spacer()
+                Button("Export Diagnostics…") { controller.exportDiagnostics() }
+            }
+
+            Text("Saves a text file of app version, settings, recent-dictation metadata, and logs — no audio or transcript text — to share for debugging.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(.quaternary.opacity(0.5)))
     }
 }
 
