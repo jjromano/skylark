@@ -160,6 +160,17 @@ public actor DictationOrchestrator {
     private var isHandsFree = false
     private var vadTask: Task<Void, Never>?
 
+    /// Interruption reported for the CURRENT session from outside the clip: the
+    /// hotkey tap stalled (`.captureInterrupted`), or capture couldn't restart
+    /// after a configuration change. Merged with the clip's own signals in
+    /// `resolveFinalization` — the single finalize decision — and cleared at every
+    /// start/cancel. nil = nothing seen this session.
+    private var sessionInterruption: CaptureInterruption?
+    private var interruptionsTask: Task<Void, Never>?
+    /// Shown whenever any interruption signal fired, for both push-to-talk and
+    /// hands-free: the user must know the text may be missing its tail.
+    private static let interruptedNote = "Mic interrupted — text may be incomplete"
+
     private let hudContinuation: AsyncStream<HUDState>.Continuation
     /// HUD snapshots for the UI to observe.
     public nonisolated let hudStates: AsyncStream<HUDState>
@@ -339,6 +350,8 @@ public actor DictationOrchestrator {
             startRecording(kind: .command)
         case .stopCommand:
             await finishCommand()
+        case .captureInterrupted:
+            await handleCaptureInterruption(CaptureInterruption(reason: .triggerTapStalled))
         }
     }
 
@@ -370,6 +383,8 @@ public actor DictationOrchestrator {
         phase = .recording
         sessionKind = kind
         isHandsFree = false
+        sessionInterruption = nil
+        startInterruptionForwarding()
         // Capture the target app AT dictation start (fn-down) and resolve the
         // mode + dictionary off the paste path while the user speaks.
         let bundleID = frontmostBundleID()
@@ -548,9 +563,16 @@ public actor DictationOrchestrator {
         phase = .transcribing
         publish(.processing)
 
+        // THE finalize decision (WS1): every interruption signal converges here
+        // and every trim of the captured audio happens here, for both push-to-talk
+        // and hands-free.
+        let finalization = resolveFinalization(clip)
+        clip = finalization.clip
+
         guard !clip.isEmpty else {
             phase = .idle
             publish(.idle)
+            if finalization.interrupted { noteContinuation.yield(Self.interruptedNote) }
             return
         }
 
@@ -562,8 +584,15 @@ public actor DictationOrchestrator {
         if !wasHandsFree, SilenceDetector.isSilent(clip, threshold: silencePeakThreshold) {
             phase = .idle
             publish(.idle)
-            noteContinuation.yield("No speech detected")
+            // An interruption explains the silence better than "nothing heard".
+            noteContinuation.yield(finalization.interrupted ? Self.interruptedNote : "No speech detected")
             return
+        }
+
+        // Something took the mic mid-utterance: the text we're about to insert may
+        // be missing its tail, so say so (never block the insert on it).
+        if finalization.interrupted {
+            noteContinuation.yield(Self.interruptedNote)
         }
 
         // Whisper Mode only: normalize the finalized clip's peak up toward a
@@ -793,6 +822,125 @@ public actor DictationOrchestrator {
         publish(.idle)
     }
 
+    // MARK: - Interruption model (WS1)
+
+    /// Long-lived consumer of `capture.interruptions` (same shape as the levels
+    /// consumer: an `AsyncStream` is single-consumer, so re-iterating it per
+    /// dictation would starve the 2nd+ session).
+    private func startInterruptionForwarding() {
+        guard interruptionsTask == nil else { return }
+        interruptionsTask = Task { [capture, weak self] in
+            for await interruption in capture.interruptions {
+                if Task.isCancelled { break }
+                await self?.handleCaptureInterruption(interruption)
+            }
+        }
+    }
+
+    /// Record an interruption for the current session and, when it means capture
+    /// can't continue (`finalizesUtterance`), finish the utterance at THIS
+    /// boundary — the whole point of WS1: never let a stolen mic pad the clip
+    /// with silence the transcriber will then drop. Nothing is discarded; the
+    /// samples captured so far go through the normal pipeline, plus a note.
+    private func handleCaptureInterruption(_ interruption: CaptureInterruption) async {
+        guard phase == .recording else { return }
+        if sessionInterruption == nil { sessionInterruption = interruption }
+        logger.notice("""
+            capture interrupted (\(interruption.reason.rawValue, privacy: .public)) \
+            \(interruption.reason.finalizesUtterance ? "— finalizing at the boundary" : "— recording continues", privacy: .public)
+            """)
+        guard interruption.reason.finalizesUtterance else { return }
+        switch sessionKind {
+        case .dictation: await finishRecording()
+        case .command: await finishCommand()
+        }
+    }
+
+    /// What the finalize step decided about a captured clip.
+    private struct Finalization {
+        /// The audio that goes to STT (trimmed, if anything was trimmed).
+        var clip: AudioClip
+        /// Any interruption signal fired → the user gets the incomplete-text note.
+        var interrupted: Bool
+        /// Dead tail removed before STT.
+        var trimmed: TimeInterval
+    }
+
+    /// The ONE place a finalized clip is decided. Four independent signals
+    /// converge here:
+    ///
+    /// 1. `sessionInterruption` — hotkey tap stalled mid-hold, or capture failed
+    ///    to restart (both already finalized the session; this is the record).
+    /// 2. `clip.interruption` — `AVAudioEngineConfigurationChange` during capture
+    ///    (restart preserved the recording, so the marker is all that's left).
+    /// 3. `clip.tapStalled` — wall-clock ≫ sample duration: the tap stopped
+    ///    delivering with NO silent tail to detect (samples just stop).
+    /// 4. `TrailingSilenceAnalyzer` — "energy early, long dead tail": the
+    ///    speech-then-silence clip this workstream exists for. Also the only
+    ///    signal that trims.
+    ///
+    /// Pure decision + one O(n) prefix copy; no I/O, no locks, nothing that can
+    /// block the fn-up→paste path. On a clean clip the analyzer finds nothing to
+    /// trim and this returns the input unchanged.
+    ///
+    /// WS2 SEAM: VAD-based trimming plugs in immediately after the trailing-tail
+    /// trim below — consume `working`, return a shorter clip, and add the trimmed
+    /// amount to `trimmed`. Nothing else in the finalize path changes.
+    private func resolveFinalization(_ clip: AudioClip) -> Finalization {
+        var interrupted = false
+        var reasons: [String] = []
+
+        if let session = sessionInterruption {
+            interrupted = true
+            reasons.append(session.reason.rawValue)
+        }
+        if let marker = clip.interruption, marker.reason != sessionInterruption?.reason {
+            interrupted = true
+            reasons.append(marker.reason.rawValue)
+        }
+        if clip.tapStalled {
+            interrupted = true
+            reasons.append("stalledTap")
+        }
+
+        var working = clip
+        var trimmed: TimeInterval = 0
+        if let trace = clip.rms {
+            let verdict = TrailingSilenceAnalyzer.analyze(trace, configuration: trailingSilenceConfiguration)
+            if verdict.suspectsInterruption {
+                interrupted = true
+                reasons.append("deadTail")
+            }
+            if let keep = verdict.keepSamples, keep < working.samples.count {
+                let before = working.duration
+                working = working.trimmed(toSampleCount: keep)
+                trimmed = max(0, before - working.duration)
+            }
+        }
+
+        // Content-free: reasons, durations and trimmed length only.
+        if interrupted || trimmed > 0 {
+            logger.notice("""
+                capture finalize — interrupted: \(interrupted, privacy: .public) \
+                [\(reasons.joined(separator: ","), privacy: .public)], \
+                trimmed-ms: \(Int((trimmed * 1000).rounded()), privacy: .public), \
+                kept-ms: \(Int((working.duration * 1000).rounded()), privacy: .public), \
+                wall-ms: \(Int(((clip.wallDuration ?? 0) * 1000).rounded()), privacy: .public)
+                """)
+        }
+        return Finalization(clip: working, interrupted: interrupted, trimmed: trimmed)
+    }
+
+    /// Dead-tail configuration for the active mode. The keep-padding floor is the
+    /// current VAD speech padding, so a trim never keeps less tail than the VAD
+    /// path would (`whisperNormalizationEnabled` mirrors whisper mode — both are
+    /// pushed together by `applyWhisperTuning`).
+    private var trailingSilenceConfiguration: TrailingSilenceAnalyzer.Configuration {
+        TrailingSilenceAnalyzer.Configuration.default.withPaddingFloor(
+            WhisperModeTuning.forWhisperMode(whisperNormalizationEnabled).vadSpeechPadding
+        )
+    }
+
     // MARK: - Voice Command Mode
 
     /// Command-mode finish path. Reuses capture + STT exactly (same warm
@@ -806,7 +954,11 @@ public actor DictationOrchestrator {
         guard phase == .recording, sessionKind == .command else { return }
         stopHandsFree()
 
-        let clip = capture.stop()
+        // Same single finalize decision as dictation (a stolen mic truncates a
+        // spoken command just as badly), then the command pipeline proceeds.
+        let finalization = resolveFinalization(capture.stop())
+        let clip = finalization.clip
+        if finalization.interrupted { noteContinuation.yield(Self.interruptedNote) }
         phase = .transcribing
         publish(.processing)
 
@@ -980,6 +1132,7 @@ public actor DictationOrchestrator {
         fieldContextTask?.cancel()
         fieldContextTask = nil
         capturedFieldContext = nil
+        sessionInterruption = nil
         _ = capture.stop() // discard audio
         phase = .idle
         publish(.idle)
@@ -1193,7 +1346,10 @@ public actor DictationOrchestrator {
             logger.debug("whisper normalize: boosted ×\(result.appliedGain, format: .fixed(precision: 2), privacy: .public)")
         }
         guard result.appliedGain != 1 else { return clip }
-        return AudioClip(samples: result.samples, sampleRate: clip.sampleRate, duration: clip.duration)
+        // `replacingSamples` keeps the capture-integrity metadata (wall duration,
+        // interruption marker, and — since the length is unchanged — the RMS
+        // trace) that the finalize decision already consumed.
+        return clip.replacingSamples(result.samples)
     }
 
     // MARK: - Latency

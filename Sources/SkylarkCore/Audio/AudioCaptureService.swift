@@ -12,11 +12,18 @@ import os
 ///
 /// `@unchecked Sendable`: the buffer is written only on the audio render thread
 /// and read only in `stop()` after the tap is removed; engine lifecycle calls
-/// (`prepare`/`start`/`stop`) are serialized by the owning orchestrator actor.
+/// (`prepare`/`start`/`stop`) are serialized by the owning orchestrator actor
+/// and, since the configuration-change observer can also drive them from an
+/// arbitrary thread, by `lifecycle` (never taken on the audio thread).
 public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     public static let targetSampleRate: Double = 16_000
     /// Hard cap: 120 s at 16 kHz.
     public static let maxSamples = Int(targetSampleRate * 120)
+    /// Cap on recorded RMS-trace entries (one per tap callback). Even a tiny
+    /// 256-sample callback can only produce ~7.5 k entries in 120 s, so this is
+    /// generous; an overflow simply stops extending the trace (the audio is
+    /// unaffected, and the analyzer judges what it has).
+    public static let maxTraceEntries = 30_000
 
     private let engine = AVAudioEngine()
 
@@ -25,9 +32,36 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     private let writeIndex = Atomic<Int>(0)
     private let overflowed = Atomic<Bool>(false)
 
+    // Preallocated RMS trace: the per-callback RMS already computed for the HUD,
+    // plus how many samples each value covers. Two stores into preallocated
+    // memory per callback — no allocation, no locks (see `handleTap`).
+    private let traceValues: UnsafeMutableBufferPointer<Float>
+    private let traceCounts: UnsafeMutableBufferPointer<Int>
+    private let traceIndex = Atomic<Int>(0)
+
     private var converter: AVAudioConverter?
     private var outputBuffer: AVAudioPCMBuffer?
     private var tapInstalled = false
+
+    /// Capture lifecycle shared between the orchestrator (start/stop) and the
+    /// configuration-change observer (which fires on an arbitrary thread).
+    /// Guarded by `lifecycle`; NEVER touched from the audio thread.
+    private struct Lifecycle: Sendable {
+        var recording = false
+        /// First disruption seen during the current capture (the boundary).
+        var interruption: CaptureInterruption?
+    }
+    private let lifecycle = Mutex(Lifecycle())
+    private var configObserver: NSObjectProtocol?
+    /// Configuration-change handling runs here, never on the posting thread: the
+    /// notification can be delivered synchronously from inside an
+    /// `AVAudioEngine` call we make while holding `lifecycle`, and re-entering a
+    /// non-recursive Mutex would hang the app. Hopping to a serial queue makes
+    /// re-entrancy impossible.
+    private let configQueue = DispatchQueue(label: "com.jjromano.skylark.capture-config", qos: .userInitiated)
+
+    private let interruptionsContinuation: AsyncStream<CaptureInterruption>.Continuation
+    public let interruptions: AsyncStream<CaptureInterruption>
 
     private let levelsContinuation: AsyncStream<Float>.Continuation
     public let levels: AsyncStream<Float>
@@ -62,6 +96,10 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     public init() {
         storage = UnsafeMutableBufferPointer<Float>.allocate(capacity: Self.maxSamples)
         storage.initialize(repeating: 0)
+        traceValues = UnsafeMutableBufferPointer<Float>.allocate(capacity: Self.maxTraceEntries)
+        traceValues.initialize(repeating: 0)
+        traceCounts = UnsafeMutableBufferPointer<Int>.allocate(capacity: Self.maxTraceEntries)
+        traceCounts.initialize(repeating: 0)
         let (stream, continuation) = AsyncStream<Float>.makeStream(bufferingPolicy: .bufferingNewest(4))
         levels = stream
         levelsContinuation = continuation
@@ -71,13 +109,36 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         let (previewStream, previewCont) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .bufferingNewest(8))
         previewFrames = previewStream
         previewFramesContinuation = previewCont
+        let (interruptionStream, interruptionCont) = AsyncStream<CaptureInterruption>
+            .makeStream(bufferingPolicy: .bufferingNewest(4))
+        interruptions = interruptionStream
+        interruptionsContinuation = interruptionCont
+        // Configuration-change observer, SCOPED TO THIS ENGINE (an app-wide
+        // observer would also fire for unrelated engines). This is usually the
+        // earliest sign another app grabbed the input or the route changed.
+        // Adapted from Hex (MIT): SuperFastCaptureController's
+        // restartPreservingRecording() pattern.
+        configObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            guard let self else { return }
+            configQueue.async { self.handleConfigurationChange() }
+        }
     }
 
     deinit {
+        if let configObserver {
+            NotificationCenter.default.removeObserver(configObserver)
+        }
         storage.deallocate()
+        traceValues.deallocate()
+        traceCounts.deallocate()
         levelsContinuation.finish()
         framesContinuation.finish()
         previewFramesContinuation.finish()
+        interruptionsContinuation.finish()
     }
 
     public func setFramesWanted(_ wanted: Bool) {
@@ -106,14 +167,21 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         // Allocate engine resources ahead of the first press. `prepare()` does
         // not open the mic, so it's safe headless; the real cold start is in
         // `start()`, which degrades gracefully if the engine can't run.
-        configureConverterIfNeeded()
-        engine.prepare()
+        lifecycle.withLock { _ in
+            configureConverterIfNeeded()
+            engine.prepare()
+        }
     }
 
     public func start() throws {
         writeIndex.store(0, ordering: .relaxed)
         overflowed.store(false, ordering: .relaxed)
-        try installTapAndStart()
+        traceIndex.store(0, ordering: .relaxed)
+        try lifecycle.withLock { state in
+            state.interruption = nil
+            try installTapAndStart()
+            state.recording = true
+        }
         captureStart = .now
         let id = signposter.makeSignpostID()
         captureSignpostID = id
@@ -121,33 +189,29 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     }
 
     public func stop() -> AudioClip {
-        if tapInstalled {
-            engine.inputNode.removeTap(onBus: 0)
-            tapInstalled = false
-        }
-        if engine.isRunning {
-            engine.stop()
+        // Take the lock so a configuration-change restart can't be mid-flight
+        // while we tear the engine down (and so `recording` flips atomically:
+        // a change arriving after this is ignored).
+        let interruption = lifecycle.withLock { state -> CaptureInterruption? in
+            state.recording = false
+            stopEngineLocked()
+            let seen = state.interruption
+            state.interruption = nil
+            return seen
         }
 
         let count = min(writeIndex.load(ordering: .acquiring), Self.maxSamples)
         let samples = Array(UnsafeBufferPointer(start: storage.baseAddress, count: count))
         let duration = Double(count) / Self.targetSampleRate
+        let trace = snapshotTrace()
 
         if let id = captureSignpostID {
             signposter.emitEvent("capture.stop", id: id)
             captureSignpostID = nil
         }
+        var wallDuration: TimeInterval?
         if let start = captureStart {
-            let wall = start.duration(to: .now).seconds
-            // Divergence guard: the sample-derived duration should track wall time.
-            // If far fewer samples arrived than the hold lasted, the input tap
-            // stalled mid-capture (mic seized by another app, coreaudiod hiccup) —
-            // surface it (content-free) so the diagnostics export can show it.
-            if wall > 1.0, duration < wall * 0.6 {
-                logger.notice("capture sample duration \(duration, format: .fixed(precision: 2), privacy: .public)s ≪ wall \(wall, format: .fixed(precision: 2), privacy: .public)s — input tap likely stalled (possible mic interruption)")
-            } else {
-                logger.debug("capture wall time: \(wall, privacy: .public)s, samples=\(count, privacy: .public)")
-            }
+            wallDuration = start.duration(to: .now).seconds
             captureStart = nil
         }
         if overflowed.load(ordering: .relaxed) {
@@ -155,7 +219,94 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         }
 
         writeIndex.store(0, ordering: .relaxed)
-        return AudioClip(samples: samples, sampleRate: Self.targetSampleRate, duration: duration)
+        traceIndex.store(0, ordering: .relaxed)
+        let clip = AudioClip(
+            samples: samples,
+            sampleRate: Self.targetSampleRate,
+            duration: duration,
+            wallDuration: wallDuration,
+            rms: trace,
+            interruption: interruption
+        )
+        if let wallDuration {
+            // Divergence guard: the sample-derived duration should track wall time.
+            // If far fewer samples arrived than the hold lasted, the input tap
+            // stalled mid-capture (mic seized by another app, coreaudiod hiccup) —
+            // surface it (content-free). The orchestrator reads the same
+            // `tapStalled` verdict off the clip and treats it as an interruption.
+            if clip.tapStalled {
+                logger.notice("capture sample duration \(duration, format: .fixed(precision: 2), privacy: .public)s ≪ wall \(wallDuration, format: .fixed(precision: 2), privacy: .public)s — input tap likely stalled (possible mic interruption)")
+            } else {
+                logger.debug("capture wall time: \(wallDuration, privacy: .public)s, samples=\(count, privacy: .public)")
+            }
+        }
+        return clip
+    }
+
+    /// Copy the recorded RMS trace out of the preallocated buffers. Called in
+    /// `stop()` after the tap is removed, never on the audio thread.
+    private func snapshotTrace() -> RMSTrace? {
+        let entries = min(traceIndex.load(ordering: .acquiring), Self.maxTraceEntries)
+        guard entries > 0 else { return nil }
+        let values = Array(UnsafeBufferPointer(start: traceValues.baseAddress, count: entries))
+        let counts = Array(UnsafeBufferPointer(start: traceCounts.baseAddress, count: entries))
+        return RMSTrace(values: values, frameCounts: counts, sampleRate: Self.targetSampleRate)
+    }
+
+    // MARK: - Interruption handling
+
+    /// `AVAudioEngineConfigurationChange` for OUR engine. Fires on an arbitrary
+    /// thread. Mid-recording this is treated as an interruption: keep every
+    /// sample already captured, stamp the boundary, and restart the engine so the
+    /// SAME recording continues appending after the gap. If the restart fails the
+    /// utterance is over — the orchestrator finalizes on `.restartFailed`.
+    private func handleConfigurationChange() {
+        let outcome = lifecycle.withLock { state -> (CaptureInterruption, Bool)? in
+            guard state.recording else { return nil }
+            let at = Double(writeIndex.load(ordering: .acquiring)) / Self.targetSampleRate
+            let restarted = restartPreservingRecordingLocked()
+            // Keep the FIRST marker (the disruption boundary), but a failed
+            // restart always wins — it's the one that ends the utterance.
+            let marker = CaptureInterruption(
+                reason: restarted ? .configurationChange : .restartFailed, at: at
+            )
+            if state.interruption == nil || !restarted { state.interruption = marker }
+            if !restarted { state.recording = false }
+            return (marker, restarted)
+        }
+        guard let (marker, restarted) = outcome else { return }
+        logger.notice("""
+            audio engine configuration changed \(marker.at ?? 0, format: .fixed(precision: 2), privacy: .public)s \
+            into capture — restart \(restarted ? "ok" : "FAILED", privacy: .public)
+            """)
+        interruptionsContinuation.yield(marker)
+    }
+
+    /// Rebuild the tap and restart the engine WITHOUT touching `writeIndex`, so
+    /// everything captured so far is preserved and new callbacks append after it.
+    /// Caller holds `lifecycle`. Adapted from Hex (MIT).
+    private func restartPreservingRecordingLocked() -> Bool {
+        stopEngineLocked()
+        do {
+            // `installTapAndStart` re-reads the (possibly new) input format and
+            // rebuilds the converter for it.
+            try installTapAndStart()
+            return true
+        } catch {
+            logger.error("engine restart after configuration change failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    /// Remove the tap and stop the engine. Caller holds `lifecycle`.
+    private func stopEngineLocked() {
+        if tapInstalled {
+            engine.inputNode.removeTap(onBus: 0)
+            tapInstalled = false
+        }
+        if engine.isRunning {
+            engine.stop()
+        }
     }
 
     // MARK: - Engine wiring
@@ -268,6 +419,17 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         }
         let rms = (sumSquares / Float(frames)).squareRoot()
         levelsContinuation.yield(rms)
+
+        // Record the same RMS (plus the samples it covers) into the preallocated
+        // trace for the post-capture dead-tail analysis (WS1). Two stores into
+        // already-allocated memory and one atomic bump — no allocation, no locks,
+        // nothing to block on; the value was computed above regardless.
+        let t = traceIndex.load(ordering: .relaxed)
+        if t < Self.maxTraceEntries {
+            traceValues[t] = rms
+            traceCounts[t] = frames
+            traceIndex.store(t + 1, ordering: .releasing)
+        }
 
         // Deliver a copy of the converted frames to whichever raw-frame
         // consumers are active (hands-free VAD and/or live preview). Both gates

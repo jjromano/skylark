@@ -133,6 +133,10 @@ public final class HotkeyMonitor: @unchecked Sendable {
             // tapIsEnabled the same way.)
             logger.notice("hotkey tap found disabled by watchdog; re-enabling")
             CGEvent.tapEnable(tap: tap, enable: true)
+            // Same disruption class as a `.tapDisabledByTimeout` callback, only
+            // detected a second later because no callback ever arrived: if a
+            // session is live, finalize it at this boundary (WS1).
+            emitInterruptionIfRecording(source: "watchdog found tap dead")
             reconcileTriggerState()
         }
     }
@@ -256,9 +260,20 @@ public final class HotkeyMonitor: @unchecked Sendable {
         // flips the trigger pressed→released while a recording is live, feed a
         // synthetic triggerUp so the session can't get stuck recording forever.
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-            let reason = type == .tapDisabledByTimeout ? "timeout" : "userInput"
+            // The two reasons are NOT equivalent (WS1):
+            // - `byUserInput`: someone called tapEnable(false) — benign, just
+            //   re-enable and reconcile.
+            // - `byTimeout`: OUR run loop didn't service the tap in time. That
+            //   stall is the same event that accompanies a mic/focus steal
+            //   (another dictation app grabbing the Fn key, an OS Fn action), and
+            //   everything captured after it is silence. Tell the orchestrator to
+            //   finalize the utterance at this boundary rather than let a silent
+            //   tail accumulate.
+            let byTimeout = type == .tapDisabledByTimeout
+            let reason = byTimeout ? "timeout" : "userInput"
             logger.notice("event tap disabled (\(reason, privacy: .public)); re-enabling + reconciling trigger state")
             if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+            if byTimeout { emitInterruptionIfRecording(source: "tap timeout") }
             reconcileTriggerState()
             return Unmanaged.passUnretained(event)
         }
@@ -479,6 +494,27 @@ public final class HotkeyMonitor: @unchecked Sendable {
         flagDown || keyDown
     }
 
+    /// Raise a capture-interruption event when a dictation or command session is
+    /// actually live. No session = nothing to finalize, so the stall is silent
+    /// (an idle tap stall is routine after sleep/wake).
+    ///
+    /// Deliberately emitted BEFORE `reconcileTriggerState()`: the orchestrator
+    /// finalizes on this event, so the synthetic `triggerUp` a reconcile may
+    /// follow with lands on an already-idle pipeline and is a no-op.
+    private func emitInterruptionIfRecording(source: String) {
+        guard processor.isRecording || commandProcessor.isRecording else { return }
+        logger.notice("interruption mid-session (\(source, privacy: .public)); finalizing the utterance at this boundary")
+        continuation.yield(.captureInterrupted)
+        // Keep the state machines in step with the pipeline: the session is being
+        // finalized, so nothing is live here either. Without this, a LOCKED
+        // hands-free session would swallow the user's next press as its "stop"
+        // (they'd have to press twice to dictate again). Sticky pressed-state is
+        // left alone — a still-held trigger's release lands on an idle processor
+        // and does nothing, and the next press starts cleanly.
+        processor = HotkeyProcessor()
+        commandProcessor = HotkeyProcessor(pressAndHoldOnly: true)
+    }
+
     private func emit(_ event: HotkeyEvent?) {
         if let event {
             continuation.yield(event)
@@ -497,7 +533,7 @@ public final class HotkeyMonitor: @unchecked Sendable {
         case .stopRecording: continuation.yield(.stopCommand)
         case .cancel: continuation.yield(.cancel)
         case .discard: continuation.yield(.discard)
-        case .engageHandsFree, .startCommand, .stopCommand: break
+        case .engageHandsFree, .startCommand, .stopCommand, .captureInterrupted: break
         }
     }
 }

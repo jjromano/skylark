@@ -6,6 +6,32 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.9.0 — 2026-07-25
+
+**Interruption-proof dictation.** When something steals the mic or input path
+mid-utterance (another dictation app grabbing Fn, a macOS Fn action, an audio
+device/route change, a stalled input tap), Skylark no longer loses everything
+after the first few seconds to a silent tail — it detects the disruption,
+keeps every word captured up to that boundary, and tells you the text may be
+incomplete ("Mic interrupted — text may be incomplete"):
+
+- **Audio route/device changes survive recording:** an engine configuration
+  change mid-capture now restarts the engine while preserving everything
+  already recorded; if the restart fails, the utterance is finalized at the
+  boundary instead of recording silence.
+- **Dead-tail trimming:** clips that are speech-then-nothing (a seized mic
+  delivers no signal) are trimmed before transcription, so the words you did
+  say come through instead of being dropped by the transcriber.
+- **Stalled-tap detection:** when far fewer audio samples arrive than the
+  hold lasted (mic seized with no silent tail at all), it's now treated as an
+  interruption rather than silently producing a too-short clip.
+- **Hotkey stalls finalize cleanly:** a mid-hold event-tap timeout (the stall
+  that accompanies a focus/mic steal) finalizes the utterance at that boundary,
+  and hands-free sessions no longer swallow the next press after an
+  interruption.
+- Applies to push-to-talk, hands-free, and voice-command mode alike; a clean
+  recording passes through byte-identical with zero added latency.
+
 ## 0.8.2 — 2026-07-25
 
 - **Settings warns about an Fn-key conflict:** if macOS itself has the Fn key

@@ -24,6 +24,11 @@ public protocol AudioCapturing: Sendable {
     var previewFrames: AsyncStream<[Float]> { get }
     /// Enable/disable raw-frame delivery on `previewFrames`. Off by default.
     func setPreviewWanted(_ wanted: Bool)
+    /// Disruptions of the input path observed while recording (engine
+    /// configuration change, failed restart). The orchestrator finalizes the
+    /// utterance on the ones capture can't recover from; the rest are stamped
+    /// onto the returned clip. Off the audio thread.
+    var interruptions: AsyncStream<CaptureInterruption> { get }
 }
 
 public extension AudioCapturing {
@@ -32,4 +37,6 @@ public extension AudioCapturing {
     func setFramesWanted(_ wanted: Bool) {}
     var previewFrames: AsyncStream<[Float]> { AsyncStream { $0.finish() } }
     func setPreviewWanted(_ wanted: Bool) {}
+    /// Default: nothing ever interrupts (fakes and Phase-0 callers).
+    var interruptions: AsyncStream<CaptureInterruption> { AsyncStream { $0.finish() } }
 }

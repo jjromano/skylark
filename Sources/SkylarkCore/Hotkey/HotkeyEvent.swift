@@ -21,4 +21,9 @@ public enum HotkeyEvent: Sendable, Equatable {
     /// Finish the command session and run the command pipeline (transcribe the
     /// instruction, read the selection, run the tier LLM, replace/insert).
     case stopCommand
+    /// The input path was disrupted mid-utterance (our event tap stalled — the
+    /// signature of another app seizing the key/mic). The orchestrator finalizes
+    /// what it has at this boundary instead of accumulating silence, and warns
+    /// that the text may be incomplete. Never discards audio.
+    case captureInterrupted
 }
