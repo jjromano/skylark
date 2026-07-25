@@ -712,9 +712,16 @@ private struct ModelsPane: View {
             }
 
             Section {
-                InfoModelRow(label: "Apple Intelligence", info: ModelInfo.appleIntelligence)
+                AppleCleanupEngineRow(controller: controller)
+                ForEach(LocalCleanupModel.all) { model in
+                    QwenCleanupModelRow(controller: controller, model: model)
+                }
             } header: {
                 Text("Cleanup · on device")
+            } footer: {
+                Text("Qwen models run fully offline through llama.cpp, downloaded once to Application Support/Skylark. Whichever is selected loads on first use and frees its memory again after 5 minutes idle.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {
@@ -854,6 +861,116 @@ private struct AppleSpeechRow: View {
         case .ready:
             // No delete: the asset belongs to macOS.
             EmptyView()
+        }
+    }
+}
+
+/// Leading radio-style control shared by the "Cleanup · on device" rows —
+/// tapping it selects that row's engine as the local cleanup tier. Disabled
+/// (dimmed) for a Qwen model that isn't downloaded yet, since there's nothing
+/// to select.
+private struct EngineSelector: View {
+    let isSelected: Bool
+    let isEnabled: Bool
+    let select: () -> Void
+
+    var body: some View {
+        Button(action: select) {
+            Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                .foregroundStyle(isEnabled ? .primary : .tertiary)
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .help(isEnabled ? "Use this as the local cleanup engine" : "Download it first")
+    }
+}
+
+/// Apple Foundation Models row in "Cleanup · on device" — always selectable
+/// (no download; unavailable is a supported runtime state the backend itself
+/// reports, exactly like Apple Intelligence being off elsewhere in the app).
+private struct AppleCleanupEngineRow: View {
+    @Bindable var controller: AppController
+
+    private var isSelected: Bool { controller.localCleanupEngine == .appleFoundationModels }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            EngineSelector(isSelected: isSelected, isEnabled: true) {
+                controller.setLocalCleanupEngine(.appleFoundationModels)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Apple Intelligence").font(.system(size: 13, weight: .medium))
+                Text(ModelInfo.appleIntelligence.description).font(.caption).foregroundStyle(.secondary)
+                ScoreRow(info: ModelInfo.appleIntelligence)
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// A Qwen GGUF row in "Cleanup · on device" — download/progress/cancel/delete
+/// mirrors `ModelRow`, plus the leading `EngineSelector` (selectable only once
+/// downloaded).
+private struct QwenCleanupModelRow: View {
+    @Bindable var controller: AppController
+    let model: LocalCleanupModel
+
+    private var state: AppController.ManagedModelState {
+        controller.cleanupModelStates[model.id] ?? .notDownloaded
+    }
+    private var isSelected: Bool { controller.localCleanupEngine.model?.id == model.id }
+    private var isReady: Bool { if case .ready = state { return true }; return false }
+    private var info: ModelInfo.Entry? { ModelInfo.qwenLocal[model.id] }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            EngineSelector(isSelected: isSelected, isEnabled: isReady) {
+                controller.setLocalCleanupEngine(.llama(modelID: model.id))
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.displayName).font(.system(size: 13, weight: .medium))
+                Text(statusText).font(.caption).foregroundStyle(.secondary)
+                if let info {
+                    Text(info.description).font(.caption).foregroundStyle(.secondary)
+                    ScoreRow(info: info)
+                }
+            }
+            Spacer(minLength: 8)
+            actions
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var statusText: String {
+        switch state {
+        case .notDownloaded:
+            return "Not downloaded · \(SettingsFormat.bytes(model.downloadBytes))"
+        case let .downloading(progress):
+            return "Downloading \(Int((progress * 100).rounded()))%"
+        case .preparing:
+            return "Preparing…"
+        case let .ready(bytes):
+            return "Downloaded · \(SettingsFormat.bytes(bytes > 0 ? bytes : model.downloadBytes))"
+        }
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        switch state {
+        case .notDownloaded:
+            Button("Download") { controller.downloadCleanupModel(model) }
+        case .downloading:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Button("Cancel") { controller.cancelCleanupModelDownload(model) }
+            }
+        case .preparing:
+            ProgressView().controlSize(.small)
+        case .ready:
+            Button("Delete") { controller.deleteCleanupModel(model) }
+                .disabled(controller.isCleanupModelInUse(model))
+                .help(controller.isCleanupModelInUse(model) ? "In use as the local cleanup engine" : "")
         }
     }
 }

@@ -71,7 +71,10 @@ public actor DictationOrchestrator {
 
     // Cleanup wiring (Phase 2). Defaults keep behaviour raw-only + instant so the
     // 3-arg init and existing call sites are unaffected.
-    private let cleaners: CleanerRegistry
+    /// Swappable (`setLocalCleaner`) so the Settings "Local cleanup engine"
+    /// picker can move between Apple Foundation Models and a Qwen GGUF without
+    /// rebuilding the orchestrator, mirroring `setTranscriber` above.
+    private var cleaners: CleanerRegistry
     private let modeProvider: any ModeProviding
     private let dictionary: any DictionaryProviding
     private let frontmostBundleID: @Sendable () -> String?
@@ -253,6 +256,13 @@ public actor DictationOrchestrator {
     /// effect on the next dictation; the ready-gate is managed separately.
     public func setTranscriber(_ transcriber: any Transcriber) {
         self.transcriber = transcriber
+    }
+
+    /// Swap the local-tier cleaner (Settings "Local cleanup engine" picker —
+    /// Apple Foundation Models vs. a Qwen GGUF). Takes effect on the next
+    /// dictation; raw/cloud tiers and the degrade chain are unaffected.
+    public func setLocalCleaner(_ cleaner: any Cleaner) {
+        cleaners = cleaners.withLocal(cleaner)
     }
 
     /// Temporary global cleanup override from the menu bar. `nil` = Auto (use the

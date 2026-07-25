@@ -61,6 +61,21 @@ enum ModelInfo {
         primary: 4, primaryLabel: "Quality", secondary: 3.5, secondaryLabel: "Speed"
     )
 
+    /// Downloadable Qwen3 GGUF models run locally through llama.cpp (keyed by
+    /// `LocalCleanupModel.id`) — an alternative to Apple Intelligence that works
+    /// on machines without Apple Intelligence enabled, or when you'd rather not
+    /// use it.
+    static let qwenLocal: [String: Entry] = [
+        "qwen3-1.7b": Entry(
+            "Qwen3 1.7B, quantized (Q4_K_M) — small and fast, runs fully offline through llama.cpp. Good default local alternative to Apple Intelligence.",
+            primary: 3.5, primaryLabel: "Quality", secondary: 4.5, secondaryLabel: "Speed"
+        ),
+        "qwen3-4b-instruct": Entry(
+            "Qwen3 4B Instruct, quantized (Q4_K_M) — better cleanup quality than the 1.7B at roughly double the latency and memory.",
+            primary: 4, primaryLabel: "Quality", secondary: 3.5, secondaryLabel: "Speed"
+        ),
+    ]
+
     // MARK: Speech · on device (system-managed, not a downloadable `ManagedModel` dir)
 
     /// macOS 26 Apple Speech (SpeechAnalyzer/SpeechTranscriber). The speech asset

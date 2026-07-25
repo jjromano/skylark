@@ -6,6 +6,30 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.11.0 — 2026-07-25
+
+**Local cleanup, upgraded: optional on-device Qwen models via llama.cpp.**
+Apple Intelligence remains the default local cleanup engine; you can now
+alternatively download and select a Qwen3 model that runs fully offline
+through a bundled llama.cpp (MIT, ~6 MB) — no cloud, no Xcode toolchain,
+Metal shaders compiled at runtime:
+
+- **Settings → Models → "Cleanup · on device":** pick Apple Intelligence,
+  Qwen3 1.7B (~1.0 GB) or Qwen3 4B Instruct (~2.3 GB), with in-app download
+  (progress/cancel/resume, size-verified before install), delete, and
+  switch-without-restart. Selection only sticks when the model is fully on
+  disk; otherwise cleanup silently stays on Apple.
+- **Quality:** on the internal cleanup corpus (M3 Air), Qwen3 4B matches
+  15/17 vs Apple Intelligence's 13/17, at ~0.7 s per cleanup; Qwen3 1.7B is
+  faster (~0.3 s) but weaker (7/17) — offered for lighter machines.
+- **Memory-friendly:** model weights (~1–2.5 GB resident) unload after 5
+  idle minutes and reload transparently on the next dictation; instructions
+  stay cached between dictations (KV-prefix reuse) so a warm cleanup runs in
+  a few hundred ms.
+- Cleanup still never blocks the paste: timeouts, cancellation, and the
+  degrade chain (local → raw) apply to Qwen exactly as before. Nothing from
+  your dictations is ever written to logs.
+
 ## 0.10.0 — 2026-07-25
 
 - **VAD trimming of finalized clips:** the already-resident Silero VAD now

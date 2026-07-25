@@ -27,6 +27,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.start()
     }
 
+    /// MANDATORY: if a local Qwen cleanup engine is active, block (boundedly)
+    /// until llama.cpp's context is freed — its Metal backend aborts in a
+    /// static destructor if one is still alive at process exit. See
+    /// `AppController.blockingUnloadLocalCleanupBackendBeforeQuit()`.
+    func applicationWillTerminate(_ notification: Notification) {
+        controller.blockingUnloadLocalCleanupBackendBeforeQuit()
+    }
+
     /// `skylark://` deep links (registered via `CFBundleURLTypes`), delivered
     /// here whether the app is already running or just launched by the URL.
     func application(_ application: NSApplication, open urls: [URL]) {

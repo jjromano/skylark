@@ -349,6 +349,84 @@ final class AppController {
     /// pane, e.g. "en-US"). System-managed; refreshed with its install state.
     private(set) var appleSpeechLocale: String = "en-US"
 
+    // MARK: - Local cleanup engine (Settings → Models)
+
+    /// Which on-device model serves the LOCAL cleanup tier: Apple Foundation
+    /// Models (default) or a downloaded Qwen GGUF run through llama.cpp. Stored
+    /// (not computed) so `@Observable` tracks changes made via
+    /// `setLocalCleanupEngine` — the same reason as `cleanupOverride` above (the
+    /// v0.2.2 bug class). Initialized GATED on disk
+    /// (`LocalCleanupEngine.resolvedFromDefaults()`), so a deleted or
+    /// half-downloaded GGUF never shows as selected at launch.
+    private(set) var localCleanupEngine: LocalCleanupEngine
+
+    /// Per-model download/on-disk state for the Qwen GGUF models (Settings →
+    /// Models, "Cleanup · on device"), keyed by `LocalCleanupModel.id`. Apple
+    /// Intelligence isn't in here — it's never downloaded.
+    private(set) var cleanupModelStates: [String: ManagedModelState] = [:]
+
+    @ObservationIgnored private let cleanupDownloader = CleanupModelDownloader()
+    /// The backend currently wired into the orchestrator's local cleaner tier —
+    /// held here (not just inside its `LocalCleaner`) so an engine switch, idle
+    /// unload, and the quit hook can all reach it directly. A `QwenCleanupBackend`
+    /// when `localCleanupEngine` is `.llama`; the Apple backend otherwise (which
+    /// has nothing to preload/unload).
+    @ObservationIgnored private var localCleanupBackend: any LocalCleanupBackend
+
+    /// Select the local cleanup engine (Apple Foundation Models or a downloaded
+    /// Qwen GGUF). Persists, then swaps the orchestrator's local cleaner and
+    /// warms the new backend / frees the old one — both off the paste path — so
+    /// the change takes effect on the very next dictation with no app restart.
+    func setLocalCleanupEngine(_ engine: LocalCleanupEngine) {
+        let resolved = engine.resolved
+        guard resolved != localCleanupEngine else { return } // already selected — no-op
+        localCleanupEngine = resolved
+        UserDefaults.standard.set(resolved.persistedValue, forKey: LocalCleanupEngine.defaultsKey)
+        swapLocalCleanupBackend(to: resolved)
+    }
+
+    /// Build the backend for `engine`, wire it into the orchestrator, warm it,
+    /// and free whichever backend it replaced. Called on every engine switch and
+    /// once at launch (see `bootstrapSelection`) to warm a previously-selected
+    /// Qwen engine.
+    private func swapLocalCleanupBackend(to engine: LocalCleanupEngine) {
+        let previous = localCleanupBackend
+        let next = engine.makeBackend()
+        localCleanupBackend = next
+        Task { [orchestrator, next] in await orchestrator.setLocalCleaner(LocalCleaner(backend: next)) }
+        let intensity = cleanupIntensity
+        Task { [weak self] in
+            if let qwen = next as? QwenCleanupBackend {
+                let instructions = CleanupPrompt.compactInstructions(context: CleanupContext(intensity: intensity))
+                await qwen.preload(instructions: instructions)
+            }
+            if let qwen = previous as? QwenCleanupBackend {
+                await qwen.unload()
+            }
+            self?.refreshCleanupModelStates()
+        }
+    }
+
+    /// MANDATORY on quit: synchronously (but boundedly) wait for the active Qwen
+    /// backend to unload before the process exits. llama.cpp's Metal backend
+    /// ABORTS in a static destructor if a context is still alive at `exit()`
+    /// (see the warning on `LlamaRunner.unload()`) — a bare `Task { await
+    /// qwen.unload() }` fired from `applicationWillTerminate` would race the
+    /// process teardown and lose. `LlamaRunner` runs on its own private
+    /// `DispatchSerialQueue` (not the main thread), so blocking the main thread
+    /// here on a semaphore cannot deadlock against it; a generous 3 s bound
+    /// still protects against a genuinely wedged unload. No-op when the active
+    /// engine is Apple Foundation Models (nothing to unload).
+    func blockingUnloadLocalCleanupBackendBeforeQuit() {
+        guard let qwen = localCleanupBackend as? QwenCleanupBackend else { return }
+        let semaphore = DispatchSemaphore(value: 0)
+        Task {
+            await qwen.unload()
+            semaphore.signal()
+        }
+        _ = semaphore.wait(timeout: .now() + 3)
+    }
+
     // MARK: - Audio devices (Settings → Audio)
 
     static let inputDeviceKey = "audio.inputDeviceUID"
@@ -836,12 +914,28 @@ final class AppController {
             localBackend: LocalCleaner.makeDefaultBackend()
         )
 
+        // Local cleanup engine: Apple Foundation Models by default, a local
+        // Qwen GGUF (llama.cpp) when one is selected AND downloaded —
+        // `.resolvedFromDefaults()` applies that gate, so a deleted or
+        // half-downloaded model silently keeps cleanup on Apple instead of
+        // failing every dictation. Held on `self` (not just inside the
+        // `LocalCleaner`) so `setLocalCleanupEngine` can swap/preload/unload it
+        // later, off the paste path.
+        let resolvedLocalEngine = LocalCleanupEngine.resolvedFromDefaults()
+        localCleanupEngine = resolvedLocalEngine
+        let localBackend = resolvedLocalEngine.makeBackend()
+        localCleanupBackend = localBackend
+
         orchestrator = DictationOrchestrator(
             capture: capture,
             transcriber: parakeet,
             injector: injector,
             endpointer: endpointer,
-            cleaners: CleanerRegistry(local: LocalCleaner(), cloudFactory: cloudFactory, notice: cleanupNotice),
+            cleaners: CleanerRegistry(
+                local: LocalCleaner(backend: localBackend),
+                cloudFactory: cloudFactory,
+                notice: cleanupNotice
+            ),
             modeProvider: modeProvider,
             dictionary: dictionaryProvider,
             frontmostBundleID: frontmost.snapshot,
@@ -974,6 +1068,7 @@ final class AppController {
         // (gain/floor/VAD/HUD) and the selected input device before first press.
         refreshModelStates()
         refreshAppleSpeechState()
+        refreshCleanupModelStates()
         applyWhisperTuning()
         startAudioDevices()
 
@@ -1071,6 +1166,13 @@ final class AppController {
         applyCleanupOverride(cleanupOverride)
         Task { [orchestrator, cleanupIntensity] in await orchestrator.setCleanupIntensity(cleanupIntensity) }
         Task { [orchestrator, cleanupTimeoutSeconds] in await orchestrator.setCleanupTimeout(Self.cleanupTimeoutDuration(cleanupTimeoutSeconds)) }
+        // Warm a previously-selected Qwen engine off the paste path (Apple
+        // Foundation Models needs no such warm-up — its backend has no preload).
+        if let qwen = localCleanupBackend as? QwenCleanupBackend {
+            let instructions = CleanupPrompt.compactInstructions(context: CleanupContext(intensity: cleanupIntensity))
+            await qwen.preload(instructions: instructions)
+        }
+        refreshCleanupModelStates()
         rebuildTranscriber()
     }
 
@@ -1649,6 +1751,78 @@ final class AppController {
             }
             try? ModelPaths.removeFromDisk(at: model.directory)
             self?.refreshModelStates()
+        }
+    }
+
+    // MARK: - Local cleanup model manager (Settings → Models)
+
+    /// Re-read on-disk presence/size for the Qwen GGUF models (skips one
+    /// mid-download/preparing, exactly like `refreshModelStates`).
+    func refreshCleanupModelStates() {
+        for model in LocalCleanupModel.all {
+            switch cleanupModelStates[model.id] {
+            case .downloading, .preparing: continue
+            default: break
+            }
+            cleanupModelStates[model.id] = model.isInstalled
+                ? .ready(bytes: ModelPaths.installedSize(at: model.fileURL))
+                : .notDownloaded
+        }
+    }
+
+    /// Whether `model` backs the currently active local cleanup engine (delete
+    /// is blocked for it, matching `isModelInUse` for the STT models).
+    func isCleanupModelInUse(_ model: LocalCleanupModel) -> Bool {
+        localCleanupEngine.model?.id == model.id
+    }
+
+    /// Download a Qwen GGUF to disk. Progress/failure surface through
+    /// `cleanupModelStates`; the row becomes selectable once it reads `.ready`.
+    func downloadCleanupModel(_ model: LocalCleanupModel) {
+        cleanupModelStates[model.id] = .preparing
+        Task { [cleanupDownloader, weak self] in
+            await cleanupDownloader.start(model) { state in
+                Task { @MainActor in self?.applyCleanupModelPrep(model, state) }
+            }
+        }
+    }
+
+    /// Cancel an in-flight download. The partial transfer never counted as
+    /// installed (`LocalCleanupModel.isInstalled` requires the exact byte
+    /// count), so this just resets the row back to not-downloaded.
+    func cancelCleanupModelDownload(_ model: LocalCleanupModel) {
+        Task { [cleanupDownloader] in await cleanupDownloader.cancel(model) }
+        cleanupModelStates[model.id] = .notDownloaded
+    }
+
+    /// Delete a downloaded Qwen GGUF (confirmed). Blocked for the in-use engine.
+    func deleteCleanupModel(_ model: LocalCleanupModel) {
+        guard !isCleanupModelInUse(model) else {
+            showNote("Can't delete the cleanup model in use")
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Delete \(model.displayName)?"
+        alert.informativeText = "The model file will be removed from disk. It re-downloads the next time you select it."
+        alert.addButton(withTitle: "Delete")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        try? ModelPaths.removeFromDisk(at: model.fileURL)
+        refreshCleanupModelStates()
+    }
+
+    private func applyCleanupModelPrep(_ model: LocalCleanupModel, _ prep: ModelPreparationState) {
+        switch prep {
+        case .checking, .loading:
+            cleanupModelStates[model.id] = .preparing
+        case let .downloading(progress):
+            cleanupModelStates[model.id] = .downloading(progress)
+        case .ready:
+            cleanupModelStates[model.id] = .ready(bytes: ModelPaths.installedSize(at: model.fileURL))
+        case let .failed(message):
+            cleanupModelStates[model.id] = .notDownloaded
+            showNote("\(model.displayName) download failed: \(message)")
         }
     }
 

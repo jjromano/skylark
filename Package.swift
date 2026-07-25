@@ -48,12 +48,25 @@ let package = Package(
         .package(url: "https://github.com/argmaxinc/argmax-oss-swift.git", from: "1.0.0"),
     ],
     targets: [
+        // llama.cpp (MIT) as a prebuilt binary framework — local GGUF cleanup
+        // models (Qwen3). Consumption approach follows `eastriverlee/LLM.swift`'s
+        // Package.swift: a `binaryTarget` on the official `llama.xcframework`
+        // rather than building llama.cpp from source. Critically, that prebuilt
+        // framework embeds its Metal shaders and compiles them at RUNTIME
+        // (`GGML_METAL_EMBED_LIBRARY`), so it needs no `metal` compiler — which
+        // this Command-Line-Tools-only toolchain does not have.
+        //
+        // Vendored copy is THINNED to the single slice we ship (macos-arm64,
+        // ~6 MB of the upstream 780 MB all-platform artifact). Upstream release
+        // b10107; license at `Vendor/LICENSE-llama.cpp.txt`.
+        .binaryTarget(name: "llama", path: "Vendor/llama.xcframework"),
         .target(
             name: "SkylarkCore",
             dependencies: [
                 .product(name: "FluidAudio", package: "FluidAudio"),
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "WhisperKit", package: "argmax-oss-swift"),
+                "llama",
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),

@@ -91,6 +91,26 @@ for bundle in "$BUILD_DIR"/*.bundle; do
 done
 shopt -u nullglob
 
+# Embed binary frameworks SwiftPM linked against (currently llama.xcframework —
+# the local Qwen cleanup engine). SwiftPM copies the framework next to the
+# product in .build and links it as @rpath with only `@loader_path` on the rpath,
+# so an unembedded bundle would launch fine until the first local cleanup and
+# then fail to dlopen. Copy it to the conventional Contents/Frameworks and add
+# the matching rpath (install_name_tool runs BEFORE codesigning below).
+shopt -s nullglob
+FRAMEWORKS=("$BUILD_DIR"/*.framework)
+if (( ${#FRAMEWORKS[@]} )); then
+    mkdir -p "$CONTENTS/Frameworks"
+    for framework in "${FRAMEWORKS[@]}"; do
+        echo "  • embedding framework: $(basename "$framework")"
+        cp -R "$framework" "$CONTENTS/Frameworks/"
+    done
+    if ! otool -l "$CONTENTS/MacOS/$APP_NAME" | grep -q "@executable_path/../Frameworks"; then
+        install_name_tool -add_rpath "@executable_path/../Frameworks" "$CONTENTS/MacOS/$APP_NAME"
+    fi
+fi
+shopt -u nullglob
+
 # PkgInfo (harmless, expected by some tooling).
 printf 'APPL????' > "$CONTENTS/PkgInfo"
 

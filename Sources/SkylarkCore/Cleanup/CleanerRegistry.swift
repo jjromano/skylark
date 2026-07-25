@@ -28,6 +28,13 @@ public struct CleanerRegistry: Sendable {
         self.notice = notice
     }
 
+    /// A copy with a different local-tier cleaner — the seam the Settings
+    /// "Local cleanup engine" picker uses to swap Apple Foundation Models for a
+    /// Qwen GGUF (or back) without rebuilding raw/cloud or the orchestrator.
+    public func withLocal(_ cleaner: any Cleaner) -> CleanerRegistry {
+        CleanerRegistry(raw: raw, local: cleaner, cloud: cloud, cloudFactory: cloudFactory, notice: notice)
+    }
+
     /// Returns the cleaner for `tier`, degrading gracefully so a request never
     /// fails to resolve. A resolved cloud cleaner is wrapped so a runtime failure
     /// (no key / unavailable) silently falls back cloud → local → raw.
