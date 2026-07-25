@@ -6,6 +6,14 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.8.2 — 2026-07-25
+
+- **Settings warns about an Fn-key conflict:** if macOS itself has the Fn key
+  assigned to a system action (Change Input Source, Emoji & Symbols, or
+  Apple Dictation) while a Skylark hotkey is bound to Fn, the General pane now
+  shows a warning with a shortcut to macOS Keyboard settings — the two can
+  otherwise fight over the same key press.
+
 ## 0.8.1 — 2026-07-25
 
 Robustness/latency quick wins from a comparison against peer dictation apps

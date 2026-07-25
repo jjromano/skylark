@@ -1,3 +1,4 @@
+import AppKit
 import SkylarkCore
 import SwiftUI
 
@@ -185,6 +186,34 @@ private struct GeneralPane: View {
     @State private var tierSwitchNote: String?
     @State private var tierSwitchNoteClearTask: Task<Void, Never>?
 
+    /// Whether macOS itself has the Fn key bound to Change Input Source / Show
+    /// Emoji & Symbols / Start Dictation (`System Settings ▸ Keyboard`) — that
+    /// system action fights Skylark's Fn trigger for the same key-down. This
+    /// is system state, not a Skylark setting, so it stays a plain view-local
+    /// `@State` refreshed on appear rather than an `AppController`-observed
+    /// property (see CLAUDE.md's computed-UserDefaults-in-@Observable trap).
+    @State private var systemFnActionConfigured = false
+
+    /// True only when the conflict is actually relevant: macOS owns the Fn
+    /// key AND one of Skylark's own hotkey bindings is also Fn.
+    private var fnConflictBannerVisible: Bool {
+        guard systemFnActionConfigured else { return false }
+        return controller.hotkeyKeyboard == .fn || controller.hotkeyCommand == .fn
+    }
+
+    /// Reads `com.apple.HIToolbox AppleFnUsageType` via `CFPreferencesCopyAppValue`
+    /// (never shells out to `defaults`). Non-zero means macOS has the Fn key
+    /// assigned to one of its own actions.
+    private static func isSystemFnActionConfigured() -> Bool {
+        guard let value = CFPreferencesCopyAppValue(
+            "AppleFnUsageType" as CFString,
+            "com.apple.HIToolbox" as CFString
+        ) as? Int else {
+            return false
+        }
+        return value != 0
+    }
+
     /// Whether the current configuration routes anything through OpenRouter.
     private var usesCloud: Bool {
         if controller.cleanupOverride == "cloud" { return true }
@@ -212,6 +241,22 @@ private struct GeneralPane: View {
                     Text("None").tag(Self.mouseOffTag)
                     ForEach(HotkeyBinding.mouseOptions, id: \.rawValue) { option in
                         Text(option.displayName).tag(option.rawValue)
+                    }
+                }
+                if fnConflictBannerVisible {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label(
+                            "macOS is also using the Fn key (Change Input Source, Emoji & Symbols, or Dictation) — the two can fight over the same key press.",
+                            systemImage: "exclamationmark.triangle.fill"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        Button("Open Keyboard Settings…") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .font(.caption)
                     }
                 }
             } header: {
@@ -449,6 +494,9 @@ private struct GeneralPane: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            systemFnActionConfigured = Self.isSystemFnActionConfigured()
+        }
     }
 
     /// Surfaces the "Cleanup model" picker's implicit tier switch (a picker
