@@ -460,6 +460,12 @@ final class AppController {
         seconds <= 0 ? nil : .seconds(seconds)
     }
 
+    /// VAD silence-trim toggle (Settings → Audio; default ON). Trims quiet
+    /// lead-in/trailing air from each clip before STT. Stored (not computed) so
+    /// `@Observable` tracks it; persisted under the trimmer's kill-switch key.
+    static let vadTrimKey = VadClipTrimmer.enabledKey
+    private(set) var vadClipTrimEnabled: Bool
+
     // MARK: - History (Settings → History)
 
     /// Audio retention opt-in (default OFF — PRD §8, phase-5a spec §2).
@@ -832,6 +838,7 @@ final class AppController {
         cleanupOverride = UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto"
         cleanupIntensity = CleanupIntensity.persisted()
         cleanupTimeoutSeconds = (UserDefaults.standard.object(forKey: Self.cleanupTimeoutKey) as? Int) ?? 2
+        vadClipTrimEnabled = VadClipTrimmer.persistedEnabled()
 
         // Composition root: one on-disk database; fall back to in-memory
         // providers (no history/persisted modes) if it can't open.
@@ -1176,6 +1183,7 @@ final class AppController {
         applyCleanupOverride(cleanupOverride)
         Task { [orchestrator, cleanupIntensity] in await orchestrator.setCleanupIntensity(cleanupIntensity) }
         Task { [orchestrator, cleanupTimeoutSeconds] in await orchestrator.setCleanupTimeout(Self.cleanupTimeoutDuration(cleanupTimeoutSeconds)) }
+        Task { [orchestrator, vadClipTrimEnabled] in await orchestrator.setVadTrimEnabled(vadClipTrimEnabled) }
         // Warm a previously-selected Qwen engine off the paste path (Apple
         // Foundation Models needs no such warm-up — its backend has no preload).
         if let qwen = localCleanupBackend as? QwenCleanupBackend {
@@ -1457,6 +1465,14 @@ final class AppController {
         cleanupTimeoutSeconds = seconds
         UserDefaults.standard.set(seconds, forKey: Self.cleanupTimeoutKey)
         Task { [orchestrator] in await orchestrator.setCleanupTimeout(Self.cleanupTimeoutDuration(seconds)) }
+    }
+
+    /// Toggle VAD silence trimming (Settings → Audio). Persists and pushes to the
+    /// orchestrator; takes effect next dictation.
+    func setVadClipTrimEnabled(_ enabled: Bool) {
+        vadClipTrimEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.vadTrimKey)
+        Task { [orchestrator] in await orchestrator.setVadTrimEnabled(enabled) }
     }
 
     // MARK: - Quick-switch (menu bar)

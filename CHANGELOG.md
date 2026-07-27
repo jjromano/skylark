@@ -6,6 +6,19 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.12.1 — 2026-07-27
+
+- Fixed the new interruption handling clipping a still-holding user. A mid-hold
+  event-tap timeout also fires on a benign main-run-loop stall (not only a real
+  mic steal), and it was finalizing + pasting the utterance immediately — cutting
+  off a user who was still speaking. A bare tap stall now just records the marker
+  and keeps recording; the genuine-steal case (a silent/short tail) is still
+  trimmed and flagged when the key is released. A failed engine restart still
+  finalizes (nothing more will arrive).
+- Added a **"Trim silence from recordings"** toggle (Settings → Audio) for the
+  VAD clip trimming that shipped default-on — turn it off if it ever clips the
+  start or end of your speech.
+
 ## 0.12.0 — 2026-07-25
 
 **Injection correctness: your clipboard back sooner, your text never in the

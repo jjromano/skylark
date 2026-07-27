@@ -1095,6 +1095,16 @@ private struct AudioPane: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            Section("Silence trimming") {
+                Toggle("Trim silence from recordings", isOn: Binding(
+                    get: { controller.vadClipTrimEnabled },
+                    set: { controller.setVadClipTrimEnabled($0) }
+                ))
+                Text("Removes quiet lead-in and trailing air from each recording before transcription (voice-activity detection) — improves accuracy and speed. Turn off if it ever clips the start or end of your speech.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
     }

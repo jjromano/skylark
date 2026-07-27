@@ -257,8 +257,8 @@ struct CaptureInterruptionTests {
 
     // MARK: - Hotkey tap stall
 
-    @Test("captureInterrupted finalizes the utterance mid-hold (no silence accrues)")
-    func hotkeyStallFinalizes() async {
+    @Test("captureInterrupted records the marker but keeps recording (no premature clip)")
+    func hotkeyStallKeepsRecording() async {
         let injector = RecordingInjector()
         let orchestrator = DictationOrchestrator(
             capture: InterruptibleCapture(clip: clip(speech: 2.0, dead: 0)),
@@ -267,13 +267,15 @@ struct CaptureInterruptionTests {
         )
         await orchestrator.handle(.startRecording)
         await orchestrator.handle(.captureInterrupted)
-        await #expect(orchestrator.phase == .idle)
-        #expect(await injector.count() == 1)
-        #expect(await firstNote(orchestrator) == interruptedNote)
+        // A bare tap-timeout also fires on a benign main-loop stall while the user
+        // is still holding, so it must NOT finalize (that would clip them). It
+        // keeps recording; the Fn-up finalize trims any tail a real steal left.
+        await #expect(orchestrator.phase == .recording)
+        #expect(await injector.count() == 0)
     }
 
-    @Test("The trigger release that follows a finalized interruption is a no-op")
-    func releaseAfterInterruptionIsNoOp() async {
+    @Test("The release after an interruption finalizes exactly once, with the note")
+    func releaseAfterInterruptionFinalizesOnce() async {
         let injector = RecordingInjector()
         let orchestrator = DictationOrchestrator(
             capture: InterruptibleCapture(clip: clip(speech: 2.0, dead: 0)),
@@ -281,9 +283,10 @@ struct CaptureInterruptionTests {
             injector: injector
         )
         await orchestrator.handle(.startRecording)
-        await orchestrator.handle(.captureInterrupted)
-        await orchestrator.handle(.stopRecording)  // the real key-up / synthetic up
-        #expect(await injector.count() == 1)  // inserted exactly once
+        await orchestrator.handle(.captureInterrupted)   // marker; keeps recording
+        await orchestrator.handle(.stopRecording)         // the real key-up finalizes
+        #expect(await injector.count() == 1)              // inserted exactly once
+        #expect(await firstNote(orchestrator) == interruptedNote)  // still flagged
     }
 
     @Test("captureInterrupted while idle does nothing")
