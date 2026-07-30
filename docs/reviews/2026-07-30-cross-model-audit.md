@@ -40,11 +40,17 @@ questions. I verified it in the code.
    form.** It was last updated 2026-07-05 and covers none of the destructive
    paths added since. Treat the Cowork QA pass, not the checklist, as the gate
    for this release, and rewrite the checklist after.
-3. **Latent, needs a call:** the audit found no live privacy leak in the paths I
-   verified, but the privacy documentation is materially stale and now
-   understates what leaves the machine (see L1). That is a documentation fix,
-   not a code fix, unless you consider Command Mode's cloud upload of
-   pre-existing selected text something that needs a consent surface.
+3. **Your custom dictionary is uploaded to OpenRouter on every cloud cleanup,
+   in full, regardless of what you said** (P2). The dictionary auto-learns from
+   your corrections, so it fills with real names over time without you curating
+   it. Nothing in the UI says this. Decide whether that is acceptable or whether
+   the terms should be filtered to the ones relevant to the current transcript.
+4. **Privacy verdict overall:** the core invariants hold. Audio retention,
+   Keychain-only secrets, the diagnostics export, and the update checker all
+   came back clean under adversarial reading, and Sol withdrew four near-findings
+   after tracing them. The two real problems are P1 (a race that can upload audio
+   while the menu still says Local) and P2 above. The privacy documentation is
+   separately stale and now understates what leaves the machine.
 
 ---
 
@@ -300,6 +306,127 @@ while C1 and C2 remain broken. Sol's full gap list is in
 
 ---
 
+## Confirmed privacy findings
+
+The privacy lane was told to treat `docs/privacy-audit.md` as a claim to falsify
+rather than a baseline, because that document was written by the same model
+family that wrote the code. It swept all 112 Swift files, and statically
+inspected the vendored llama.cpp binary with `otool`, `nm`, and `strings`.
+
+### P1. A stale cloud rebuild can upload audio while the menu still says Local
+**Severity: HIGH. Live.** This is a direct violation of ARCHITECTURE §7's first
+invariant.
+
+`Sources/Skylark/AppController.swift:1530`:
+
+```swift
+Task.detached { [weak self] in
+    let hasKey = KeychainStore().get() != nil
+    await MainActor.run { self?.finishCloudRebuild(slug: slug, hasKey: hasKey) }
+}
+```
+
+`finishCloudRebuild` at `:1537` **never rechecks that the cloud slug is still
+selected**. It builds an `OpenRouterCloud` primary and installs it on the
+orchestrator.
+
+**Failure path:** select a cloud STT engine, then change your mind and select a
+local engine before the detached Keychain read returns. The local rebuild
+completes and the menu shows Local. The older detached completion then lands and
+installs a cloud-primary `FallbackTranscriber`. Your next dictation WAV-encodes
+and uploads.
+
+**Why the window is not as small as it looks:** the comment immediately above
+that code says `SecItemCopyMatching` "can raise a keychain authorization prompt
+and block until it's answered". On a self-signed build, which is Skylark's only
+distribution model, that window lasts until the user dismisses a dialog.
+
+**Fix:** give STT rebuilds a generation counter and recheck
+`modelSelection.sttChoice` before constructing and again before installing.
+
+### P2. The entire custom dictionary goes to the cloud on every cloud cleanup
+**Severity: MEDIUM, and I would argue MEDIUM-HIGH. Live.**
+
+`Sources/SkylarkCore/Pipeline/DictationOrchestrator.swift:1331` passes every
+entry:
+
+```swift
+dictionaryTerms: entries.map(\.phrase),
+```
+
+and `Sources/SkylarkCore/Cleanup/CleanupPrompt.swift:23` joins all of them into
+the cloud system message:
+
+```swift
+if !context.dictionaryTerms.isEmpty {
+    text += "\nPrefer these exact spellings when the transcript approximates them: "
+        + context.dictionaryTerms.joined(separator: ", ") + "."
+}
+```
+
+Every cloud cleanup request carries your full dictionary, whether or not any of
+it relates to what you just said. The dictionary is exactly where names,
+acronyms, and private jargon live, and it **auto-adds from your corrections**,
+so it accumulates real vocabulary without deliberate curation. The Dictionary UI
+describes recognition biasing and says nothing about cloud transfer.
+
+**My grade vs Sol's:** Sol said MEDIUM. The auto-learn behavior is what pushes
+it up for me: the user never consciously decides to put a name in there.
+
+**Fix:** send only terms that approximate the current transcript, or none at all
+(the local `DictionaryCorrector` already runs first), and disclose it either way.
+
+### P3. Launch warms and can download Parakeet even when another engine is selected
+**Severity: MEDIUM. Live.**
+
+`Sources/Skylark/AppController.swift:1092` warms Parakeet unconditionally at
+launch, before `bootstrapSelection()` applies the persisted engine choice:
+
+```swift
+Task { [parakeet] in try? await parakeet.warmUp() }
+...
+Task { [weak self] in await self?.bootstrapSelection() }
+```
+
+`FluidAudioParakeet.warmUp()` calls `AsrModels.downloadAndLoad`, which downloads
+if the model is absent. A user on local Whisper or Apple Speech who deleted
+Parakeet gets an unrequested connection to Hugging Face and a 483 MB download on
+next launch. No audio or transcript is sent, but "local mode: zero network" is
+not what happens.
+
+**Fix:** load the persisted choice before warming, and warm only the active
+engine.
+
+### P4. Qwen model downloads delete the working model before validating the new one
+**Severity: MEDIUM. Live.**
+
+`Sources/SkylarkCore/Cleanup/Llama/CleanupModelDownloader.swift:127`:
+
+```swift
+if FileManager.default.fileExists(atPath: model.fileURL.path) {
+    try FileManager.default.removeItem(at: model.fileURL)
+}
+try FileManager.default.moveItem(at: location, to: model.fileURL)
+```
+
+and only then, at `:140`, a size check with no digest:
+
+```swift
+guard size >= model.downloadBytes else {
+```
+
+Two problems. The ordering is destructive: a truncated or wrong download removes
+the previously working model first, and the size check then deletes the
+replacement too, leaving the user with nothing. And the only integrity test is
+"at least as many bytes as expected", against a mutable
+`huggingface.co/.../resolve/main` URL that follows redirects. A GGUF is parsed
+and executed as model weights by llama.cpp.
+
+**Fix:** pin to an immutable revision, ship a SHA-256, verify while staged, and
+replace atomically only on success.
+
+---
+
 ## Reported by Sol, not independently verified
 
 Real-looking, cited to real code, but I did not confirm the reachability claim
@@ -353,18 +480,53 @@ you what you no longer have to worry about.
 - Test discovery is target-wide; a new test file cannot be silently omitted from
   the runner.
 
+From the privacy lane specifically, all of it reached by adversarial reading
+rather than by trusting the existing audit:
+
+- **The diagnostics export is clean.** It emits word counts, timings, engine
+  ids, and app names, never `rawText`, `cleanText`, or `audioPath`, and it writes
+  only after an explicit save-panel confirmation. Sol nearly filed it as a leak
+  because it copies unified-log `composedMessage` verbatim, then withdrew after
+  auditing every logger and error mapping in the app and finding no transcript,
+  preview, dictionary, snippet, command, request, response-body, key, or
+  audio-sample interpolation.
+- **The update checker is not telemetry.** Its only caller is the "Check for
+  Updates" button. No timer, no launch hook, no identifier, no query parameters.
+- **The API key never persists outside the Keychain**, and never appears in
+  UserDefaults, query strings, logs, diagnostics, or `NSError.userInfo`.
+- **Audio retention is correctly gated**, defaults off when the key is missing,
+  and every deletion path (per-row, purge, toggle-off, orphan sweep, both
+  retention windows) removes the files. Cloud WAV encoding is in-memory only,
+  with no Skylark-owned temp or cache audio write.
+- **Field context and retained-audio re-transcription are disclosed opt-ins**,
+  each with UI text stating the cloud transfer at the point it is enabled.
+- **Stats and Insights are local-only** GRDB aggregation with no network or
+  exporter path.
+- **Per-app modes cannot silently route you to the cloud:** `ModeProviderAdapter`
+  does not map the persisted engine field into `DictationMode`, presets use local
+  or raw cleanup, and the timeout chain only ever degrades cloud to local to raw.
+  P1 is the one exception, and it is a race, not routing.
+- **The vendored llama.cpp is MIT and shows no phone-home mechanism.** It does
+  not link CFNetwork, and symbol and string scans found no networking or
+  telemetry APIs. No GPL dependency anywhere in the tree.
+
 ---
 
 ## Disposition
 
 | Do | Finding |
 |---|---|
-| **Fix before recommending this build to a second user** | C1, C2 |
-| **Fix next** | C3, C4, C5 |
-| **Fix when convenient** | C6, C7, C8, C9 |
-| **Rewrite before it is used as a gate again** | C10, plus the stale PRD scope sections |
+| **Fix before recommending this build to a second user** | C1, C2, P1 |
+| **Fix next** | C3, C4, C5, P2 |
+| **Fix when convenient** | C6, C7, C8, C9, P3, P4 |
+| **Rewrite before it is used as a gate again** | C10, the stale PRD scope sections, and `docs/privacy-audit.md` (its "exactly three categories of outbound network access" claim is now false) |
 | **Triage the leads** | U1 through U12, starting with U1 and U4 |
-| **Answer with live QA, not code reading** | the eight LIVE-QA TARGETS folded into `docs/qa/live-qa-handoff.md` |
+| **Answer with live QA, not code reading** | the twelve targets folded into `docs/qa/live-qa-handoff.md` §8 |
+
+P4 has a second-order consequence worth stating separately: because the old
+model is deleted before the new one is validated, a failed Qwen upgrade leaves
+the user with no local cleanup model at all. Fixing the ordering is cheap and is
+worth doing even if you never pin the digest.
 
 ---
 

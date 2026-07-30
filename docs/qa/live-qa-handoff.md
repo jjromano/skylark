@@ -400,4 +400,26 @@ the reasoning. You do not need it to run these.
 12. **Diagnostics export contents.** After a session with real dictations, export
     diagnostics and read the entire file. *Decide by:* whether any transcript
     fragment, dictionary phrase, snippet body, file path containing a real name,
-    or the API key appears anywhere in it.
+    or the API key appears anywhere in it. (The static audit read this closely
+    and came back clean, so this is a confirmation, not a hunt.)
+13. **Uploading while the menu says Local.** With a key stored, select a cloud
+    speech engine and then, within a second or two, select a local engine. Wait
+    for both to settle, confirm the menu shows Local, then dictate with a network
+    monitor running (Little Snitch, or `nettop -p $(pgrep -x Skylark)`).
+    *Decide by:* whether any connection to `openrouter.ai` occurs. If a keychain
+    authorization dialog ever appears during engine switching, that widens the
+    window, so try it in that state too.
+14. **What actually goes to the cloud with your dictionary loaded.** Add several
+    distinctive dictionary entries (invent unique nonsense words so they are easy
+    to spot). Select cloud cleanup. Dictate a sentence containing **none** of
+    them. *Decide by:* whether those terms leave the machine. The static audit
+    says the full dictionary is sent on every request; confirm it against real
+    traffic and check whether any UI discloses it.
+15. **Qwen download failure.** With a Qwen model already installed and working,
+    start a download of the *same* model and interrupt it (kill Wi-Fi mid-way).
+    *Decide by:* whether the previously working model survives, or whether you
+    are left with no local cleanup model.
+16. **Local-mode network at launch.** Select local Whisper or Apple Speech,
+    delete the Parakeet model, quit, and relaunch with a network monitor running.
+    *Decide by:* whether Skylark connects to Hugging Face and starts downloading
+    Parakeet despite a fully local configuration on a different engine.
