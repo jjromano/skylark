@@ -6,7 +6,7 @@ speech-to-text and cleanup for when you want higher accuracy. Latency is the
 design priority: local dictation targets under 300 ms from the end of your
 speech to raw text landing at the cursor.
 
-<!-- screenshot: menu-bar pill + notch HUD in the listening state -->
+![Skylark listening: the notch HUD pill with a live waveform, and the menu-bar mic active](docs/assets/hud-listening.png)
 
 Skylark is a personal, open-source project (MIT). It is not on the App
 Store; you build it from source and sign it with a certificate generated on
