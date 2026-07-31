@@ -47,9 +47,44 @@ public final class HotkeyMonitor: @unchecked Sendable {
     private var watchdogTask: Task<Void, Never>?
     private var tapIsBuilt = false
 
+    // MARK: Bounded recovery
+    //
+    // Both recovery loops below used to be UNBOUNDED, which is how a revoked
+    // Accessibility grant took a machine down: macOS re-disabled the tap the
+    // instant we re-enabled it, forever, once per second, while the pipeline sat
+    // in a phantom recording state. Every retry path here is bounded and clears
+    // itself when the Accessibility trust bit flips, so recovery stays automatic.
+
+    /// Consecutive `.tapDisabledByTimeout` callbacks with no genuine tap event in
+    /// between. Any real event resets it — a tap that is delivering is healthy.
+    private var consecutiveTimeoutDisables = 0
+    private static let maxConsecutiveTimeoutDisables = 5
+    /// Consecutive `CGEvent.tapCreate` failures from `buildTap`.
+    private var consecutiveTapCreateFailures = 0
+    private static let maxTapCreateFailures = 10
+    /// Set when a bounded retry budget is spent: the 1 s watchdog stops rebuilding
+    /// until the Accessibility trust bit flips (which clears it).
+    private var tapExhausted = false
+    /// Previous Accessibility trust reading, so the watchdog sees the EDGE.
+    /// nil until the first reconcile.
+    private var lastTrusted: Bool?
+
+    static let tapUnrecoverableNote =
+        "Hotkey monitoring keeps failing — the dictation hotkey is off. "
+        + "Toggle Accessibility for Skylark in System Settings to restart it."
+    static let tapCreateFailedNote =
+        "Skylark can't monitor the dictation hotkey — check Accessibility and "
+        + "Input Monitoring in System Settings."
+
     private let continuation: AsyncStream<HotkeyEvent>.Continuation
     /// Stream of high-level recording events for the orchestrator.
     public let events: AsyncStream<HotkeyEvent>
+
+    private let noteContinuation: AsyncStream<String>.Continuation
+    /// User-visible notes about the hotkey itself (the tap dying is invisible to
+    /// the pipeline, so it cannot ride the orchestrator's note stream). The app
+    /// layer forwards these to the menu bar.
+    public nonisolated let notes: AsyncStream<String>
 
     private let logger = Logger(subsystem: "com.jjromano.skylark", category: "hotkey")
 
@@ -57,10 +92,14 @@ public final class HotkeyMonitor: @unchecked Sendable {
         let (stream, continuation) = AsyncStream<HotkeyEvent>.makeStream(bufferingPolicy: .bufferingNewest(16))
         events = stream
         self.continuation = continuation
+        let (noteStream, noteCont) = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(4))
+        notes = noteStream
+        noteContinuation = noteCont
     }
 
     deinit {
         continuation.finish()
+        noteContinuation.finish()
     }
 
     // MARK: - Configuration (main-thread confined)
@@ -121,10 +160,24 @@ public final class HotkeyMonitor: @unchecked Sendable {
     @MainActor
     private func reconcilePermissionState() {
         let trusted = Self.accessibilityTrusted()
+        if trusted != lastTrusted {
+            // The trust bit moved: any retry budget spent under the old state is
+            // stale, so toggling Accessibility is always a full reset for the user.
+            lastTrusted = trusted
+            tapExhausted = false
+            consecutiveTapCreateFailures = 0
+            consecutiveTimeoutDisables = 0
+        }
         if trusted, !tapIsBuilt {
+            guard !tapExhausted else { return }
             buildTap()
         } else if !trusted, tapIsBuilt {
-            logger.notice("accessibility revoked; tearing down hotkey tap")
+            // U8: revocation used to tear the tap down in silence, leaving a live
+            // session recording into a trigger that can never be released. Finalize
+            // it first; the app layer names Accessibility to the user off the
+            // PermissionsService change stream.
+            logger.error("accessibility revoked; tearing down hotkey tap — the dictation hotkey is off")
+            emitInterruptionIfRecording(reason: .permissionLost, source: "accessibility revoked")
             teardownTap()
         } else if trusted, tapIsBuilt, let tap = eventTap, !CGEvent.tapIsEnabled(tap: tap) {
             // The tap was silently disabled (sleep/wake, or a stall) WITHOUT a
@@ -136,7 +189,7 @@ public final class HotkeyMonitor: @unchecked Sendable {
             // Same disruption class as a `.tapDisabledByTimeout` callback, only
             // detected a second later because no callback ever arrived: if a
             // session is live, finalize it at this boundary (WS1).
-            emitInterruptionIfRecording(source: "watchdog found tap dead")
+            emitInterruptionIfRecording(reason: .triggerTapStalled, source: "watchdog found tap dead")
             reconcileTriggerState()
         }
     }
@@ -174,9 +227,21 @@ public final class HotkeyMonitor: @unchecked Sendable {
             callback: callback,
             userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
         ) else {
-            logger.error("failed to create event tap")
+            // The 1 s watchdog calls this forever; without a bound a permanently
+            // unsatisfiable tap (Input Monitoring denied, TCC mid-flight) spins
+            // and logs once a second for the process lifetime with nothing said
+            // to the user.
+            consecutiveTapCreateFailures += 1
+            if consecutiveTapCreateFailures >= Self.maxTapCreateFailures {
+                tapExhausted = true
+                logger.error("failed to create event tap \(Self.maxTapCreateFailures, privacy: .public)×; no more attempts until the Accessibility grant changes")
+                noteContinuation.yield(Self.tapCreateFailedNote)
+            } else {
+                logger.notice("failed to create event tap (attempt \(self.consecutiveTapCreateFailures, privacy: .public)/\(Self.maxTapCreateFailures, privacy: .public))")
+            }
             return
         }
+        consecutiveTapCreateFailures = 0
 
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
@@ -186,6 +251,9 @@ public final class HotkeyMonitor: @unchecked Sendable {
         runLoopSource = source
         tapIsBuilt = true
         // Reset derived state on (re)build. Bindings persist across a rebuild.
+        // The recovery budgets reset too: a fresh tap has failed nothing yet.
+        consecutiveTimeoutDisables = 0
+        tapExhausted = false
         processor = HotkeyProcessor()
         commandProcessor = HotkeyProcessor(pressAndHoldOnly: true)
         keyboardPressed = false
@@ -266,17 +334,21 @@ public final class HotkeyMonitor: @unchecked Sendable {
             // - `byTimeout`: OUR run loop didn't service the tap in time. That
             //   stall is the same event that accompanies a mic/focus steal
             //   (another dictation app grabbing the Fn key, an OS Fn action), and
-            //   everything captured after it is silence. Tell the orchestrator to
-            //   finalize the utterance at this boundary rather than let a silent
-            //   tail accumulate.
-            let byTimeout = type == .tapDisabledByTimeout
-            let reason = byTimeout ? "timeout" : "userInput"
-            logger.notice("event tap disabled (\(reason, privacy: .public)); re-enabling + reconciling trigger state")
-            if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
-            if byTimeout { emitInterruptionIfRecording(source: "tap timeout") }
-            reconcileTriggerState()
+            //   everything captured after it is silence. It is ALSO what a revoked
+            //   Accessibility grant looks like from here — hence the trust check.
+            if type == .tapDisabledByTimeout {
+                handleTapDisabledByTimeout()
+            } else {
+                logger.notice("event tap disabled (userInput); re-enabling + reconciling trigger state")
+                if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+                reconcileTriggerState()
+            }
             return Unmanaged.passUnretained(event)
         }
+
+        // A genuine event proves the tap is alive and delivering: the bounded
+        // re-enable budget is spent only on BACK-TO-BACK disables.
+        consecutiveTimeoutDisables = 0
 
         let keycode = Int(event.getIntegerValueField(.keyboardEventKeycode))
         let now = ContinuousClock.now
@@ -420,6 +492,43 @@ public final class HotkeyMonitor: @unchecked Sendable {
         Int(event.getIntegerValueField(.mouseEventButtonNumber))
     }
 
+    /// `.tapDisabledByTimeout` handling. Re-enabling used to be unconditional and
+    /// unbounded, which is the whole 60 s "disabled → re-enable → disabled" loop:
+    /// with Accessibility revoked macOS disables the tap again immediately, and
+    /// nothing in the loop ever consulted the trust bit or gave up.
+    ///
+    /// Runs on the main run loop (the tap source is on `CFRunLoopGetMain`), so the
+    /// `@MainActor` teardown is reachable via `assumeIsolated`.
+    private func handleTapDisabledByTimeout() {
+        guard Self.accessibilityTrusted() else {
+            logger.error("event tap disabled: accessibility revoked")
+            emitInterruptionIfRecording(reason: .permissionLost, source: "accessibility revoked")
+            MainActor.assumeIsolated { teardownTap() }
+            return
+        }
+
+        consecutiveTimeoutDisables += 1
+        guard consecutiveTimeoutDisables < Self.maxConsecutiveTimeoutDisables else {
+            // Trusted, yet the OS keeps killing the tap with no event in between.
+            // Re-enabling again only reproduces the loop, so stop and tell the user
+            // how to restart it. Same remedy as a revocation, hence the same
+            // finalizing reason.
+            logger.error("event tap disabled by timeout \(Self.maxConsecutiveTimeoutDisables, privacy: .public)× with no event in between; giving up until the Accessibility grant changes")
+            emitInterruptionIfRecording(reason: .permissionLost, source: "hotkey tap unrecoverable")
+            MainActor.assumeIsolated {
+                tapExhausted = true
+                teardownTap()
+            }
+            noteContinuation.yield(Self.tapUnrecoverableNote)
+            return
+        }
+
+        logger.notice("event tap disabled (timeout, \(self.consecutiveTimeoutDisables, privacy: .public)/\(Self.maxConsecutiveTimeoutDisables, privacy: .public)); re-enabling + reconciling trigger state")
+        if let tap = eventTap { CGEvent.tapEnable(tap: tap, enable: true) }
+        emitInterruptionIfRecording(reason: .triggerTapStalled, source: "tap timeout")
+        reconcileTriggerState()
+    }
+
     /// Reconcile sticky trigger state against live hardware state after a tap
     /// re-enable, synthesizing a triggerUp for any active binding that flipped
     /// pressed→released while we were disabled.
@@ -494,18 +603,38 @@ public final class HotkeyMonitor: @unchecked Sendable {
         flagDown || keyDown
     }
 
+    /// Whether an interruption at this boundary may reset the trigger state
+    /// machines. ONLY a finalizing reason may: after a non-finalizing marker the
+    /// orchestrator is still recording, so a reset here would make the user's real
+    /// key-up return nil and the session could never be stopped. Pure so the
+    /// invariant is unit-tested without a live tap.
+    public static func interruptionResetsTriggerState(_ reason: CaptureInterruption.Reason) -> Bool {
+        reason.finalizesUtterance
+    }
+
     /// Raise a capture-interruption event when a dictation or command session is
     /// actually live. No session = nothing to finalize, so the stall is silent
     /// (an idle tap stall is routine after sleep/wake).
     ///
-    /// Deliberately emitted BEFORE `reconcileTriggerState()`: the orchestrator
-    /// finalizes on this event, so the synthetic `triggerUp` a reconcile may
-    /// follow with lands on an already-idle pipeline and is a no-op.
-    private func emitInterruptionIfRecording(source: String) {
+    /// Emitted BEFORE `reconcileTriggerState()` so that, for a FINALIZING reason,
+    /// the synthetic `triggerUp` a reconcile may follow with lands on an
+    /// already-idle pipeline and is a no-op.
+    ///
+    /// The processors are reset ONLY for a finalizing reason. That asymmetry is
+    /// load-bearing: `.triggerTapStalled` leaves the orchestrator recording, so
+    /// resetting the state machines here would make the user's real key-up return
+    /// nil from `handleTriggerUp` — no `.stopRecording` would ever be emitted, and
+    /// the mic would stay open with the HUD stuck listening until quit.
+    private func emitInterruptionIfRecording(reason: CaptureInterruption.Reason, source: String) {
         guard processor.isRecording || commandProcessor.isRecording else { return }
+        guard Self.interruptionResetsTriggerState(reason) else {
+            logger.notice("interruption mid-session (\(source, privacy: .public)); recording continues — the trigger release still ends it")
+            continuation.yield(.captureInterrupted)
+            return
+        }
         logger.notice("interruption mid-session (\(source, privacy: .public)); finalizing the utterance at this boundary")
-        continuation.yield(.captureInterrupted)
-        // Keep the state machines in step with the pipeline: the session is being
+        continuation.yield(.permissionLost)
+        // Keep the state machines in step with the pipeline: the session IS being
         // finalized, so nothing is live here either. Without this, a LOCKED
         // hands-free session would swallow the user's next press as its "stop"
         // (they'd have to press twice to dictate again). Sticky pressed-state is
@@ -533,7 +662,7 @@ public final class HotkeyMonitor: @unchecked Sendable {
         case .stopRecording: continuation.yield(.stopCommand)
         case .cancel: continuation.yield(.cancel)
         case .discard: continuation.yield(.discard)
-        case .engageHandsFree, .startCommand, .stopCommand, .captureInterrupted: break
+        case .engageHandsFree, .startCommand, .stopCommand, .captureInterrupted, .permissionLost: break
         }
     }
 }

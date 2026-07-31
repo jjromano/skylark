@@ -26,4 +26,9 @@ public enum HotkeyEvent: Sendable, Equatable {
     /// what it has at this boundary instead of accumulating silence, and warns
     /// that the text may be incomplete. Never discards audio.
     case captureInterrupted
+    /// Accessibility was revoked (or the event tap died unrecoverably) mid-session:
+    /// no trigger release will ever arrive, so the orchestrator must finalize HERE
+    /// or hold the mic open forever. Never discards audio — the transcript still
+    /// runs and lands in History even if injection can no longer reach the app.
+    case permissionLost
 }

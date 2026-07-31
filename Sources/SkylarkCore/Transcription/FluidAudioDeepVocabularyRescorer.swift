@@ -3,7 +3,7 @@ import FluidAudio
 import os
 
 /// Deep-vocabulary rescoring backed by FluidAudio's Parakeet CTC-110M keyword
-/// spotter + constrained-CTC `VocabularyRescorer` (PRD §8 deep matching, opt-in).
+/// spotter + constrained-CTC `VocabularyRescorer` (PRD §8 deep matching, default on).
 ///
 /// Adapted from FluidAudio's own `SlidingWindowAsrManager.applyVocabularyRescoring`
 /// wiring (Apache-2.0) — the documented `transcribe(_:customVocabulary:)` overload
@@ -181,8 +181,20 @@ public actor FluidAudioDeepVocabularyRescorer: DeepVocabularyRescoring {
             )
         }
         let vocabulary = CustomVocabularyContext(terms: vocabTerms)
+        // Spotter-anchored acoustic rescue OFF (FluidAudio #702/#724): that pass
+        // bypasses the string-similarity gate and, with the flat context-biasing
+        // boost, replaced unrelated words with dictionary terms on ~every
+        // utterance ("The meeting starts" → "CLAUDE.md" at similarity 0.06 —
+        // the v0.12.x corruption). A user dictionary is exactly the short-vocab
+        // KWS case FluidAudio documents rescue as net-harmful for. The floors
+        // are defense-in-depth should rescue ever be switched back on.
+        let config = VocabularyRescorer.Config(
+            spotterRescueMinSimilarity: 0.30,
+            spotterRescueMultiWordMinSimilarity: 0.50,
+            spotterRescueEnabled: false
+        )
         let rescorer = try await VocabularyRescorer.create(
-            spotter: state.spotter, vocabulary: vocabulary, ctcModelDirectory: modelDirectory
+            spotter: state.spotter, vocabulary: vocabulary, config: config, ctcModelDirectory: modelDirectory
         )
         let cache = VocabCache(signature: signature, vocabulary: vocabulary, rescorer: rescorer)
         vocabCache = cache

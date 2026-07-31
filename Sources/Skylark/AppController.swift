@@ -223,13 +223,19 @@ final class AppController {
         UserDefaults.standard.set(on, forKey: Self.learnFromCorrectionsKey)
     }
 
-    /// Deep vocabulary matching (Settings → Dictionary, opt-in, default OFF).
-    /// Runs a second on-device acoustic pass against the dictionary so names/terms
-    /// are recognised as spoken. Needs the ~98 MB CTC helper model.
+    /// Deep vocabulary matching (Settings → Dictionary, default ON since the
+    /// spotter-rescue corruption fix). Runs a second on-device acoustic pass
+    /// against the dictionary so names/terms are recognised as spoken. Needs
+    /// the ~98 MB CTC helper model (downloaded on first launch/enable).
     static let deepVocabKey = "dictionary.deepVocabMatching"
     /// One-shot marker for the v0.12.2 forced disable (see start()).
     static let deepVocabKillSwitchKey = "dictionary.deepVocabMatching.v0122KillSwitch"
-    private(set) var deepVocabEnabled: Bool = UserDefaults.standard.bool(forKey: AppController.deepVocabKey)
+    /// One-shot marker for the post-fix re-enable (see start()).
+    static let deepVocabReEnableKey = "dictionary.deepVocabMatching.v0123ReEnable"
+    private(set) var deepVocabEnabled: Bool =
+        UserDefaults.standard.object(forKey: AppController.deepVocabKey) == nil
+            ? true
+            : UserDefaults.standard.bool(forKey: AppController.deepVocabKey)
 
     /// Enable/disable deep vocabulary matching. On first enable, downloads the CTC
     /// helper model (progress shows in Models); once present, the rescorer is wired
@@ -956,7 +962,11 @@ final class AppController {
                 // verify a just-requested activation, and the cache only updates
                 // when the didActivateApplication notification is delivered.
                 frontmost: CapturedTargetGuard.liveFrontmost,
-                activate: CapturedTargetGuard.liveActivator
+                activate: CapturedTargetGuard.liveActivator,
+                // Window-level identity: the bundle ID can't tell two documents
+                // of the same app apart, and pasting (or pressing Return) into
+                // the wrong TextEdit window or Mail compose is the damaging case.
+                focusedWindow: CapturedTargetGuard.liveFocusedWindow
             ),
             snippets: snippetsProvider,
             fieldContextReader: AXFieldContextReader(),
@@ -1064,6 +1074,13 @@ final class AppController {
                 self?.showNote(note)
             }
         }
+        // Hotkey-tap failures the pipeline can't see (the tap dying is invisible
+        // to the orchestrator, which simply never hears from it again).
+        Task { [monitor, weak self] in
+            for await note in monitor.notes {
+                self?.showNote(note)
+            }
+        }
         // Model-preparation progress → menu line, HUD dot, readiness gate.
         Task { [weak self] in
             guard let stream = self?.prepStream else { return }
@@ -1132,24 +1149,34 @@ final class AppController {
         // Cache key presence off-main so no SwiftUI body ever touches the
         // keychain (main-thread mutex hang; see hasAPIKey).
         refreshAPIKeyPresence()
-        // v0.12.2 kill switch: deep vocabulary matching corrupts cleaned text
-        // (dictionary terms replace unrelated words on every cleaned dictation),
-        // so force it off once for anyone who had it enabled. The one-shot key
-        // lets users deliberately re-enable it before the matcher fix ships.
-        if deepVocabEnabled, !UserDefaults.standard.bool(forKey: Self.deepVocabKillSwitchKey) {
+        // Deep-vocabulary migrations, in order. The v0.12.2 kill switch forced
+        // the feature off while its matcher corrupted cleaned text (spotter
+        // rescue replaced unrelated words with dictionary terms). The matcher
+        // is fixed (rescue pass disabled in FluidAudioDeepVocabularyRescorer),
+        // so the v0.12.3 one-shot turns it back on for anyone the kill switch
+        // hit. Both markers stay set so neither runs twice.
+        if UserDefaults.standard.bool(forKey: Self.deepVocabKillSwitchKey) {
+            if !UserDefaults.standard.bool(forKey: Self.deepVocabReEnableKey) {
+                UserDefaults.standard.set(true, forKey: Self.deepVocabReEnableKey)
+                if !deepVocabEnabled {
+                    deepVocabEnabled = true
+                    UserDefaults.standard.set(true, forKey: Self.deepVocabKey)
+                    showNote("Deep vocabulary matching is back on — the text-corruption bug is fixed.")
+                }
+            }
+        } else {
+            // Fresh installs skip both migrations (default is already ON).
             UserDefaults.standard.set(true, forKey: Self.deepVocabKillSwitchKey)
-            deepVocabEnabled = false
-            UserDefaults.standard.set(false, forKey: Self.deepVocabKey)
-            showNote("Deep vocabulary matching is off: a bug corrupts cleaned text. It will return once fixed.")
+            UserDefaults.standard.set(true, forKey: Self.deepVocabReEnableKey)
         }
-        // Re-arm deep vocabulary if it was left on and the model is still present
-        // (no auto-download at launch — a missing model just leaves it dormant
-        // until re-enabled). The rescorer loads the CTC model lazily on first use.
+        // Re-arm deep vocabulary at launch. Default-on means the CTC helper may
+        // not be on disk yet — download it with progress (Models pane) instead
+        // of silently flipping the setting off, so "on by default" survives a
+        // fresh install. The rescorer itself still loads lazily on first use.
         if deepVocabEnabled, deepVocabRescorer.isModelDownloaded {
             Task { [orchestrator, deepVocabRescorer] in await orchestrator.setRescorer(deepVocabRescorer) }
         } else if deepVocabEnabled {
-            deepVocabEnabled = false
-            UserDefaults.standard.set(false, forKey: Self.deepVocabKey)
+            enableDeepVocab()
         }
         pruneHistory()
         pruneAudio()
@@ -1219,7 +1246,36 @@ final class AppController {
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
+        observeAccessibilityEdges()
     }
+
+    /// Accessibility can be revoked at ANY point, not just during onboarding —
+    /// and when it goes the hotkey tap dies with nothing on screen to say why.
+    /// This subscription lives for the whole app lifetime (the onboarding
+    /// auto-advance above is still one-shot, and the onboarding window is never
+    /// reopened behind the user's back).
+    private func observeAccessibilityEdges() {
+        Task { [weak self] in
+            guard let self else { return }
+            var previous = self.permissions.accessibility
+            for await snapshot in self.permissions.changes {
+                let current = snapshot.accessibility
+                guard current != previous else { continue }
+                if previous == .granted {
+                    self.showNote(Self.accessibilityRevokedNote)
+                } else if current == .granted {
+                    self.showNote(Self.accessibilityRestoredNote)
+                    self.applyHUDVisibility()
+                }
+                previous = current
+            }
+        }
+    }
+
+    static let accessibilityRevokedNote =
+        "Accessibility permission was removed — dictation is disabled until you "
+        + "re-grant it in System Settings > Privacy & Security > Accessibility."
+    static let accessibilityRestoredNote = "Accessibility restored — dictation is back."
 
     // MARK: - Model preparation + notes
 
@@ -1955,7 +2011,16 @@ final class AppController {
             self?.onboardingWindow?.close()
             self?.onboardingWindow = nil
         }
-        let window = Self.makeWindow(title: "Welcome to Skylark", content: view, width: 460, height: 640)
+        // Fixed format: the content is a fixed-width walkthrough and its height
+        // varies with grant state, so the window is sized once and the root
+        // scrolls rather than negotiating with the hosting view.
+        let window = Self.makeWindow(
+            title: "Welcome to Skylark",
+            content: view,
+            width: OnboardingView.contentWidth,
+            height: OnboardingView.contentHeight,
+            fixedSize: true
+        )
         onboardingWindow = window
         permissions.startPolling()
         window.makeKeyAndOrderFront(nil)
@@ -2044,15 +2109,43 @@ final class AppController {
         }
     }
 
-    private static func makeWindow(title: String, content: some View, width: CGFloat, height: CGFloat) -> NSWindow {
+    /// `fixedSize` makes the WINDOW the sole authority on geometry: the style
+    /// mask drops `.resizable` and the hosting controller stops publishing a
+    /// preferred content size. Required for any root whose height is derived
+    /// from the proposed height — such a root and the default
+    /// `.preferredContentSize` hosting controller form a cycle (hosting view
+    /// proposes a size → `NSWindow._setFrameCommon` → the hosting view's
+    /// safe-area insets are invalidated → another update-constraints pass),
+    /// and AppKit throws once a window takes more constraint passes than it
+    /// has views. That is a launch crash, not a glitch: `+[NSApplication
+    /// _crashOnException:]` kills the process.
+    ///
+    /// Roots with a fully fixed frame (Settings) or a flexible split view
+    /// (History) settle on the first pass, so they keep the default sizing and
+    /// stay user-resizable.
+    private static func makeWindow(
+        title: String,
+        content: some View,
+        width: CGFloat,
+        height: CGFloat,
+        fixedSize: Bool = false
+    ) -> NSWindow {
+        var styleMask: NSWindow.StyleMask = [.titled, .closable, .miniaturizable]
+        if !fixedSize { styleMask.insert(.resizable) }
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: width, height: height),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            styleMask: styleMask,
             backing: .buffered,
             defer: false
         )
         window.title = title
-        window.contentViewController = NSHostingController(rootView: content)
+        let hosting = NSHostingController(rootView: content)
+        if fixedSize { hosting.sizingOptions = [] }
+        window.contentViewController = hosting
+        // `contentViewController` re-sizes the window to the hosting view's
+        // fitting size, which is zero once sizing options are cleared — restore
+        // the requested content size after the assignment, not before.
+        if fixedSize { window.setContentSize(NSSize(width: width, height: height)) }
         window.isReleasedWhenClosed = false
         window.center()
         return window

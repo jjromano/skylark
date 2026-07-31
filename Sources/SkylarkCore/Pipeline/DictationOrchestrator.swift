@@ -81,9 +81,15 @@ public actor DictationOrchestrator {
     /// Captured-target focus guard (WS3). nil = not wired (tests/headless) and
     /// injection proceeds exactly as before, with no extra reads.
     private let focusGuard: CapturedTargetGuard?
-    /// The app that was frontmost at record start (fn-down) — the app the user
-    /// dictated INTO. The guard compares it against frontmost before injecting.
-    private var capturedTargetBundleID: String?
+    /// The app — and, when it exposes one, the WINDOW — that was frontmost at
+    /// record start (fn-down): what the user dictated INTO. The guard compares
+    /// it against the live focus before every write.
+    private var capturedTarget: CapturedTarget?
+    /// Monotonic capture id, so a late window read from a previous recording
+    /// can't write its identity into a newer session (same pattern as
+    /// `fieldContextSession`).
+    private var capturedTargetSession = 0
+    private var capturedTargetTask: Task<Void, Never>?
     /// Current snippets (loaded per session in `buildSetup`, off the paste
     /// path). Nil = snippets feature not wired (tests/headless).
     private let snippetProvider: (@Sendable () async -> [SnippetRecord])?
@@ -133,7 +139,7 @@ public actor DictationOrchestrator {
     /// its context into a newer session.
     private var fieldContextSession = 0
     private var fieldContextTask: Task<Void, Never>?
-    /// Optional deep-vocabulary rescorer (PRD §8, opt-in, default off). When set,
+    /// Optional deep-vocabulary rescorer (PRD §8, default on). When set,
     /// Parakeet utterances get a second on-device acoustic pass against the
     /// dictionary in the DETACHED post-insert flow (never on fn-up→paste), whose
     /// result feeds the cleanup stage. nil = feature off (nothing loaded, no work
@@ -185,6 +191,10 @@ public actor DictationOrchestrator {
     /// Shown whenever any interruption signal fired, for both push-to-talk and
     /// hands-free: the user must know the text may be missing its tail.
     private static let interruptedNote = "Mic interrupted — text may be incomplete"
+    /// Shown when Accessibility died mid-utterance: the clip is still transcribed
+    /// and recorded, but injection has no way to reach the target app, so the user
+    /// is told where the text went.
+    static let permissionLostNote = "Accessibility permission lost — dictation stopped. Transcript is in History."
 
     private let hudContinuation: AsyncStream<HUDState>.Continuation
     /// HUD snapshots for the UI to observe.
@@ -382,6 +392,8 @@ public actor DictationOrchestrator {
             await finishCommand()
         case .captureInterrupted:
             await handleCaptureInterruption(CaptureInterruption(reason: .triggerTapStalled))
+        case .permissionLost:
+            await handleCaptureInterruption(CaptureInterruption(reason: .permissionLost))
         }
     }
 
@@ -418,7 +430,8 @@ public actor DictationOrchestrator {
         // Capture the target app AT dictation start (fn-down) and resolve the
         // mode + dictionary off the paste path while the user speaks.
         let bundleID = frontmostBundleID()
-        capturedTargetBundleID = bundleID
+        capturedTarget = CapturedTarget(bundleID: bundleID)
+        captureTargetWindow(bundleID: bundleID)
         sessionSetup = nil
         setupTask?.cancel()
         setupTask = Task { [modeProvider, dictionary, snippetProvider, cleanupIntensity, translateTo] in
@@ -726,9 +739,23 @@ public actor DictationOrchestrator {
         var injectMethod = "none"
         var cleanupEngineRan = "none"
 
-        // Captured-target focus guard (WS3): don't type into the wrong app. One
-        // frontmost read; only a focus change pays for re-activation.
-        let focusLost = await capturedTargetLost()
+        // Captured-target focus guard (WS3): don't type into the wrong app — or
+        // the wrong window of the right app. Evaluated here so a lost target
+        // skips the cleanup stage entirely, and RE-evaluated immediately before
+        // every write below (`guardedInsert`) and before the Return: cleanup can
+        // take seconds, and a verdict taken before it says nothing about where a
+        // keystroke is about to land.
+        let initialVerdict = await focusVerdict()
+        var focusLost = initialVerdict.lost
+
+        /// Book the diagnostics for a write the guard refused. Synchronous — the
+        /// refusal itself is decided by `guardedInsert` (an actor method), so
+        /// nothing crosses an isolation boundary here.
+        func recordRefusal(_ verdict: FocusVerdict) {
+            focusLost = true
+            injectMethod = "aborted-focus"
+            noteContinuation.yield(verdict.note)
+        }
 
         if focusLost {
             // Abort every write (text AND the "press enter" Return — a stray
@@ -737,12 +764,17 @@ public actor DictationOrchestrator {
             // replace-failure path keeps its text and reports the degrade.
             injectMethod = "aborted-focus"
             cleanupEngineRan = "skipped"
-            noteContinuation.yield("Focus moved to another app — text not pasted, kept in History")
+            noteContinuation.yield(initialVerdict.note)
         } else if let snippetReplacement {
             syncCleanText = snippetReplacement
             syncCleanupEngine = "snippet"
             cleanupEngineRan = "snippet"
-            if let token = await insertRaw(snippetReplacement) { injectMethod = Self.methodString(token) }
+            let write = await guardedInsert(snippetReplacement)
+            if let refusal = write.refusal {
+                recordRefusal(refusal)
+            } else if let token = write.token {
+                injectMethod = Self.methodString(token)
+            }
         } else if rawText.isEmpty {
             // The whole utterance was the "press enter" command — nothing to
             // insert; the Return below is the entire action.
@@ -750,7 +782,10 @@ public actor DictationOrchestrator {
             // Tier 0: raw stands, no cleanup stage.
             syncCleanupEngine = "raw"
             cleanupEngineRan = "raw"
-            if let token = await insertRaw(rawText) {
+            let write = await guardedInsert(rawText)
+            if let refusal = write.refusal {
+                recordRefusal(refusal)
+            } else if let token = write.token {
                 settledToken = token
                 settledFinalText = token.text
                 injectMethod = Self.methodString(token)
@@ -767,56 +802,80 @@ public actor DictationOrchestrator {
             }
             cleanupEngineRan = outcome?.engine ?? "raw"
             let final = outcome?.text ?? rawText
-            if let token = await insertRaw(final) {
+            // Cleanup just ran (up to the configured timeout, or unbounded when
+            // it's off) — the guard is re-checked inside `guardedInsert`.
+            let write = await guardedInsert(final)
+            if let refusal = write.refusal {
+                recordRefusal(refusal)
+            } else if let token = write.token {
                 settledToken = token
                 settledFinalText = token.text
                 injectMethod = Self.methodString(token)
-            }
-        } else if let token = await insertDirectRaw(rawText) {
-            // The AX write landed VERIFIED — raw is on screen (latency bar);
-            // replace with cleaned text after cleanup, detached from the HUD
-            // state. Routing on the actual insert (not a capability probe)
-            // matters: Chrome claims writable AX selection but silently drops
-            // writes, which previously pasted raw here and lost the cleanup.
-            let cleaner = cleaners.cleaner(for: effectiveTier)
-            let context = cleanupContext
-            // Only the detached AX path rescores: it already replaces in place, so
-            // the deep-vocabulary pass and the cleanup share one final replacement
-            // (never a second one, never any paste-path cost). rescoreTimings is
-            // nil unless the feature is on and this was a Parakeet utterance.
-            let rescoreSamples = rescoreTimings != nil ? clip.samples : []
-            let tier = effectiveTier
-            injectMethod = Self.methodString(token)
-            cleanupEngineRan = "detached"
-            Task { [weak self] in
-                await self?.runCleanupAndReplace(
-                    token: token, rawText: rawText, cleaner: cleaner, tier: tier,
-                    context: context, historyTimestamp: historyTimestamp,
-                    rescoreSamples: rescoreSamples, rescoreTimings: rescoreTimings
-                )
             }
         } else {
-            // No verified in-place target (a paste would be needed): wait-for-
-            // clean before inserting (deliberate PRD deviation; select-back is
-            // unsafe here). Race the cleaner against a 2 s clock; on timeout/
-            // failure inject raw — and say so.
-            let cleaner = cleaners.cleaner(for: effectiveTier)
-            let outcome = await cleanForPaste(cleaner, tier: effectiveTier, text: rawText, context: cleanupContext)
-            if let outcome {
-                syncCleanupEngine = outcome.engine
-                if outcome.text != rawText { syncCleanText = outcome.text }
-            }
-            cleanupEngineRan = outcome?.engine ?? "raw"
-            let final = outcome?.text ?? rawText
-            if let token = await insertRaw(final) {
-                settledToken = token
-                settledFinalText = token.text
+            let direct = await guardedInsert(rawText, direct: true)
+            if let refusal = direct.refusal {
+                // The guard refused the write (focus moved between the verdict
+                // above and this instant) — nothing was typed, and there is no
+                // fallback path to try: a paste would land in the same wrong place.
+                recordRefusal(refusal)
+            } else if let token = direct.token {
+                // The AX write landed VERIFIED — raw is on screen (latency bar);
+                // replace with cleaned text after cleanup, detached from the HUD
+                // state. Routing on the actual insert (not a capability probe)
+                // matters: Chrome claims writable AX selection but silently drops
+                // writes, which previously pasted raw here and lost the cleanup.
+                let cleaner = cleaners.cleaner(for: effectiveTier)
+                let context = cleanupContext
+                // Only the detached AX path rescores: it already replaces in place, so
+                // the deep-vocabulary pass and the cleanup share one final replacement
+                // (never a second one, never any paste-path cost). rescoreTimings is
+                // nil unless the feature is on and this was a Parakeet utterance.
+                let rescoreSamples = rescoreTimings != nil ? clip.samples : []
+                let tier = effectiveTier
                 injectMethod = Self.methodString(token)
+                cleanupEngineRan = "detached"
+                Task { [weak self] in
+                    await self?.runCleanupAndReplace(
+                        token: token, rawText: rawText, cleaner: cleaner, tier: tier,
+                        context: context, historyTimestamp: historyTimestamp,
+                        rescoreSamples: rescoreSamples, rescoreTimings: rescoreTimings
+                    )
+                }
+            } else {
+                // No verified in-place target (a paste would be needed): wait-for-
+                // clean before inserting (deliberate PRD deviation; select-back is
+                // unsafe here). Race the cleaner against a 2 s clock; on timeout/
+                // failure inject raw — and say so.
+                let cleaner = cleaners.cleaner(for: effectiveTier)
+                let outcome = await cleanForPaste(cleaner, tier: effectiveTier, text: rawText, context: cleanupContext)
+                if let outcome {
+                    syncCleanupEngine = outcome.engine
+                    if outcome.text != rawText { syncCleanText = outcome.text }
+                }
+                cleanupEngineRan = outcome?.engine ?? "raw"
+                let final = outcome?.text ?? rawText
+                let write = await guardedInsert(final)
+                if let refusal = write.refusal {
+                    recordRefusal(refusal)
+                } else if let token = write.token {
+                    settledToken = token
+                    settledFinalText = token.text
+                    injectMethod = Self.methodString(token)
+                }
             }
         }
 
+        // The Return is the most destructive write of all (it sends the message)
+        // and the furthest in time from the first verdict, so it gets its own
+        // fresh check rather than riding on the one the text write used.
         if pressEnter, !focusLost {
-            await injector.pressReturn()
+            let returnVerdict = await focusVerdict()
+            if returnVerdict.lost {
+                noteContinuation.yield("Focus moved — Return not sent")
+            } else {
+                await injector.pressReturn()
+            }
         }
 
         let afterInject = ContinuousClock.now
@@ -893,9 +952,17 @@ public actor DictationOrchestrator {
             \(interruption.reason.finalizesUtterance ? "— finalizing at the boundary" : "— recording continues", privacy: .public)
             """)
         guard interruption.reason.finalizesUtterance else { return }
+        let permissionLost = interruption.reason == .permissionLost
         switch sessionKind {
         case .dictation: await finishRecording()
         case .command: await finishCommand()
+        }
+        // Last note wins in the menu bar, so this goes AFTER the finalize: without
+        // Accessibility the insertion can't reach the target app, and the generic
+        // "text may be incomplete" note would leave the user hunting for text that
+        // was never pasted. Named explicitly so the remedy is obvious.
+        if permissionLost {
+            noteContinuation.yield(Self.permissionLostNote)
         }
     }
 
@@ -1118,8 +1185,8 @@ public actor DictationOrchestrator {
         }
 
         // Same captured-target guard as dictation: a command rewrites the text of
-        // the app the user spoke to, so refuse (nothing destructive) rather than
-        // rewrite a selection in whatever app grabbed focus meanwhile.
+        // the app (and window) the user spoke to, so refuse (nothing destructive)
+        // rather than rewrite a selection in whatever grabbed focus meanwhile.
         if await capturedTargetLost() {
             finishCommandIdle(note: "Focus moved to another app — command not applied")
             return
@@ -1145,6 +1212,13 @@ public actor DictationOrchestrator {
         let result = outcome.text
 
         phase = .injecting
+        // The LLM call above can take seconds — the pre-call verdict is stale by
+        // now, so re-check before touching the user's document (same rule as the
+        // dictation write path).
+        if await capturedTargetLost() {
+            finishCommandIdle(note: "Focus moved to another app — command not applied")
+            return
+        }
         if let selection, !selection.text.isEmpty {
             // Rewrite. When the model echoed the selection unchanged (its
             // "instruction unclear" fallback), there's nothing to write.
@@ -1227,34 +1301,121 @@ public actor DictationOrchestrator {
 
     // MARK: - Captured-target focus guard
 
-    /// The one check the injection boundary makes before writing anything: is the
-    /// app the user dictated INTO still frontmost? If focus moved, re-activate it
-    /// (bounded, ~300 ms) and only inject once it is verifiably back.
+    /// Why a write was refused at the injection boundary (content-free).
+    enum FocusVerdict: Sendable, Equatable {
+        /// The captured target still holds focus — write.
+        case ok
+        /// Focus is in a different APP and couldn't be restored.
+        case appMoved
+        /// The captured app is frontmost but a different WINDOW of it has focus.
+        case windowMoved
+
+        var lost: Bool { self != .ok }
+
+        /// User-facing status note (never any transcript content).
+        var note: String {
+            switch self {
+            case .ok: return ""
+            case .appMoved: return "Focus moved to another app — text not pasted, kept in History"
+            case .windowMoved: return "Focus moved to another window — text not pasted, kept in History"
+            }
+        }
+    }
+
+    /// The check the injection boundary makes before writing anything: is the
+    /// app — and the window — the user dictated INTO still focused? If the app
+    /// moved, re-activate it (bounded, ~300 ms) and only inject once it is
+    /// verifiably back; if a different window of the same app took focus, refuse
+    /// the write (raising a window under the user is worse than not pasting).
     ///
-    /// Returns true when injection must be ABORTED. Costs a single NSWorkspace
-    /// frontmost read on the happy path (no AX, no activation, no sleeps), so the
-    /// fn-up→paste path is unchanged for the overwhelmingly common case. Nil guard
-    /// (tests/headless) → never aborts.
+    /// Costs one NSWorkspace frontmost read plus, only when a window identity was
+    /// captured, one AX focused-window read bounded by a 200 ms AX messaging
+    /// timeout. Nil guard (tests/headless) → never aborts.
     ///
-    /// Covers both injection paths: it runs before the AX-vs-paste decision, so an
-    /// AX-verified in-place insert and a synthesized paste are equally gated. The
-    /// *detached* cleanup replace needs no guard — `performAXReplace` re-verifies
-    /// that the token's element is still focused and no-ops otherwise.
-    private func capturedTargetLost() async -> Bool {
-        guard let focusGuard else { return false }
-        switch await focusGuard.decide(captured: capturedTargetBundleID) {
+    /// Called immediately before EVERY write and again before the synthesized
+    /// Return: cleanup between them can take seconds (cold local model reload, or
+    /// no timeout at all), so one verdict can't cover the whole finalize path.
+    /// The *detached* cleanup replace needs no guard — `performAXReplace`
+    /// re-verifies that the token's element is still focused and no-ops otherwise.
+    private func focusVerdict() async -> FocusVerdict {
+        guard let focusGuard else { return .ok }
+        // Make sure the record-start window read has landed before the first
+        // verdict. It started at fn-down and is bounded by a 200 ms AX messaging
+        // timeout, so by paste time it has long finished — this await is free in
+        // practice and makes the guard deterministic instead of racy for very
+        // short utterances. (Actors are reentrant: the read's store hop can run.)
+        await capturedTargetTask?.value
+        switch await focusGuard.decide(captured: capturedTarget) {
         case .proceed:
-            return false
+            return .ok
         case .reactivated:
             logger.notice("focus guard: captured target re-activated before injection")
-            return false
+            return .ok
         case let .abort(current):
             logger.notice("""
-                focus guard: injection aborted — frontmost=\(current ?? "nil", privacy: .public) \
-                captured=\(self.capturedTargetBundleID ?? "nil", privacy: .public)
+                focus guard: write refused — reason=app-changed \
+                frontmost=\(current ?? "nil", privacy: .public) \
+                captured=\(self.capturedTarget?.bundleID ?? "nil", privacy: .public)
                 """)
-            return true
+            return .appMoved
+        case .abortWrongWindow:
+            logger.notice("""
+                focus guard: write refused — reason=window-changed \
+                app=\(self.capturedTarget?.bundleID ?? "nil", privacy: .public)
+                """)
+            return .windowMoved
         }
+    }
+
+    /// Convenience for the paths that only need the boolean (command mode).
+    private func capturedTargetLost() async -> Bool {
+        await focusVerdict().lost
+    }
+
+    /// Resolve the focused WINDOW of the captured app, off the record-start path
+    /// (an AX round trip; the HUD must not wait on it). Same detached shape as
+    /// the field-context read: if it hasn't landed by paste time, the guard
+    /// simply compares bundle IDs, exactly as it did before window identity
+    /// existed. No-op without a guard or a captured app.
+    private func captureTargetWindow(bundleID: String?) {
+        capturedTargetSession &+= 1
+        capturedTargetTask?.cancel()
+        capturedTargetTask = nil
+        guard let focusGuard, let bundleID else { return }
+        let session = capturedTargetSession
+        capturedTargetTask = Task { [weak self] in
+            let target = await focusGuard.captureTarget(bundleID: bundleID)
+            await self?.storeCapturedTarget(target, session: session)
+        }
+    }
+
+    /// Adopt a window identity read for `session`. Dropped when the session moved
+    /// on, or when the app changed under the read (the snapshot would describe a
+    /// window the user never dictated into).
+    private func storeCapturedTarget(_ target: CapturedTarget, session: Int) {
+        guard session == capturedTargetSession,
+              let current = capturedTarget, current.bundleID == target.bundleID
+        else { return }
+        capturedTarget = target
+    }
+
+    /// Result of a write that went through the focus guard.
+    private struct GuardedWrite {
+        /// Non-nil when the guard REFUSED the write — nothing was written, and
+        /// the caller books `aborted-focus` + the verdict's note.
+        var refusal: FocusVerdict?
+        /// The insertion token when text landed; nil when the guard refused or
+        /// the injector didn't take the write.
+        var token: InsertionToken?
+    }
+
+    /// Revalidate the captured target, then write. This is the ONLY way the
+    /// finalize path inserts text: the guard runs immediately before the write,
+    /// never before a cleanup stage that can take seconds.
+    private func guardedInsert(_ text: String, direct: Bool = false) async -> GuardedWrite {
+        let verdict = await focusVerdict()
+        guard !verdict.lost else { return GuardedWrite(refusal: verdict) }
+        return GuardedWrite(token: direct ? await insertDirectRaw(text) : await insertRaw(text))
     }
 
     /// AX-verified in-place insert attempt (nil = nothing inserted, caller
@@ -1293,7 +1454,10 @@ public actor DictationOrchestrator {
         fieldContextTask?.cancel()
         fieldContextTask = nil
         capturedFieldContext = nil
-        capturedTargetBundleID = nil
+        capturedTargetSession &+= 1
+        capturedTargetTask?.cancel()
+        capturedTargetTask = nil
+        capturedTarget = nil
         sessionInterruption = nil
         _ = capture.stop() // discard audio
         phase = .idle

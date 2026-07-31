@@ -116,11 +116,20 @@ latency bar is proven.
    as a ceiling for targets that never read (`PasteRestoreDecider`). If the paste
    itself fails, the text is written eagerly (no dangling promise) and left on the
    clipboard as the user's fallback.
-3. Before either path runs, the **captured-target focus guard** compares the
-   frontmost app (one `NSWorkspace` read) against the app captured at record
-   start: same app → inject; different → re-activate and verify (bounded
-   ~300 ms) → inject; unrecoverable → abort with a note, transcript still
-   recorded to History (`CapturedTargetGuard`).
+3. Before **every** write — each insert/paste and again before a synthesized
+   Return — the **captured-target focus guard** compares the live focus against
+   the target captured at record start: the frontmost app (one `NSWorkspace`
+   read) *and*, when the app exposed one, the focused **window**
+   (`kAXFocusedWindowAttribute`, compared by window-server id with `CFEqual`
+   element identity as the fallback; a 200 ms AX messaging timeout keeps a
+   wedged app off the paste path). Same app+window → inject; different app →
+   re-activate and verify (bounded ~300 ms) → inject; different window of the
+   same app → abort (raising a window under the user is worse than not
+   pasting); unrecoverable → abort with a note, transcript still recorded to
+   History (`CapturedTargetGuard`). Re-validating per write is what stops a
+   verdict taken before a multi-second cleanup from gating a keystroke; a
+   missing window identity degrades to the bundle-only verdict, never to a
+   false abort.
 
 **In-place replacement strategy** (Tier 1/2 cleanup): when insertion went via
 AX we can rewrite the inserted range precisely. When insertion used the paste

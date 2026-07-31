@@ -31,7 +31,7 @@ public enum DeepVocabularyMapping {
     }
 }
 
-/// The optional deep-vocabulary rescoring stage (PRD §8, opt-in, default off).
+/// The optional deep-vocabulary rescoring stage (PRD §8, default on).
 /// Runs a second on-device acoustic pass against the user's dictionary so names
 /// and terms are recognised as spoken rather than only fixed afterward.
 ///

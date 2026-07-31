@@ -23,6 +23,11 @@ public struct CaptureInterruption: Sendable, Equatable {
         /// would clip a still-holding user — the v0.7.5 failure mode). A genuine
         /// steal leaves a silent/short tail that the Fn-up finalize trims anyway.
         case triggerTapStalled
+        /// Accessibility was revoked (or the event tap died unrecoverably) while a
+        /// session was live. The trigger is GONE — no key-up will ever arrive — so
+        /// this is terminal for the utterance and for the hotkey until the user
+        /// re-grants. The raw value names Accessibility because it reaches the log.
+        case permissionLost = "accessibilityLost"
     }
 
     public let reason: Reason
@@ -41,8 +46,11 @@ public extension CaptureInterruption.Reason {
     /// immediately: capture provably can't continue, so anything after this point
     /// would only be accumulated silence.
     ///
-    /// Only `restartFailed` qualifies — the engine could not be restarted, so no
-    /// more audio will ever arrive. `configurationChange` restarted successfully
+    /// `restartFailed` qualifies — the engine could not be restarted, so no more
+    /// audio will ever arrive. `permissionLost` qualifies too, for the opposite
+    /// reason: audio may still flow but the TRIGGER is dead, so the release that
+    /// would normally end the session can never arrive; not finalizing here holds
+    /// the mic open forever. `configurationChange` restarted successfully
     /// (recording continues; the clip carries the marker). `triggerTapStalled`
     /// does NOT finalize: it also fires on a benign main-loop stall while the user
     /// is still holding, so finalizing would clip them; the marker is recorded and
@@ -50,7 +58,7 @@ public extension CaptureInterruption.Reason {
     var finalizesUtterance: Bool {
         switch self {
         case .configurationChange, .triggerTapStalled: return false
-        case .restartFailed: return true
+        case .restartFailed, .permissionLost: return true
         }
     }
 }

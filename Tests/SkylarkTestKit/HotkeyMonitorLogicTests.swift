@@ -62,6 +62,50 @@ struct HotkeyMonitorModifierHeldTests {
     }
 }
 
+// U1 regression. A tap stall used to reset the trigger state machines while the
+// orchestrator kept recording: the user's REAL key-up then returned nil, no
+// `.stopRecording` was ever emitted, and the mic stayed open with the HUD stuck
+// on a live recording dot until quit. Only a FINALIZING interruption may reset.
+@Suite("HotkeyMonitor interruption trigger-state policy")
+struct HotkeyInterruptionResetPolicyTests {
+    @Test("A benign tap stall must NOT reset the trigger state machines")
+    func stallKeepsTriggerState() {
+        #expect(!HotkeyMonitor.interruptionResetsTriggerState(.triggerTapStalled))
+        #expect(!HotkeyMonitor.interruptionResetsTriggerState(.configurationChange))
+    }
+
+    @Test("A finalizing interruption resets them (the session is already over)")
+    func finalizingResetsTriggerState() {
+        #expect(HotkeyMonitor.interruptionResetsTriggerState(.permissionLost))
+        #expect(HotkeyMonitor.interruptionResetsTriggerState(.restartFailed))
+    }
+
+    @Test("After a non-finalizing stall, the real trigger release still stops the session")
+    func releaseAfterStallStillStops() {
+        var processor = HotkeyProcessor()
+        let start = ContinuousClock.now
+        #expect(processor.process(.triggerDown, at: start) == .startRecording)
+
+        // What the monitor does at a `.triggerTapStalled` boundary: emit the
+        // marker, keep the state machine exactly as it was.
+        #expect(!HotkeyMonitor.interruptionResetsTriggerState(.triggerTapStalled))
+        #expect(processor.isRecording)
+
+        let release = start.advanced(by: .milliseconds(900))
+        #expect(processor.process(.triggerUp, at: release) == .stopRecording)
+        #expect(!processor.isRecording)
+    }
+
+    @Test("A reset processor swallows the release — the bug this policy prevents")
+    func resetProcessorSwallowsTheRelease() {
+        var processor = HotkeyProcessor()
+        let start = ContinuousClock.now
+        _ = processor.process(.triggerDown, at: start)
+        processor = HotkeyProcessor()  // the old unconditional reset
+        #expect(processor.process(.triggerUp, at: start.advanced(by: .milliseconds(900))) == nil)
+    }
+}
+
 // The chord keyDown decision — does the event's modifier state EXACTLY match the
 // bound chord — is the load-bearing bit of HotkeyMonitor.handle for chords. It is
 // factored into a pure static so it's testable without a live CGEventTap.

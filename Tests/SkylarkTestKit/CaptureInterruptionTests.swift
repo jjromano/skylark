@@ -22,9 +22,16 @@ private final class InterruptibleCapture: AudioCapturing, @unchecked Sendable {
         interruptionCont = cont
     }
 
+    /// Proves the mic was actually released (a permission loss that skips
+    /// `stop()` leaves the input node running for the process lifetime).
+    private(set) var stopCount = 0
+
     func prepare() {}
     func start() throws {}
-    func stop() -> AudioClip { clip }
+    func stop() -> AudioClip {
+        stopCount += 1
+        return clip
+    }
 
     func report(_ interruption: CaptureInterruption) {
         interruptionCont.yield(interruption)
@@ -62,6 +69,14 @@ private actor RecordingInjector: TextInjecting {
     func canInsertDirectly() async -> Bool { false }
 
     func count() -> Int { inserted.count }
+}
+
+/// Accumulates every status note a run emits, so a test can assert on the LAST
+/// one (some paths emit a generic note before the specific one).
+private actor NoteBox {
+    private var notes: [String] = []
+    func add(_ note: String) { notes.append(note) }
+    func all() -> [String] { notes }
 }
 
 // MARK: - Tests
@@ -131,7 +146,18 @@ struct CaptureInterruptionTests {
         }
     }
 
+    /// Start draining status notes BEFORE the run, keeping all of them.
+    private func collectNotes(_ orchestrator: DictationOrchestrator) -> NoteBox {
+        let box = NoteBox()
+        Task { [box] in
+            for await note in orchestrator.statusNotes { await box.add(note) }
+        }
+        return box
+    }
+
     private let interruptedNote = "Mic interrupted — text may be incomplete"
+    private let permissionLostNote =
+        "Accessibility permission lost — dictation stopped. Transcript is in History."
 
     // MARK: - Dead-tail trim
 
@@ -287,6 +313,56 @@ struct CaptureInterruptionTests {
         await orchestrator.handle(.stopRecording)         // the real key-up finalizes
         #expect(await injector.count() == 1)              // inserted exactly once
         #expect(await firstNote(orchestrator) == interruptedNote)  // still flagged
+    }
+
+    // MARK: - Accessibility revoked mid-utterance (P0-3)
+
+    @Test("permissionLost finalizes: phase leaves recording and the mic is released")
+    func permissionLostFinalizes() async {
+        let capture = InterruptibleCapture(clip: clip(speech: 2.0, dead: 0))
+        let injector = RecordingInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: capture,
+            transcriber: ClipCapturingTranscriber(),
+            injector: injector
+        )
+        await orchestrator.handle(.startRecording)
+        // No trigger release can ever arrive once Accessibility is gone, so the
+        // event itself must end the session — otherwise the mic stays open and
+        // the HUD sits on a live recording dot forever (the v0.12.1 failure).
+        await orchestrator.handle(.permissionLost)
+        await #expect(orchestrator.phase == .idle)
+        #expect(capture.stopCount == 1)
+    }
+
+    @Test("permissionLost still transcribes what was captured, and says where it went")
+    func permissionLostKeepsTheTranscript() async {
+        let transcriber = ClipCapturingTranscriber()
+        let orchestrator = DictationOrchestrator(
+            capture: InterruptibleCapture(clip: clip(speech: 2.0, dead: 0)),
+            transcriber: transcriber,
+            injector: RecordingInjector()
+        )
+        let notes = collectNotes(orchestrator)
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.permissionLost)
+        await settle()
+        #expect(await transcriber.timesCalled() == 1)
+        // Last note wins in the menu bar, and it must name the permission.
+        #expect(await notes.all().last == permissionLostNote)
+    }
+
+    @Test("permissionLost while idle does nothing")
+    func permissionLostWhileIdleIgnored() async {
+        let capture = InterruptibleCapture(clip: clip(speech: 2.0, dead: 0))
+        let orchestrator = DictationOrchestrator(
+            capture: capture,
+            transcriber: ClipCapturingTranscriber(),
+            injector: RecordingInjector()
+        )
+        await orchestrator.handle(.permissionLost)
+        await #expect(orchestrator.phase == .idle)
+        #expect(capture.stopCount == 0)
     }
 
     @Test("captureInterrupted while idle does nothing")

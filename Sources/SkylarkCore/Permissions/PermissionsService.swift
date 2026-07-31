@@ -25,6 +25,28 @@ public final class PermissionsService {
         case inputMonitoring
     }
 
+    /// One poll's worth of grant state. Published on `changes` whenever it differs
+    /// from the previous poll, so consumers see EDGES (revocation, re-grant)
+    /// instead of having to poll a second time themselves.
+    public struct Snapshot: Sendable, Equatable {
+        public var microphone: Grant
+        public var accessibility: Grant
+        public var inputMonitoring: Grant
+        public var fnGlobeActionConflict: Bool
+
+        public init(
+            microphone: Grant,
+            accessibility: Grant,
+            inputMonitoring: Grant,
+            fnGlobeActionConflict: Bool = false
+        ) {
+            self.microphone = microphone
+            self.accessibility = accessibility
+            self.inputMonitoring = inputMonitoring
+            self.fnGlobeActionConflict = fnGlobeActionConflict
+        }
+    }
+
     public private(set) var microphone: Grant = .notDetermined
     public private(set) var accessibility: Grant = .notDetermined
     public private(set) var inputMonitoring: Grant = .notDetermined
@@ -40,7 +62,27 @@ public final class PermissionsService {
 
     private var pollTask: Task<Void, Never>?
 
-    public init() {}
+    /// Reads live TCC state. Injected so the change stream is testable without
+    /// flipping real system grants (there is no API to do that).
+    private let readSnapshot: @MainActor @Sendable () -> Snapshot
+    private var lastSnapshot: Snapshot?
+
+    private let changeContinuation: AsyncStream<Snapshot>.Continuation
+    /// Grant snapshots, emitted on every CHANGE for the app's lifetime. A grant
+    /// can be revoked at any moment — the hotkey tap simply dies when Accessibility
+    /// goes — so consumers must keep listening, not stop at first-all-granted.
+    public nonisolated let changes: AsyncStream<Snapshot>
+
+    public init(reader: (@MainActor @Sendable () -> Snapshot)? = nil) {
+        readSnapshot = reader ?? { PermissionsService.systemSnapshot() }
+        let (stream, continuation) = AsyncStream<Snapshot>.makeStream(bufferingPolicy: .bufferingNewest(8))
+        changes = stream
+        changeContinuation = continuation
+    }
+
+    deinit {
+        changeContinuation.finish()
+    }
 
     public var allGranted: Bool {
         microphone == .granted && accessibility == .granted && inputMonitoring == .granted
@@ -57,10 +99,23 @@ public final class PermissionsService {
     // MARK: - Refresh
 
     public func refresh() {
-        microphone = Self.microphoneGrant()
-        accessibility = Self.accessibilityGrant()
-        inputMonitoring = Self.inputMonitoringGrant()
-        fnGlobeActionConflict = Self.readFnGlobeConflict()
+        let snapshot = readSnapshot()
+        microphone = snapshot.microphone
+        accessibility = snapshot.accessibility
+        inputMonitoring = snapshot.inputMonitoring
+        fnGlobeActionConflict = snapshot.fnGlobeActionConflict
+        guard snapshot != lastSnapshot else { return }
+        lastSnapshot = snapshot
+        changeContinuation.yield(snapshot)
+    }
+
+    private static func systemSnapshot() -> Snapshot {
+        Snapshot(
+            microphone: microphoneGrant(),
+            accessibility: accessibilityGrant(),
+            inputMonitoring: inputMonitoringGrant(),
+            fnGlobeActionConflict: readFnGlobeConflict()
+        )
     }
 
     private static func microphoneGrant() -> Grant {

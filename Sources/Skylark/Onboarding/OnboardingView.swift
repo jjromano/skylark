@@ -9,7 +9,25 @@ struct OnboardingView: View {
     var hotkeyName: String = "Fn (Globe)"
     var onClose: () -> Void
 
+    /// Window geometry lives here because the window is sized once from these
+    /// and never renegotiated (see `AppController.makeWindow(fixedSize:)`).
+    /// The height fits the tallest state — nothing granted, so every row
+    /// carries a Grant button; shorter states leave slack at the bottom.
+    static let contentWidth: CGFloat = 460
+    static let contentHeight: CGFloat = 620
+
     var body: some View {
+        // Scrolls rather than clips: grant state, the Fn conflict warning and
+        // the API-key card all change the content height while the window is
+        // open, and the window will not grow to follow them.
+        ScrollView(.vertical) {
+            content
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(width: Self.contentWidth)
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Welcome to Skylark")
@@ -85,7 +103,7 @@ struct OnboardingView: View {
             }
         }
         .padding(24)
-        .frame(width: 460)
+        .frame(width: Self.contentWidth, alignment: .leading)
         .onAppear { permissions.startPolling() }
     }
 }

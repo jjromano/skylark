@@ -6,6 +6,38 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.12.3 — 2026-07-31
+
+**P0 reliability release: every corruption/crash finding from the 2026-07-30/31
+QA passes, fixed and verified live.**
+
+- **Deep vocabulary matching is fixed and back on by default.** The corruption
+  shipped in v0.12.x came from FluidAudio's spotter-rescue pass, which bypasses
+  the string-similarity gate and let a flat acoustic bonus replace unrelated
+  words with dictionary terms ("The meeting starts" became "CLAUDE.md" at
+  similarity 0.06). The rescue pass is now disabled for Skylark's short
+  user-dictionary vocabularies (FluidAudio's own guidance for this case);
+  misspelling aliases still correct as designed ("cloud.md" → "CLAUDE.md").
+  Anyone the v0.12.2 kill switch turned off is re-enabled once, with a notice.
+- **No more crash on launch when Accessibility is not granted.** The onboarding
+  window died in an AppKit constraint feedback loop before it could walk you
+  through granting permissions — likely the first-run path. The window is now
+  fixed-size with scrolling content and survives every launch.
+- **Revoking Accessibility while Skylark runs no longer wedges recording or
+  your Mac.** Permission loss is now a first-class event: the session finalizes
+  at the boundary (transcript saved to History), the mic is released, the HUD
+  returns to idle, and notes name Accessibility and the Settings pane. The
+  event-tap recovery loop checks the actual permission before calling a stall
+  a stall, and gives up loudly after bounded retries instead of looping every
+  60 s forever. A benign tap stall no longer eats the key release (the session
+  now ends when you let go).
+- **Text and Return can no longer land in the wrong window of the same app.**
+  The focus guard now captures window identity (not just the app) and
+  revalidates immediately before every write and again before pressing Return,
+  so switching windows or apps during Processing safely aborts: text is kept
+  in History and a note says so. Cross-app behavior (re-activating the
+  original app) is unchanged.
+
 ## 0.12.2 — 2026-07-31
 
 - **Safety release: deep vocabulary matching is forced off.** With the feature
