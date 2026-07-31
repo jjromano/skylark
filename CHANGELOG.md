@@ -6,6 +6,15 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.12.2 — 2026-07-31
+
+- **Safety release: deep vocabulary matching is forced off.** With the feature
+  enabled, every cleaned dictation could have unrelated words replaced by
+  dictionary terms (e.g. "The meeting starts at three" became "The meeting
+  Claude"). The feature was already opt-in (default off); this release turns it
+  off once for anyone who enabled it, with a notice. It will return, on by
+  default, once the matcher is fixed and verified.
+
 ## 0.12.1 — 2026-07-27
 
 - Fixed the new interruption handling clipping a still-holding user. A mid-hold

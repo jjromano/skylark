@@ -227,6 +227,8 @@ final class AppController {
     /// Runs a second on-device acoustic pass against the dictionary so names/terms
     /// are recognised as spoken. Needs the ~98 MB CTC helper model.
     static let deepVocabKey = "dictionary.deepVocabMatching"
+    /// One-shot marker for the v0.12.2 forced disable (see start()).
+    static let deepVocabKillSwitchKey = "dictionary.deepVocabMatching.v0122KillSwitch"
     private(set) var deepVocabEnabled: Bool = UserDefaults.standard.bool(forKey: AppController.deepVocabKey)
 
     /// Enable/disable deep vocabulary matching. On first enable, downloads the CTC
@@ -1130,6 +1132,16 @@ final class AppController {
         // Cache key presence off-main so no SwiftUI body ever touches the
         // keychain (main-thread mutex hang; see hasAPIKey).
         refreshAPIKeyPresence()
+        // v0.12.2 kill switch: deep vocabulary matching corrupts cleaned text
+        // (dictionary terms replace unrelated words on every cleaned dictation),
+        // so force it off once for anyone who had it enabled. The one-shot key
+        // lets users deliberately re-enable it before the matcher fix ships.
+        if deepVocabEnabled, !UserDefaults.standard.bool(forKey: Self.deepVocabKillSwitchKey) {
+            UserDefaults.standard.set(true, forKey: Self.deepVocabKillSwitchKey)
+            deepVocabEnabled = false
+            UserDefaults.standard.set(false, forKey: Self.deepVocabKey)
+            showNote("Deep vocabulary matching is off: a bug corrupts cleaned text. It will return once fixed.")
+        }
         // Re-arm deep vocabulary if it was left on and the model is still present
         // (no auto-download at launch — a missing model just leaves it dormant
         // until re-enabled). The rescorer loads the CTC model lazily on first use.
