@@ -38,8 +38,8 @@ questions. I verified it in the code.
    one-line change at `DictationOrchestrator.swift:818`.
 2. **The validation checklist cannot serve as a release gate in its current
    form.** It was last updated 2026-07-05 and covers none of the destructive
-   paths added since. Treat the Cowork QA pass, not the checklist, as the gate
-   for this release, and rewrite the checklist after.
+   paths added since. Treat the live QA pass, not the checklist, as the gate for
+   this release, and rewrite the checklist after.
 3. **Your custom dictionary is uploaded to OpenRouter on every cloud cleanup,
    in full, regardless of what you said** (P2). The dictionary auto-learns from
    your corrections, so it fills with real names over time without you curating
@@ -521,7 +521,7 @@ rather than by trusting the existing audit:
 | **Fix when convenient** | C6, C7, C8, C9, P3, P4 |
 | **Rewrite before it is used as a gate again** | C10, the stale PRD scope sections, and `docs/privacy-audit.md` (its "exactly three categories of outbound network access" claim is now false) |
 | **Triage the leads** | U1 through U12, starting with U1 and U4 |
-| **Answer with live QA, not code reading** | the twelve targets folded into `docs/qa/live-qa-handoff.md` §8 |
+| **Answer with live QA, not code reading** | the sixteen targeted experiments in `docs/qa/live-qa-handoff.md` §7 |
 
 P4 has a second-order consequence worth stating separately: because the old
 model is deleted before the new one is validated, a failed Qwen upgrade leaves
