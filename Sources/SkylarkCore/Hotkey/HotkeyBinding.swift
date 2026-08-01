@@ -119,6 +119,10 @@ public enum HotkeyBinding: Sendable, Equatable, Hashable {
     /// UserDefaults key for the optional Voice Command Mode keyboard binding
     /// (default UNBOUND — the user enables it in Settings → General).
     public static let defaultsKeyCommand = "hotkey.command"
+    /// UserDefaults key for the optional "cycle cleanup model" keyboard binding
+    /// (default UNBOUND — PRD §7 makes the cycle hotkey optional). Fire-on-press:
+    /// it advances the active cleanup selection, it never records anything.
+    public static let defaultsKeyCycleCleanup = "hotkey.cycleCleanup"
 
     // MARK: - Function-key table
 

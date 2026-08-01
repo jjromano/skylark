@@ -79,6 +79,11 @@ final class AppController {
     /// While held, the user speaks an instruction that rewrites the selection or
     /// generates text at the cursor. Persisted under `hotkey.command`.
     private(set) var hotkeyCommand: HotkeyBinding?
+    /// Optional "cycle cleanup model" trigger (keyboard only; default UNBOUND —
+    /// PRD §7 makes it optional). Each press advances the active cleanup
+    /// selection one step through the options the menu bar offers and names the
+    /// new one in a menu-bar note. Persisted under `hotkey.cycleCleanup`.
+    private(set) var hotkeyCycleCleanup: HotkeyBinding?
 
     func setHotkeyKeyboard(_ binding: HotkeyBinding) {
         hotkeyKeyboard = binding
@@ -97,6 +102,17 @@ final class AppController {
         monitor.setCommandBinding(binding)
     }
 
+    /// Set (or clear, nil) the cleanup-cycle trigger. Applied live.
+    func setHotkeyCycleCleanup(_ binding: HotkeyBinding?) {
+        hotkeyCycleCleanup = binding
+        if let binding {
+            UserDefaults.standard.set(binding.rawValue, forKey: HotkeyBinding.defaultsKeyCycleCleanup)
+        } else {
+            UserDefaults.standard.removeObject(forKey: HotkeyBinding.defaultsKeyCycleCleanup)
+        }
+        monitor.setCleanupCycleBinding(binding)
+    }
+
     /// Pause the global hotkey tap while the Settings shortcut recorder is
     /// active — the tap swallows bound keys at the HID level, so the recorder
     /// could never re-capture the current binding (and a stray press would
@@ -108,6 +124,7 @@ final class AppController {
     func resumeHotkeyMonitoring() {
         monitor.setBindings(keyboard: hotkeyKeyboard, mouse: hotkeyMouse)
         monitor.setCommandBinding(hotkeyCommand)
+        monitor.setCleanupCycleBinding(hotkeyCycleCleanup)
         monitor.start()
     }
 
@@ -797,6 +814,13 @@ final class AppController {
     /// Bridges @Sendable notice callbacks built during init to `showNote`.
     @ObservationIgnored private let noticeRelay = NoticeRelay()
 
+    /// Registry-backed provider pins for cloud cleanup slugs. The cloud-cleaner
+    /// factory runs off the main actor (one cleaner per dictation), so it reads
+    /// pins from this lock-backed snapshot rather than the main-actor
+    /// `cleanupModels` list; `reloadRegistryLists` republishes it. Seeded from
+    /// `ModelRegistryEntry.seed`, so it answers correctly before any DB read.
+    @ObservationIgnored private let cleanupPins = CleanupProviderPins()
+
     // Model-preparation states arrive on an arbitrary queue; funnel them through
     // a Sendable stream (tagged with which model) and apply them on the main
     // actor (see start()).
@@ -842,6 +866,8 @@ final class AppController {
         hotkeyMouse = UserDefaults.standard.string(forKey: HotkeyBinding.defaultsKeyMouse)
             .flatMap(HotkeyBinding.init(rawValue:))
         hotkeyCommand = UserDefaults.standard.string(forKey: HotkeyBinding.defaultsKeyCommand)
+            .flatMap(HotkeyBinding.init(rawValue:))
+        hotkeyCycleCleanup = UserDefaults.standard.string(forKey: HotkeyBinding.defaultsKeyCycleCleanup)
             .flatMap(HotkeyBinding.init(rawValue:))
 
         pressEnterEnabled = UserDefaults.standard.bool(forKey: Self.pressEnterKey)
@@ -909,13 +935,26 @@ final class AppController {
         openRouterClient = client
         modelSelection = ModelSelection(registry: registryStore)
 
-        // Cloud cleanup slot: build an OpenRouterCleaner per slug on demand. All
-        // registry cleanup models are Groq-pinned, as are ad-hoc slugs we upsert.
+        // Cloud cleanup slot: build an OpenRouterCleaner per slug on demand. The
+        // provider pin is RESOLVED from the registry, not assumed: the shipped
+        // cleanup models are Groq-pinned for speed, but a slug the registry
+        // doesn't know gets no pin at all. Force-pinning an arbitrary
+        // user-entered slug to Groq (what this used to do) inverts the point of
+        // pinning — Groq may not serve that model, so the request lands wherever
+        // `allow_fallbacks` takes it and the user's model switch stops meaning
+        // anything. Runs off the main actor, hence the lock-backed snapshot.
+        let pins = cleanupPins
         let cloudFactory: @Sendable (String) -> (any Cleaner)? = { slug in
             guard !slug.isEmpty else { return nil }
             return OpenRouterCleaner(
                 client: client,
-                entry: ModelRegistryEntry(slug: slug, label: slug, providerPin: "groq", kind: .cleanup, sort: 0)
+                entry: ModelRegistryEntry(
+                    slug: slug,
+                    label: slug,
+                    providerPin: pins.providerPin(for: slug),
+                    kind: .cleanup,
+                    sort: 0
+                )
             )
         }
 
@@ -947,7 +986,8 @@ final class AppController {
         // reaches the cloud only when the cleanup tier is cloud (privacy §7).
         let commandRunner = CommandRunner(
             client: client,
-            localBackend: LocalCleaner.makeDefaultBackend()
+            localBackend: LocalCleaner.makeDefaultBackend(),
+            providerPin: { [cleanupPins] slug in cleanupPins.providerPin(for: slug) }
         )
 
         // Local cleanup engine: Apple Foundation Models by default, a local
@@ -1104,6 +1144,13 @@ final class AppController {
                 self?.showNote(note)
             }
         }
+        // Optional cleanup-cycle trigger (PRD §7). A plain edge — no session, no
+        // pipeline involvement — so it's applied here, exactly as the menus do.
+        Task { [monitor, weak self] in
+            for await _ in monitor.cleanupCycles {
+                self?.cycleCleanupSelection()
+            }
+        }
         // A refused start (session still processing) may have left the hotkey
         // layer holding a hands-free lock for a session that never began —
         // release it so the next press isn't eaten as a phantom stop.
@@ -1151,9 +1198,9 @@ final class AppController {
         Task { [orchestrator] in await orchestrator.setTranscriberReady(false) }
         hud.isPreparing = true
 
-        // Prepare Parakeet (default active local) + VAD concurrently at launch
-        // (VAD degrades gracefully). Whisper stays cold until selected.
-        Task { [parakeet] in try? await parakeet.warmUp() }
+        // Prepare the ACTIVE local speech engine + VAD concurrently at launch
+        // (VAD degrades gracefully). Every other engine stays cold until selected.
+        warmActiveEngineAtLaunch()
         Task { [endpointer, whisperModeOn] in
             await endpointer.prepare()
             await endpointer.setTuning(.forWhisperMode(whisperModeOn))
@@ -1231,6 +1278,7 @@ final class AppController {
         // Bindings are applied first so a non-default hotkey works from launch.
         monitor.setBindings(keyboard: hotkeyKeyboard, mouse: hotkeyMouse)
         monitor.setCommandBinding(hotkeyCommand)
+        monitor.setCleanupCycleBinding(hotkeyCycleCleanup)
         monitor.start()
 
         if permissions.allGranted {
@@ -1242,6 +1290,38 @@ final class AppController {
         // Auto-advance from onboarding to the HUD once all grants land.
         permissions.startPolling()
         observeGrants()
+    }
+
+    /// Warm exactly the local speech engine the PERSISTED selection uses.
+    ///
+    /// This used to be an unconditional `parakeet.warmUp()` fired before
+    /// `bootstrapSelection()` applied the persisted choice: a user on Whisper or
+    /// Apple Speech who had deleted the Parakeet model got an unrequested Hugging
+    /// Face connection and a ~483 MB download at every launch (P2-4). The choice
+    /// is a single synchronous UserDefaults read (`ModelSelection` loads it in
+    /// `init`), so it is already known here — nothing has to wait for the
+    /// database. A fresh install (Parakeet selected) warms exactly as before, and
+    /// a cloud selection warms the local engine that backs its `FallbackTranscriber`.
+    ///
+    /// Routed through `rebuildGate` like every other engine rebuild: a selection
+    /// change (or `bootstrapSelection`'s own rebuild) supersedes this one instead
+    /// of racing its install and teardown.
+    private func warmActiveEngineAtLaunch() {
+        let choice = modelSelection.sttChoice
+        activeLocal = choice.warmLocalEngine(cloudFallback: activeLocal)
+        let engine = localEngine(for: activeLocal)
+        let token = rebuildGate.begin(choice)
+        Task { [engine, orchestrator, choice, weak self] in
+            try? await engine.warmUp()
+            // Install only for a LOCAL selection: a cloud selection's transcriber
+            // is the `FallbackTranscriber` that `rebuildTranscriber()` builds, and
+            // this warm exists only to have its local fallback resident. A rebuild
+            // that started while we warmed owns the install either way (the warm
+            // itself is never wasted — it's the engine that rebuild keeps).
+            guard choice.isLocal, let self, self.isCurrentRebuild(token) else { return }
+            await orchestrator.setTranscriber(engine)
+            await orchestrator.setTranscriberReady(true)
+        }
     }
 
     /// Seed the DB (idempotent), load registry lists, apply persisted selections.
@@ -1256,6 +1336,7 @@ final class AppController {
             cleanupModels = ModelRegistryEntry.seed.filter { $0.kind == .cleanup }
             sttModels = ModelRegistryEntry.seed.filter { $0.kind == .stt }
         }
+        cleanupPins.publish(cleanupModels)
         try? await modeStore?.seedIfEmpty()
 
         applyCleanupOverride(cleanupOverride)
@@ -1650,6 +1731,49 @@ final class AppController {
         Task { [orchestrator] in await orchestrator.setTierOverride(tier) }
     }
 
+    // MARK: - Cleanup cycle hotkey (PRD §7)
+
+    /// Advance the active cleanup selection one step and say what it landed on.
+    ///
+    /// The ring is the same set the menus offer — Auto, Raw, Apple Intelligence,
+    /// each Qwen model actually on disk, then the cloud models when a key is
+    /// stored (`CleanupCycle`) — and each stop is applied through the very same
+    /// setters the menu items call, so the menu-bar check marks and the Settings
+    /// pickers follow along with no extra bookkeeping. Bound to nothing by
+    /// default; `hotkeyCycleCleanup` is where the user opts in.
+    func cycleCleanupSelection() {
+        let options = CleanupCycle.options(
+            localModels: LocalCleanupModel.installed,
+            cloudModels: cleanupModels,
+            hasAPIKey: hasAPIKey
+        )
+        let current = CleanupCycle.current(
+            tierOverride: cleanupOverride,
+            localEngine: localCleanupEngine,
+            cloudSlug: currentCleanupSlug,
+            options: options
+        )
+        guard let next = CleanupCycle.next(after: current, in: options) else { return }
+        applyCleanupCycleOption(next)
+        showNote("Cleanup: \(next.displayName)")
+    }
+
+    /// Apply one ring stop exactly as the corresponding menu item would.
+    private func applyCleanupCycleOption(_ option: CleanupCycleOption) {
+        switch option {
+        case .auto, .raw:
+            setCleanupOverride(option.tierOverride)
+        case .local(let engine):
+            // Engine first, then the tier: the swap warms the new backend, and
+            // the tier change is what routes the next dictation to it.
+            setLocalCleanupEngine(engine)
+            setCleanupOverride(option.tierOverride)
+        case .cloud(let slug, _):
+            selectCleanupSlug(slug)
+            setCleanupOverride(option.tierOverride)
+        }
+    }
+
     // MARK: - Cleanup intensity (Settings → General)
 
     /// Set from Settings; persists and pushes the level to the orchestrator.
@@ -1709,6 +1833,10 @@ final class AppController {
         guard let registryStore else { return }
         cleanupModels = (try? await registryStore.all(kind: .cleanup)) ?? cleanupModels
         sttModels = (try? await registryStore.all(kind: .stt)) ?? sttModels
+        // Keep the off-main-actor pin snapshot in step with the rows the menus
+        // show — a slug the user just added must resolve its pin, not fall
+        // through to "unknown".
+        cleanupPins.publish(cleanupModels)
     }
 
     private static let engineLogger = Logger(subsystem: "com.jjromano.skylark", category: "engine")

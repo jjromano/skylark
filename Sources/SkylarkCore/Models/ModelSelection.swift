@@ -47,8 +47,9 @@ public enum STTChoice: Sendable, Equatable, Hashable {
 /// Live, UserDefaults-backed model selection surfaced by the menu-bar
 /// quick-switcher (phase-3 spec §2). Non-secret, so it lives in plain
 /// UserDefaults keys. When the user picks a free-text slug that isn't already in
-/// the registry it's upserted as an ad-hoc entry (groq pin for cleanup, no pin
-/// for stt) so it shows up in the menus thereafter.
+/// the registry it's upserted as an ad-hoc entry (with the registry-resolved
+/// provider pin — none for an unknown slug) so it shows up in the menus
+/// thereafter.
 @MainActor
 @Observable
 public final class ModelSelection {
@@ -79,13 +80,23 @@ public final class ModelSelection {
         self.sttChoice = STTChoice(serialized: defaults.string(forKey: Key.sttChoice))
     }
 
-    /// Set the global cleanup slug; upsert an ad-hoc registry entry (groq pin)
-    /// when the slug isn't already known so it appears in menus thereafter.
+    /// Set the global cleanup slug; upsert an ad-hoc registry entry when the slug
+    /// isn't already known so it appears in menus thereafter.
+    ///
+    /// The pin is RESOLVED, never assumed: a slug the registry knows keeps its
+    /// curated pin, and an unknown free-text slug is stored with NO pin so
+    /// OpenRouter routes it. Pinning an arbitrary slug to Groq (which this used
+    /// to do) is worse than not pinning at all — Groq may not serve that model,
+    /// so the user's deliberate switch silently lands somewhere else.
     public func setCleanupSlug(_ slug: String, known: [ModelRegistryEntry]) async {
         cleanupSlug = slug
         guard !slug.isEmpty, !known.contains(where: { $0.slug == slug }) else { return }
         try? await registry?.upsert(entry: ModelRegistryEntry(
-            slug: slug, label: slug, providerPin: "groq", kind: .cleanup, sort: 999
+            slug: slug,
+            label: slug,
+            providerPin: CleanupProviderPins.providerPin(for: slug, known: known),
+            kind: .cleanup,
+            sort: 999
         ))
     }
 

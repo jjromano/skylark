@@ -506,4 +506,76 @@ struct PersistenceTests {
         let modes = try await store.all()
         #expect(modes.contains { $0.id == "default" })
     }
+
+    // MARK: - Migration v5 (whisper_mode_override column, R3)
+
+    @Test("v5 migration adds whisper_mode_override as a nullable column; pre-existing rows read back as follow-global")
+    func v5MigrationAddsWhisperModeOverrideColumn() throws {
+        // Same reasoning as the v3 test above: a fresh `SkylarkDatabase` always
+        // starts fully migrated, so there's no way to observe the pre-v5 shape
+        // through that entry point. Drive the shared `migrator` directly: apply
+        // up through "v4", insert a row in that pre-"v5" shape (no
+        // whisper_mode_override column exists yet), then run the rest of the
+        // chain and confirm the column exists and the old row decodes as
+        // `.followGlobal` (the additive migration's whole point — no backfill
+        // needed because NULL already means "no override").
+        let dbQueue = try DatabaseQueue()
+        try SkylarkDatabase.migrator.migrate(dbQueue, upTo: "v4")
+
+        try dbQueue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO modes (id, name, bundle_id_pattern, engine, cleanup_tier, cloud_cleanup_slug, register_hint, is_default)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                arguments: ["default", "Default", nil, nil, "local", nil, nil, true]
+            )
+        }
+
+        try SkylarkDatabase.migrator.migrate(dbQueue)
+
+        let columns = try dbQueue.read { db in try db.columns(in: "modes").map(\.name) }
+        #expect(columns.contains("whisper_mode_override"))
+
+        let modes = try dbQueue.read { db in try ModeRecord.fetchAll(db) }
+        let preExisting = try #require(modes.first { $0.id == "default" })
+        #expect(preExisting.whisperModeOverride == .followGlobal)
+    }
+
+    @Test("Freshly migrated database already has the v5 modes schema")
+    func freshDatabaseHasV5Schema() async throws {
+        let db = try makeDB()
+        let columns = try await db.dbQueue.read { conn in try conn.columns(in: "modes").map(\.name) }
+        #expect(columns.contains("whisper_mode_override"))
+    }
+
+    // MARK: - Whisper Mode override (R3)
+
+    @Test("Mode whisper_mode_override round-trips through the store (on/off/follow-global)")
+    func modeWhisperModeOverrideRoundTrips() async throws {
+        let store = ModeStore(db: try makeDB())
+        try await store.upsert(ModeRecord(
+            id: "loud", name: "Loud", cleanupTier: .raw, whisperModeOverride: .off, isDefault: false
+        ))
+        try await store.upsert(ModeRecord(
+            id: "quiet", name: "Quiet", cleanupTier: .raw, whisperModeOverride: .on, isDefault: false
+        ))
+        try await store.upsert(ModeRecord(
+            id: "neutral", name: "Neutral", cleanupTier: .raw, isDefault: false
+        ))
+
+        let modes = try await store.all()
+        #expect(modes.first { $0.id == "loud" }?.whisperModeOverride == .off)
+        #expect(modes.first { $0.id == "quiet" }?.whisperModeOverride == .on)
+        // Default (unspecified at construction) is `.followGlobal`, stored NULL.
+        #expect(modes.first { $0.id == "neutral" }?.whisperModeOverride == .followGlobal)
+    }
+
+    @Test("Mode seedIfEmpty defaults are follow-global")
+    func modeSeedDefaultsFollowGlobal() async throws {
+        let store = ModeStore(db: try makeDB())
+        try await store.seedIfEmpty()
+        let modes = try await store.all()
+        #expect(modes.allSatisfy { $0.whisperModeOverride == .followGlobal })
+    }
 }

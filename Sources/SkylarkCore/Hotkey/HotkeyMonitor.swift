@@ -31,6 +31,10 @@ public final class HotkeyMonitor: @unchecked Sendable {
     /// Distinct from the dictation trigger; when it collides with the dictation
     /// keyboard binding the dictation binding wins (checked first in `handle`).
     private var commandBinding: HotkeyBinding?
+    /// Optional "cycle cleanup model" trigger (keyboard only). nil = unbound.
+    /// Lowest precedence of the three: dictation wins a collision, then command,
+    /// then this — the same first-match-wins order `handle` checks them in.
+    private var cleanupCycleBinding: HotkeyBinding?
 
     /// Sticky pressed-state for the keyboard trigger. Only ever updated from the
     /// bound keycode's own event (modifier flagsChanged keyed strictly on its
@@ -41,6 +45,9 @@ public final class HotkeyMonitor: @unchecked Sendable {
     private var mousePressed = false
     /// Sticky pressed-state for the command trigger key.
     private var commandPressed = false
+    /// Whether the cleanup-cycle key's own keyDown was swallowed, so its keyUp is
+    /// swallowed too (and no other press is mistaken for its release).
+    private var cyclePressed = false
 
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -80,6 +87,13 @@ public final class HotkeyMonitor: @unchecked Sendable {
     /// Stream of high-level recording events for the orchestrator.
     public let events: AsyncStream<HotkeyEvent>
 
+    private let cycleContinuation: AsyncStream<Void>.Continuation
+    /// Fires once per press of the optional cleanup-cycle trigger. A separate
+    /// stream, not a `HotkeyEvent`: the action is a plain edge with no recording
+    /// semantics (no processor, no hold, no double-tap), and the pipeline has no
+    /// business seeing it — the app layer advances the cleanup selection.
+    public nonisolated let cleanupCycles: AsyncStream<Void>
+
     private let noteContinuation: AsyncStream<String>.Continuation
     /// User-visible notes about the hotkey itself (the tap dying is invisible to
     /// the pipeline, so it cannot ride the orchestrator's note stream). The app
@@ -95,11 +109,15 @@ public final class HotkeyMonitor: @unchecked Sendable {
         let (noteStream, noteCont) = AsyncStream<String>.makeStream(bufferingPolicy: .bufferingNewest(4))
         notes = noteStream
         noteContinuation = noteCont
+        let (cycleStream, cycleCont) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(4))
+        cleanupCycles = cycleStream
+        cycleContinuation = cycleCont
     }
 
     deinit {
         continuation.finish()
         noteContinuation.finish()
+        cycleContinuation.finish()
     }
 
     // MARK: - Configuration (main-thread confined)
@@ -132,6 +150,17 @@ public final class HotkeyMonitor: @unchecked Sendable {
         }
         commandPressed = false
         logger.info("hotkey command binding set: \(binding?.rawValue ?? "none", privacy: .public)")
+    }
+
+    /// Set (or clear) the optional cleanup-cycle trigger. Like the others the tap
+    /// needn't rebuild. There is no session to release — the trigger only ever
+    /// fires an edge — so this just drops any swallowed-keyDown state so the new
+    /// binding starts clean.
+    @MainActor
+    public func setCleanupCycleBinding(_ binding: HotkeyBinding?) {
+        cleanupCycleBinding = binding
+        cyclePressed = false
+        logger.info("hotkey cleanup-cycle binding set: \(binding?.rawValue ?? "none", privacy: .public)")
     }
 
     // MARK: - Lifecycle (main-thread confined)
@@ -259,6 +288,7 @@ public final class HotkeyMonitor: @unchecked Sendable {
         keyboardPressed = false
         mousePressed = false
         commandPressed = false
+        cyclePressed = false
         logger.info("hotkey tap active")
     }
 
@@ -288,6 +318,29 @@ public final class HotkeyMonitor: @unchecked Sendable {
     /// binding-agnostic `reconcileNeedsSyntheticUp`.
     public static func reconcileNeedsSyntheticFnUp(wasPressed: Bool, nowPressed: Bool) -> Bool {
         reconcileNeedsSyntheticUp(wasPressed: wasPressed, nowPressed: nowPressed)
+    }
+
+    /// Whether a keyDown is this binding's trigger: an F13–F19 binding matches on
+    /// keycode alone, a chord additionally needs an EXACT match on the four
+    /// modifier bits, and a modifier binding never arrives as a keyDown at all.
+    /// Pure so the match rule is unit-tested without a live tap.
+    /// `eventFlagsRawValue` is `CGEventFlags.rawValue`.
+    public static func keyDownMatches(
+        _ binding: HotkeyBinding, keycode: Int, eventFlagsRawValue: UInt64
+    ) -> Bool {
+        if binding.isFunctionKey { return keycode == binding.keyCode }
+        if case let .chord(mods, code) = binding {
+            return keycode == code
+                && chordModifiersMatch(eventFlagsRawValue: eventFlagsRawValue, chord: mods)
+        }
+        return false
+    }
+
+    /// Emit one cleanup-cycle edge. No content, no state — the app layer decides
+    /// what "next" means and shows the result.
+    private func fireCleanupCycle() {
+        logger.info("cleanup-cycle hotkey pressed")
+        cycleContinuation.yield(())
     }
 
     /// The four device-independent modifier bits (shift/control/option/command)
@@ -372,6 +425,13 @@ public final class HotkeyMonitor: @unchecked Sendable {
                 emitCommand(commandProcessor.process(down ? .triggerDown : .triggerUp, at: now))
                 return nil  // swallow the bound modifier
             }
+            // Cleanup-cycle trigger (modifier): fires on the press edge only; the
+            // release is swallowed too so the bound modifier never leaks.
+            if let cycle = cleanupCycleBinding, cycle.isModifier, keycode == cycle.keyCode,
+               let mask = flagMask(for: cycle) {
+                if event.flags.contains(mask) { fireCleanupCycle() }
+                return nil  // swallow the bound modifier
+            }
             return passthrough
 
         case .keyDown:
@@ -417,6 +477,17 @@ public final class HotkeyMonitor: @unchecked Sendable {
                 }
                 return nil  // swallow (down + auto-repeat)
             }
+            // Cleanup-cycle trigger (function key or chord). Lowest precedence, so
+            // it is checked after both dictation and command. One edge per press:
+            // auto-repeat is swallowed but never cycles again.
+            if let cycle = cleanupCycleBinding,
+               Self.keyDownMatches(cycle, keycode: keycode, eventFlagsRawValue: event.flags.rawValue) {
+                if event.getIntegerValueField(.keyboardEventAutorepeat) == 0 {
+                    cyclePressed = true
+                    fireCleanupCycle()
+                }
+                return nil  // swallow (down + auto-repeat)
+            }
             // Skip unknown-keycode keyDowns carrying the fn flag (Fn+media keys).
             if event.flags.contains(.maskSecondaryFn), keycode >= 0x80 {
                 return passthrough
@@ -451,6 +522,12 @@ public final class HotkeyMonitor: @unchecked Sendable {
             if let cmd = commandBinding, cmd.isChord, keycode == cmd.keyCode, commandPressed {
                 commandPressed = false
                 emitCommand(commandProcessor.process(.triggerUp, at: now))
+                return nil  // swallow
+            }
+            // Cleanup-cycle release: nothing to fire, just swallow the keyUp whose
+            // keyDown we swallowed (only while that press is actually ours).
+            if let cycle = cleanupCycleBinding, keycode == cycle.keyCode, cyclePressed {
+                cyclePressed = false
                 return nil  // swallow
             }
             return passthrough

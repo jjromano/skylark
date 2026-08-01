@@ -174,6 +174,17 @@ public final class SkylarkDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v5") { db in
+            // Per-mode Whisper Mode override (R3): NULL = "follow the global
+            // toggle" (`WhisperModeOverride.followGlobal`), "on"/"off" pin the
+            // mode to always-on/always-off regardless of the global setting.
+            // Purely additive — every pre-v5 row reads back as NULL, i.e.
+            // follow-global, with no backfill needed.
+            try db.alter(table: "modes") { t in
+                t.add(column: "whisper_mode_override", .text)
+            }
+        }
+
         return migrator
     }
 }

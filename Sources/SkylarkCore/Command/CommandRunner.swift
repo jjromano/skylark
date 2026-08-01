@@ -44,18 +44,20 @@ public protocol CommandRunning: Sendable {
 public struct CommandRunner: CommandRunning {
     private let client: OpenRouterClient
     private let localBackend: any LocalCleanupBackend
-    /// Provider pin applied to cloud requests (mirrors the cleanup cloudFactory,
-    /// which Groq-pins the cleanup catalog per ARCHITECTURE §6).
-    private let cloudProviderPin: String?
+    /// Per-slug provider pin for cloud requests. A static pin is wrong here for
+    /// the same reason it was in the cleanup factory (an arbitrary slug pinned
+    /// to a provider that may not serve it): the active cleanup slug varies, so
+    /// the pin must be resolved per call. Default: no pin, OpenRouter routes.
+    private let providerPin: @Sendable (String) -> String?
 
     public init(
         client: OpenRouterClient,
         localBackend: any LocalCleanupBackend,
-        cloudProviderPin: String? = "groq"
+        providerPin: @escaping @Sendable (String) -> String? = { _ in nil }
     ) {
         self.client = client
         self.localBackend = localBackend
-        self.cloudProviderPin = cloudProviderPin
+        self.providerPin = providerPin
     }
 
     /// Note surfaced when a cloud outage was served on-device (mirrors the
@@ -122,7 +124,7 @@ public struct CommandRunner: CommandRunning {
             let stream = try await client.complete(
                 messages: messages,
                 model: slug,
-                providerPin: cloudProviderPin,
+                providerPin: providerPin(slug),
                 stream: false,
                 temperature: 0.2,
                 maxTokens: maxTokens

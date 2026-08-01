@@ -38,6 +38,22 @@ struct ModeProviderAdapterTests {
         #expect(ModeProviderAdapter.toRecord(mode) == record)
     }
 
+    @Test("ModeRecord → DictationMode → ModeRecord round-trips the whisper mode override")
+    func roundTripsWhisperModeOverride() {
+        for override: WhisperModeOverride in [.followGlobal, .on, .off] {
+            let record = ModeRecord(
+                id: "mode-\(override)",
+                name: "Mode",
+                cleanupTier: .local,
+                whisperModeOverride: override,
+                isDefault: false
+            )
+            let mode = ModeProviderAdapter.toDictationMode(record)
+            #expect(mode.whisperModeOverride == override)
+            #expect(ModeProviderAdapter.toRecord(mode) == record)
+        }
+    }
+
     @Test("Adapter reads modes from the backing ModeStore")
     func readsFromStore() async throws {
         let db = try SkylarkDatabase.inMemory()

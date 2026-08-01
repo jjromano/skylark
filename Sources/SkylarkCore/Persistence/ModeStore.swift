@@ -30,6 +30,31 @@ extension CleanupTier {
     }
 }
 
+/// Serialization of `WhisperModeOverride` into the nullable
+/// `modes.whisper_mode_override` TEXT column (schema v5, R3): NULL means
+/// "follow global" (also the default for every pre-v5 row, via the additive
+/// migration), "on"/"off" store the two explicit overrides. Mirrors
+/// `CleanupTier`'s `serialized`/`init?(serialized:)` pair above — same
+/// nullable/enum-coded column convention, just nil-able at the Swift side too
+/// since `followGlobal` has no TEXT representation of its own.
+extension WhisperModeOverride {
+    var serialized: String? {
+        switch self {
+        case .followGlobal: return nil
+        case .on: return "on"
+        case .off: return "off"
+        }
+    }
+
+    init(serialized: String?) {
+        switch serialized {
+        case "on": self = .on
+        case "off": self = .off
+        default: self = .followGlobal
+        }
+    }
+}
+
 /// A persisted dictation mode (ARCHITECTURE §5 `modes` table). Deliberately a
 /// standalone record rather than the app-facing `DictationMode` type (owned by
 /// the parallel Phase-2 worktree, out of scope here) — the integration pass
@@ -41,6 +66,8 @@ public struct ModeRecord: Sendable, Equatable, Identifiable {
     public var engine: String?
     public var cleanupTier: CleanupTier
     public var registerHint: String?
+    /// Per-mode Whisper Mode override (R3, schema v5). Default `.followGlobal`.
+    public var whisperModeOverride: WhisperModeOverride
     public var isDefault: Bool
 
     public init(
@@ -50,6 +77,7 @@ public struct ModeRecord: Sendable, Equatable, Identifiable {
         engine: String? = nil,
         cleanupTier: CleanupTier,
         registerHint: String? = nil,
+        whisperModeOverride: WhisperModeOverride = .followGlobal,
         isDefault: Bool
     ) {
         self.id = id
@@ -58,6 +86,7 @@ public struct ModeRecord: Sendable, Equatable, Identifiable {
         self.engine = engine
         self.cleanupTier = cleanupTier
         self.registerHint = registerHint
+        self.whisperModeOverride = whisperModeOverride
         self.isDefault = isDefault
     }
 }
@@ -71,6 +100,7 @@ extension ModeRecord: FetchableRecord {
         let tierText: String = row["cleanup_tier"]
         cleanupTier = CleanupTier(serialized: tierText) ?? .raw
         registerHint = row["register_hint"]
+        whisperModeOverride = WhisperModeOverride(serialized: row["whisper_mode_override"])
         isDefault = row["is_default"]
     }
 }
@@ -86,6 +116,7 @@ extension ModeRecord: PersistableRecord {
         container["cleanup_tier"] = cleanupTier.serialized
         container["cloud_cleanup_slug"] = cleanupTier.cloudSlug
         container["register_hint"] = registerHint
+        container["whisper_mode_override"] = whisperModeOverride.serialized
         container["is_default"] = isDefault
     }
 }

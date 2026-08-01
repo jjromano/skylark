@@ -1,5 +1,32 @@
 import Foundation
 
+/// Per-mode override of the global Whisper Mode (quiet-speech normalization)
+/// toggle (R3). `followGlobal` is the default for every existing mode — it
+/// must remain the zero-value/default case so pre-R3 modes (and the schema-v5
+/// migration's NULL column) are silently equivalent to "no override".
+public enum WhisperModeOverride: String, Sendable, Codable, Equatable, CaseIterable {
+    /// Use whatever the menu-bar Whisper Mode toggle is currently set to.
+    case followGlobal
+    /// Whisper Mode is always on for dictations in this mode, regardless of
+    /// the global toggle.
+    case on
+    /// Whisper Mode is always off for dictations in this mode, regardless of
+    /// the global toggle.
+    case off
+
+    /// Effective whisper-mode-on state for one session: this override, or
+    /// (`followGlobal`) the global toggle's current value. The one piece of
+    /// resolution logic every pipeline seam should call — never re-derive it
+    /// from the raw case values.
+    public func effective(globalOn: Bool) -> Bool {
+        switch self {
+        case .followGlobal: return globalOn
+        case .on: return true
+        case .off: return false
+        }
+    }
+}
+
 /// An app-aware dictation mode (PRD §7, ARCHITECTURE §5 `modes` table). A mode
 /// binds a target-app glob to a cleanup tier + register hint. Engine/model
 /// fields arrive with Phase 3/4 integration; `cloudCleanupSlug` is added now so
@@ -15,6 +42,8 @@ public struct DictationMode: Sendable, Codable, Equatable, Identifiable {
     public let cloudCleanupSlug: String?
     /// Tone hint fed to the cleaner (e.g. "casual chat", "email").
     public let registerHint: String?
+    /// Per-mode Whisper Mode override (R3). Default `.followGlobal`.
+    public let whisperModeOverride: WhisperModeOverride
     public let isDefault: Bool
 
     public init(
@@ -24,6 +53,7 @@ public struct DictationMode: Sendable, Codable, Equatable, Identifiable {
         cleanupTier: CleanupTier,
         cloudCleanupSlug: String? = nil,
         registerHint: String? = nil,
+        whisperModeOverride: WhisperModeOverride = .followGlobal,
         isDefault: Bool = false
     ) {
         self.id = id
@@ -32,6 +62,7 @@ public struct DictationMode: Sendable, Codable, Equatable, Identifiable {
         self.cleanupTier = cleanupTier
         self.cloudCleanupSlug = cloudCleanupSlug
         self.registerHint = registerHint
+        self.whisperModeOverride = whisperModeOverride
         self.isDefault = isDefault
     }
 

@@ -169,7 +169,11 @@ struct ShortcutRecorderRow: View {
         switch result {
         case let .success(binding):
             stopRecording()
-            controller.setHotkeyKeyboard(binding)
+            // MUST go through `onCapture`: this row is reused for the optional
+            // command and cleanup-cycle triggers, and calling
+            // `setHotkeyKeyboard` directly (as it did) overwrote the DICTATION
+            // shortcut from whichever recorder the user was actually using.
+            onCapture(binding)
             hint = nil
         case let .failure(error):
             switch error {

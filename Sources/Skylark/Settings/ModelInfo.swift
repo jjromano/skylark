@@ -117,12 +117,12 @@ enum ModelInfo {
 
     static let cloudCleanup: [String: Entry] = [
         "meta-llama/llama-3.1-8b-instruct": Entry(
-            "Fast, cheap cleanup: punctuation, capitalization, filler removal. Good default.",
-            primary: 3.5, primaryLabel: "Quality", secondary: 5, secondaryLabel: "Speed",
+            "Cheapest cleanup: punctuation, capitalization, filler removal. No longer Groq-served, so speed varies by provider.",
+            primary: 3.5, primaryLabel: "Quality", secondary: 3.5, secondaryLabel: "Speed",
             costPerMonth: "< $0.01/mo"
         ),
         "openai/gpt-oss-20b": Entry(
-            "Balanced open model — better phrasing fixes than 8B, still quick on Groq.",
+            "Balanced open model on Groq — better phrasing fixes than 8B and still fast. The recommended default.",
             primary: 4, primaryLabel: "Quality", secondary: 4.5, secondaryLabel: "Speed",
             costPerMonth: "≈ $0.03/mo"
         ),

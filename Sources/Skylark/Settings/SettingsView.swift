@@ -278,7 +278,23 @@ private struct GeneralPane: View {
             } header: {
                 Text("Voice command shortcut")
             } footer: {
-                Text("Hold and speak an instruction to rewrite selected text or generate text at the cursor.")
+                Text("Hold and speak an instruction to rewrite selected text or generate text at the cursor. With a cloud cleanup model, the selected text and your instruction are sent to that model; with local cleanup they stay on this Mac.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                ShortcutRecorderRow(
+                    controller: controller,
+                    label: "Cycle cleanup",
+                    currentDisplayName: controller.hotkeyCycleCleanup?.displayName ?? "None",
+                    onCapture: { controller.setHotkeyCycleCleanup($0) },
+                    onClear: { controller.setHotkeyCycleCleanup(nil) }
+                )
+            } header: {
+                Text("Cleanup model shortcut")
+            } footer: {
+                Text("Optional. Each press moves the active cleanup one step — Auto, Raw, Apple Intelligence, any Qwen model you've downloaded, then your cloud models when an API key is stored — and names the new choice in the menu bar. If it collides with the dictation or voice-command shortcut, those win.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

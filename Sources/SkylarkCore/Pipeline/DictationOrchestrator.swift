@@ -751,12 +751,28 @@ public actor DictationOrchestrator {
             return
         }
 
+        // Resolve the session setup now (usually already prepared during
+        // recording) rather than at cleanup time below: the mode it carries
+        // gates the two whisper-mode decisions right below (R3 per-mode
+        // override), both of which must run before transcription.
+        let setup = await resolvedSetup()
+        if honorCancelIfRequested() { return }
+        // R3: a mode's Whisper Mode override, if any, wins over the global
+        // toggle for this session. `whisperNormalizationEnabled` mirrors the
+        // global toggle's current value (pushed by `applyWhisperTuning`
+        // alongside it) — this is the ONE place that override is resolved;
+        // both consumers below just read the result.
+        let effectiveWhisperOn = setup.mode.whisperModeOverride.effective(globalOn: whisperNormalizationEnabled)
+
         // Push-to-talk only: a mic that heard nothing must never reach the
         // transcriber (never mind paste whatever it hallucinates from
         // silence). Cheap O(n) pass over samples already in memory, off the
         // audio thread (this actor). Quiet-but-real speech and too-short
         // clips both fall through to transcription (false-negative bias).
-        if !wasHandsFree, SilenceDetector.isSilent(clip, threshold: silencePeakThreshold) {
+        let effectiveSilenceThreshold = setup.mode.whisperModeOverride == .followGlobal
+            ? silencePeakThreshold
+            : (effectiveWhisperOn ? SilenceDetector.whisperPeakThreshold : SilenceDetector.peakThreshold)
+        if !wasHandsFree, SilenceDetector.isSilent(clip, threshold: effectiveSilenceThreshold) {
             phase = .idle
             publish(.idle)
             // An interruption explains the silence better than "nothing heard".
@@ -779,7 +795,7 @@ public actor DictationOrchestrator {
         // VAD endpointing decision (hands-free VAD already saw the tap-gained
         // signal; this only rescales what the transcriber hears, never re-runs
         // endpointing). Off the audio thread (this actor); no-op when off.
-        if whisperNormalizationEnabled {
+        if effectiveWhisperOn {
             clip = normalizeWhisperClip(clip)
         }
 
@@ -817,9 +833,9 @@ public actor DictationOrchestrator {
             return
         }
 
-        // Resolve the session setup (usually already prepared during recording).
-        let setup = await resolvedSetup()
-        if honorCancelIfRequested() { return }
+        // `setup` was already resolved above (before the whisper-mode
+        // decisions); `resolvedSetup()` caches it, so this is just re-reading
+        // the cache — no second real resolution.
         // Merge the (off-path) field-context read into the cleanup context. nil
         // when the toggle is off or the read hadn't finished by now — cleanup then
         // behaves exactly as before. Read here, never awaited: absence just means

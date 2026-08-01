@@ -29,7 +29,7 @@ struct ModelSelectionTests {
         #expect(second.sttChoice == .cloud(slug: "openai/whisper-large-v3-turbo"))
     }
 
-    @Test("Free-text cleanup slug upserts an ad-hoc registry entry (groq pin)")
+    @Test("Free-text cleanup slug upserts an ad-hoc registry entry (NO pin)")
     func adHocCleanupUpsert() async throws {
         let db = try SkylarkDatabase.inMemory()
         let registry = RegistryStore(db: db)
@@ -40,7 +40,9 @@ struct ModelSelectionTests {
         let entries = try await registry.all(kind: .cleanup)
         let added = try #require(entries.first { $0.slug == "acme/custom-cleanup" })
         #expect(added.label == "acme/custom-cleanup")
-        #expect(added.providerPin == "groq")
+        // An unknown slug is left UNPINNED so OpenRouter routes it. Pinning it to
+        // Groq (as this used to) sends a model Groq may not serve to Groq first.
+        #expect(added.providerPin == nil)
         #expect(selection.cleanupSlug == "acme/custom-cleanup")
     }
 

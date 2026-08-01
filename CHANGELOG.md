@@ -6,6 +6,41 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.14.0 — 2026-07-31
+
+**Pre-1.0 batch: the recovered backlog, registry curation, and evidence
+hygiene.**
+
+- **Cleanup cycle hotkey** (PRD §7, the last undelivered v1 item): an optional
+  shortcut (Settings → General) steps the active cleanup through Auto → Raw →
+  Apple Intelligence → downloaded Qwen models → cloud models, naming each stop
+  in the menu bar. Also fixed a bug found on the way: recording a Voice
+  Command shortcut silently overwrote the dictation shortcut (since v0.9.0).
+- **Per-mode Whisper Mode override:** each per-app mode can now follow the
+  global Whisper Mode setting, force it on, or force it off.
+- **Provider pinning is registry-aware.** Custom cleanup slugs are no longer
+  force-pinned to Groq (a pin for a provider that may not serve the model);
+  known slugs use their registry pin, unknown ones let OpenRouter route. The
+  same fix applies to Voice Command Mode.
+- **Model registry curated for the Groq backend retirement (2026-08-16):**
+  Llama 3.1 8B is un-pinned (still served by other providers; slower),
+  GPT-OSS 20B — the evaluated best — is now the first suggestion. Cloud STT
+  rows verified live and unchanged.
+- **Launch warms only your selected engine.** Deleting Parakeet while using
+  another engine no longer triggers an unrequested 483 MB re-download at
+  launch.
+- **Command Mode discloses its cloud behavior** in Settings, matching the
+  Dictionary pane: with cloud cleanup, the selection and instruction go to
+  that model; with local cleanup they stay on the Mac.
+- **Evidence hygiene:** the live cleanup eval now fails below its baselines;
+  Keychain tests report locked-keychain runs as known issues instead of
+  passing vacuously; the benchmark script fails on latency regressions
+  against a recorded baseline; the release validation checklist was rewritten
+  from scratch (23 sections, each with explicit pass/fail criteria) after the
+  audit showed the old one could not detect the bugs it targeted; the privacy
+  audit was re-swept end to end (91 log sites, 38 UserDefaults writers, zero
+  content leaks).
+
 ## 0.13.0 — 2026-07-31
 
 **P1 reliability and privacy release: every broken or blocked flow from the QA

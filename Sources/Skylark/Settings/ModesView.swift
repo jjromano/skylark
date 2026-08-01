@@ -169,7 +169,18 @@ private struct ModeRow: View {
         var parts: [String] = [tierLabel(mode.cleanupTier)]
         if let pattern = mode.bundleIDPattern, !pattern.isEmpty { parts.append(pattern) }
         if let hint = mode.registerHint, !hint.isEmpty { parts.append(hint) }
+        if let whisperLabel = whisperOverrideLabel(mode.whisperModeOverride) { parts.append(whisperLabel) }
         return parts.joined(separator: " · ")
+    }
+
+    /// nil for the common case (follow global) so the row stays uncluttered;
+    /// only an explicit override earns a subtitle chip.
+    private func whisperOverrideLabel(_ override: WhisperModeOverride) -> String? {
+        switch override {
+        case .followGlobal: return nil
+        case .on: return "Whisper Mode: always on"
+        case .off: return "Whisper Mode: always off"
+        }
     }
 
     private func tierLabel(_ tier: CleanupTier) -> String {
@@ -177,6 +188,17 @@ private struct ModeRow: View {
         case .raw: return "Raw"
         case .local: return "Local"
         case .cloud(let slug): return "Cloud (\(slug))"
+        }
+    }
+}
+
+/// Menu labels for the per-mode Whisper Mode override picker (R3).
+extension WhisperModeOverride {
+    fileprivate var label: String {
+        switch self {
+        case .followGlobal: return "Follow global setting"
+        case .on: return "Always on"
+        case .off: return "Always off"
         }
     }
 }
@@ -206,6 +228,7 @@ private struct ModeEditorSheet: View {
     @State private var tier: TierChoice
     @State private var cloudSlug: String
     @State private var registerHint: String
+    @State private var whisperModeOverride: WhisperModeOverride
     @State private var isDefault: Bool
 
     init(
@@ -221,6 +244,7 @@ private struct ModeEditorSheet: View {
         _name = State(initialValue: existing?.name ?? "")
         _bundlePattern = State(initialValue: existing?.bundleIDPattern ?? "")
         _registerHint = State(initialValue: existing?.registerHint ?? "")
+        _whisperModeOverride = State(initialValue: existing?.whisperModeOverride ?? .followGlobal)
         _isDefault = State(initialValue: existing?.isDefault ?? false)
         switch existing?.cleanupTier {
         case .some(.raw):
@@ -272,6 +296,17 @@ private struct ModeEditorSheet: View {
                 TextField("Register hint (optional, e.g. \"casual chat\")", text: $registerHint)
             }
 
+            Section("Whisper Mode") {
+                Picker("Override", selection: $whisperModeOverride) {
+                    ForEach(WhisperModeOverride.allCases, id: \.self) { choice in
+                        Text(choice.label).tag(choice)
+                    }
+                }
+                Text("Whether quiet-speech normalization runs for this mode's dictations, regardless of the menu-bar Whisper Mode toggle.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 Toggle("Default mode", isOn: $isDefault)
                     .disabled(existing?.isDefault == true)
@@ -310,6 +345,7 @@ private struct ModeEditorSheet: View {
             cleanupTier: resolvedTier,
             registerHint: registerHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? nil : registerHint.trimmingCharacters(in: .whitespacesAndNewlines),
+            whisperModeOverride: whisperModeOverride,
             isDefault: existing?.isDefault ?? false
         )
         onSave(record, isDefault)
