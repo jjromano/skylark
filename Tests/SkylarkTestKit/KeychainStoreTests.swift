@@ -11,14 +11,25 @@ struct KeychainStoreTests {
         KeychainStore(service: "com.jjromano.skylark.tests", account: "test-\(UUID().uuidString)")
     }
 
-    /// Runs `body`, treating a locked-keychain (`errSecInteractionNotAllowed`)
-    /// environment as a graceful skip rather than a failure — headless boxes
-    /// (CI, this build machine) may not have an unlocked login keychain.
+    /// Runs `body`, recording a *known issue* — never a plain pass — when the
+    /// keychain is locked (`errSecInteractionNotAllowed`): headless boxes (CI,
+    /// this build machine) may not have an unlocked login keychain. Swift
+    /// Testing has no first-class runtime skip, so `withKnownIssue` is the
+    /// idiomatic way to make this visibly distinct from a clean round-trip in
+    /// the runner output — a locked run reports as an expected (known) issue,
+    /// not a success with zero assertions behind it. `isIntermittent: true`
+    /// is required here because, unlike a permanently-known bug, whether the
+    /// keychain is locked varies by machine/session — an unlocked run must
+    /// still report as a genuine pass, not "known issue not recorded".
     private func skippingIfLocked(_ body: () throws -> Void) rethrows {
-        do {
+        try withKnownIssue(
+            "keychain is locked on this build machine — round-trip not exercised",
+            isIntermittent: true
+        ) {
             try body()
-        } catch KeychainError.interactionNotAllowed {
-            return
+        } matching: { issue in
+            guard case .errorCaught(let error) = issue.kind else { return false }
+            return (error as? KeychainError) == .interactionNotAllowed
         }
     }
 

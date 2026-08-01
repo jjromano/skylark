@@ -1,0 +1,23 @@
+# bench-baseline.tsv — checked-in latency baseline for Scripts/bench.sh's
+# regression gate (ARCHITECTURE.md §8: "regressions block merge").
+#
+# Columns: engine<TAB>file<TAB>median_decode_ms
+#
+# Captured on the M3 Air (the machine PRD §12 latency acceptance is judged
+# on; see CLAUDE.md "Machines") via:
+#   ./Scripts/bench.sh
+# using the default synthesized clips (short/medium/long, say(1) + afconvert
+# to 16 kHz mono WAV) with --repeat 3 (SkylarkBench's default), i.e. each
+# number below is the median of 3 decode passes. Recorded 2026-07-31.
+#
+# This is a FLOOR the live bench must clear (within Scripts/bench.sh's
+# BENCH_TOLERANCE_PCT, default 25%), not an aspirational target — update it
+# deliberately (after confirming a slower number is real and expected, e.g. a
+# bigger model or a genuinely slower machine), never to silence a regression.
+#engine	file	median_decode_ms
+parakeet	short.wav	74.4
+parakeet	medium.wav	93.4
+parakeet	long.wav	161.3
+whisper	short.wav	872.5
+whisper	medium.wav	1173.3
+whisper	long.wav	1684.9

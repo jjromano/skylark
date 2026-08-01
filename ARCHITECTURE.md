@@ -111,10 +111,22 @@ latency bar is proven.
    write text as a **lazy `NSPasteboardItem` promise** (transient marker written
    eagerly) → poll `changeCount` until committed (5 ms poll, 150 ms cap) →
    synthesized Cmd-V (explicit Cmd down, layout-resolved V, Cmd up, posted to
-   `.cghidEventTap`) → **restore when the target actually READS** the promise
-   (+100 ms grace for apps that read twice), with the old 500 ms timer kept only
-   as a ceiling for targets that never read (`PasteRestoreDecider`). If the paste
-   itself fails, the text is written eagerly (no dangling promise) and left on the
+   `.cghidEventTap`) → **restore when the target actually READS** the promise,
+   never earlier than a **120 ms floor** after arming (`PasteRestoreCoordinator
+   .minimumRestoreDelay`) plus a 100 ms grace for apps that read twice, with the
+   old 500 ms timer kept only as a ceiling for targets that never read
+   (`PasteRestoreDecider`). Immediately before the restore write, a `changeCount`
+   guard confirms the pasteboard still holds exactly what Skylark wrote; if
+   another writer took it in the meantime (the confirmed live case: the user
+   hits Cmd-C right after dictating), the restore stands down instead of
+   clobbering their newer copy (P1-1). Posting Cmd-V proves nothing on its own
+   (the events can land in the HID queue and be ignored) — `InsertionToken
+   .landing` distinguishes `.posted` (keystroke sent, landing unconfirmed) from
+   `.readConfirmed` (a pasteboard read was observed after arming) from
+   `.notPosted` (synthesis itself failed); callers needing the truth (History,
+   Command Mode's replace) await the async landing signal, callers on the
+   latency path (press-Return) don't block on it (P1-9). If the paste itself
+   fails, the text is written eagerly (no dangling promise) and left on the
    clipboard as the user's fallback.
 3. Before **every** write — each insert/paste and again before a synthesized
    Return — the **captured-target focus guard** compares the live focus against
@@ -145,7 +157,26 @@ unsafe. **[design to validate in Phase 2]**
   of pipeline state.
 - `AudioCaptureService` — wraps AVAudioEngine; render-thread tap writes into a
   preallocated ring buffer, publishes frames/levels via `AsyncStream`
-  (no allocation, no locks on the audio thread).
+  (no allocation, no locks on the audio thread). `frames`/`previewFrames` are
+  **per-access streams**: every read of the property mints a fresh
+  `AsyncStream` and retires whatever continuation was live before it, rather
+  than handing out one stored stream. A cancelled consumer permanently
+  finishes an `AsyncStream` (verified), and hands-free tears its VAD task down
+  on every stop that isn't the VAD's own — a stored stream therefore
+  endpointed once per launch and silently never again (P1-2a, "hands-free
+  never stops"). Per-access streams contain that damage to the one consumer
+  that got cancelled.
+- Capture disruptions surface as `CaptureInterruption.Reason`
+  (`configurationChange`, `restartFailed`, `triggerTapStalled`,
+  `permissionLost`, `capReached`) reported on `AudioCaptureService
+  .interruptions` and converged on the orchestrator's single finalize
+  decision via `finalizesUtterance`. `permissionLost` (Accessibility revoked
+  or the event tap died unrecoverably mid-session) and `capReached` (the
+  120 s hard buffer cap) both finalize immediately — the former because the
+  key-up that would normally end the session can never arrive, the latter
+  because nothing more can be stored past the cap. `triggerTapStalled` is
+  recorded as a marker only and does NOT finalize (it also fires on a benign
+  main-loop stall while the user is still holding the key).
 - `HotkeyMonitor` — active CGEventTap (`.cghidEventTap`, head-insert,
   `.defaultTap`) on its own run loop. Bare Fn = `.flagsChanged` + keycode
   `kVK_Function` (0x3F) + `.maskSecondaryFn`, with the three known traps
@@ -226,11 +257,15 @@ and `UpdateCommandWriter` emits a Terminal `.command` running
   `~/Library/Application Support/Skylark/parakeet-tdt-0.6b-v3/` (NOT under
   `Models/`, NOT `…-coreml`). Verified: an install downloaded on 0.15.4 loads
   under 0.15.5 with "no download needed" — the layout is stable, no forced
-  redownload. **Caveat:** `ModelPaths.parakeetModelDir`
-  (`Models/parakeet-tdt-0.6b-v3-coreml`) does NOT match this real path; it is
-  only consumed by the Settings model-manager for size/presence/delete, so that
-  UI currently mis-reports the Parakeet model. Pre-existing (not the 0.15.5
-  bump); flagged for a follow-up.
+  redownload. **Fixed:** `ModelPaths.parakeetModelDir`
+  (`Sources/SkylarkCore/Models/ModelPaths.swift:45-47`) now reads
+  `appSupport.appendingPathComponent("parakeet-tdt-0.6b-v3")` — i.e. exactly
+  this real on-disk path, no `Models/` prefix, no `-coreml` suffix. The
+  Settings model-manager (`AppController.ManagedModel.parakeet.directory`,
+  `Sources/Skylark/AppController.swift:332`) and its size/presence/delete
+  logic (`ModelPaths.installedSize`/`.isPresent`/`.removeFromDisk`, all
+  operating on that same `.directory`) derive from this one constant, so the
+  earlier "Settings mis-reports Parakeet" caveat no longer applies.
 - Compute: default `.cpuAndNeuralEngine` — keep it (low memory, ANE). Encoder
   can opt into `.cpuAndGPU` (~+8% RTFx, WER-neutral) via `encoderComputeUnits:`
   — not worth the power cost for us. Word-level timestamps are available on
@@ -316,11 +351,28 @@ installs the same way any other code change does:
 
 ## 7. Privacy invariants (enforced in review, every phase)
 
-1. Local mode: zero network. Cloud calls only from `OpenRouterCloud` /
-   `OpenRouterCleaner`, only when selected.
+1. Local mode: zero network. Cloud calls only when a cloud engine or cloud
+   cleanup tier is explicitly selected. `OpenRouterCloud`/`OpenRouterCleaner`
+   are no longer the only call sites (both grew alongside the feature set):
+   `CommandRunner` also calls `OpenRouterClient.complete` when Command Mode's
+   bound tier is cloud (uploads the highlighted selection, not just the
+   transcript), and outbound model-download traffic now spans Parakeet,
+   WhisperKit, the deep-vocabulary CTC helper, and Qwen cleanup GGUFs (the
+   last pinned to an immutable revision and SHA-256-verified before install).
+   Full current inventory: `docs/privacy-audit.md` §1. Switching the STT
+   engine is itself race-guarded — `STTRebuildGate`
+   (`Sources/SkylarkCore/Models/STTRebuildGate.swift`) stamps every rebuild
+   with a generation and only installs a completion whose generation AND
+   whose `choice` still match the live menu selection, so a slow cloud
+   rebuild started before the user switched back to local can no longer land
+   after the fact and upload audio the menu says is local (v0.13.0).
 2. No audio persisted unless history-audio opt-in; never leaves machine except
    explicit cloud STT.
-3. Clipboard byte-for-byte preserved across paste fallback (tested, PRD §10).
+3. Clipboard byte-for-byte preserved across paste fallback, conditionally: the
+   v0.13.0 `PasteRestoreCoordinator` rewrite (§3) also added a `changeCount`
+   guard that stands down the restore (rather than clobbering it) if another
+   writer took the pasteboard first — see `docs/privacy-audit.md` §4/§5 for
+   the current precise semantics (tested, PRD §10).
 4. No telemetry. No transcript content in logs.
 5. Secrets only in Keychain.
 

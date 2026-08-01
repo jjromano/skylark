@@ -10,6 +10,15 @@
 # model (~626 MB) into the app's models dir — expected.
 #
 # Fully headless: say(1) needs no microphone or GUI.
+#
+# Regression gate (ARCHITECTURE.md §8: "regressions block merge"): after the
+# run, each (engine, file) median decode time is compared against
+# Scripts/bench-baseline.tsv. Anything more than BENCH_TOLERANCE_PCT slower
+# than its recorded baseline fails the script (exit 1) with the offending
+# numbers named. Only applies to the default synthesized clips — custom file
+# args have no baseline entry and are reported without gating. Update the
+# baseline deliberately (not to silence a real regression) after confirming a
+# slower number is expected, e.g. a bigger model or a slower machine.
 
 set -euo pipefail
 
@@ -85,3 +94,52 @@ awk -F'\t' '
         }
     }
 ' "$RESULTS"
+
+# --- Regression gate vs the checked-in baseline -----------------------------
+#
+# Generous tolerance by default: say(1) synthesis + a shared dev machine under
+# variable thermal/background load is noisier than CI, and the point is to
+# catch a real regression (a slower model, a broken fast path), not thermal
+# jitter. Override with BENCH_TOLERANCE_PCT=<n> for a tighter local check.
+BASELINE_FILE="$REPO_ROOT/Scripts/bench-baseline.tsv"
+TOLERANCE_PCT="${BENCH_TOLERANCE_PCT:-25}"
+
+if [ ! -f "$BASELINE_FILE" ]; then
+    echo ""
+    echo "⚠ No baseline at $BASELINE_FILE — skipping regression gate."
+    exit 0
+fi
+
+echo ""
+echo "══ Regression check vs $(basename "$BASELINE_FILE") (tolerance ${TOLERANCE_PCT}%) ══"
+REGRESSED=0
+CHECKED=0
+while IFS=$'\t' read -r BASE_ENGINE BASE_NAME BASELINE_MS; do
+    case "$BASE_ENGINE" in
+        ''|'#'*) continue ;;
+    esac
+    MEASURED_MS="$(awk -F'\t' -v e="$BASE_ENGINE" -v n="$BASE_NAME" '$2==e && $3==n {print $5}' "$RESULTS")"
+    if [ -z "$MEASURED_MS" ]; then
+        continue # custom file args this run — no matching (engine, file); not gated
+    fi
+    CHECKED=$((CHECKED + 1))
+    read -r OVER LIMIT PCT <<< "$(awk -v m="$MEASURED_MS" -v b="$BASELINE_MS" -v t="$TOLERANCE_PCT" \
+        'BEGIN { limit = b * (1 + t / 100); pct = b > 0 ? (m - b) / b * 100 : 0
+                 printf "%d %.1f %+.1f", (m > limit), limit, pct }')"
+    if [ "$OVER" = "1" ]; then
+        echo "✘ REGRESSION  $BASE_ENGINE/$BASE_NAME: ${MEASURED_MS} ms vs baseline ${BASELINE_MS} ms (${PCT}%, limit is +${TOLERANCE_PCT}% = ${LIMIT} ms)"
+        REGRESSED=1
+    else
+        echo "✔ ok  $BASE_ENGINE/$BASE_NAME: ${MEASURED_MS} ms (baseline ${BASELINE_MS} ms, ${PCT}%)"
+    fi
+done < "$BASELINE_FILE"
+
+if [ "$CHECKED" -eq 0 ]; then
+    echo "(no baseline entries matched this run's files — nothing gated)"
+elif [ "$REGRESSED" -eq 1 ]; then
+    echo ""
+    echo "✗ Latency regression detected — see ARCHITECTURE.md §8 (regressions block merge)."
+    exit 1
+else
+    echo "✓ No latency regressions vs baseline."
+fi

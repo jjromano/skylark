@@ -5,6 +5,12 @@ import SkylarkCore
 /// Regression coverage built on the canonical `CleanupCorpus`.
 @Suite("Cleanup corpus")
 struct CleanupCorpusTests {
+    /// Known-good exact-match rate (out of `CleanupCorpus.examples.count`) for
+    /// the real Apple on-device model, from the 2026-07-24 eval (see
+    /// `cleanup-eval-and-open-items` memory). This is a FLOOR the live eval
+    /// must clear, not a target — raise it deliberately when a genuine
+    /// quality improvement lifts the bar, never to silence a regression.
+    private static let appleIntelligenceBaseline = 13
 
     // MARK: - Model-free gate (runs on every change)
 
@@ -59,7 +65,13 @@ struct CleanupCorpusTests {
 
             """
         }
-        report += "----- \(matches)/\(CleanupCorpus.examples.count) exact matches -----\n"
+        let count = CleanupCorpus.examples.count
+        report += "----- \(matches)/\(count) exact matches -----\n"
         print(report)
+
+        #expect(
+            matches >= Self.appleIntelligenceBaseline,
+            "Apple Intelligence cleanup eval regressed: \(matches)/\(count) exact matches, floor is \(Self.appleIntelligenceBaseline)/\(count). Full report:\n\(report)"
+        )
     }
 }

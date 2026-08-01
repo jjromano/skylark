@@ -27,6 +27,16 @@ struct QwenCleanupEvalTests {
         ProcessInfo.processInfo.environment["SKYLARK_QWEN_MODEL"] ?? "qwen3-1.7b"
     }
 
+    /// Known-good exact-match rates (out of `CleanupCorpus.examples.count`),
+    /// keyed by `SKYLARK_QWEN_MODEL` id, from the 2026-07 Qwen/llama.cpp eval
+    /// (see `cleanup-eval-and-open-items` memory). These are FLOORS the live
+    /// eval must clear, not targets — raise one deliberately when a genuine
+    /// quality improvement lifts the bar, never to silence a regression.
+    private static let baselines: [String: Int] = [
+        "qwen3-4b-instruct": 15,
+        "qwen3-1.7b": 7,
+    ]
+
     @Test("LIVE Qwen on-device cleanup eval over the corpus", .enabled(if: Self.enabled))
     func liveQwenEval() async throws {
         guard let model = LocalCleanupModel.model(id: Self.modelID) else {
@@ -74,5 +84,14 @@ struct QwenCleanupEvalTests {
         print(report)
 
         await backend.unload()
+
+        if let baseline = Self.baselines[Self.modelID] {
+            #expect(
+                matches >= baseline,
+                "Qwen (\(model.displayName)) cleanup eval regressed: \(matches)/\(count) exact matches, floor is \(baseline)/\(count). Full report:\n\(report)"
+            )
+        } else {
+            Issue.record("No known baseline for SKYLARK_QWEN_MODEL id '\(Self.modelID)' — add one to QwenCleanupEvalTests.baselines before trusting this eval's pass/fail.")
+        }
     }
 }

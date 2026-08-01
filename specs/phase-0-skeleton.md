@@ -3,7 +3,8 @@
 Read `ARCHITECTURE.md` and `CLAUDE.md` first. This spec is self-contained;
 where it conflicts with reality, do the closest working thing and report the
 deviation. Verification on this machine = `swift build` (zero errors; strive
-for zero concurrency warnings), `swift test`, `make app`. Do NOT attempt
+for zero concurrency warnings), `make test` (not `swift test` — a silent
+no-op on this CLT-only box), `make app`. Do NOT attempt
 interactive/GUI testing or permission grants — this box is headless; that
 happens later on the target MacBook.
 
@@ -197,7 +198,7 @@ Per ARCHITECTURE §3 injection strategy, AX-first:
 ## 8. Acceptance (run these yourself)
 
 1. `swift build` — clean.
-2. `swift test` — HotkeyProcessor (≥8 cases: PTT happy path, short-tap
+2. `make test` (not `swift test`) — HotkeyProcessor (≥8 cases: PTT happy path, short-tap
    discard, double-tap lock + unlock, chord-interruption dirty cancel, ESC,
    mouse-click discard), pasteboard round-trip, orchestrator transitions.
 3. `make app` — produces `dist/Skylark.app`; `codesign -dv` shows a

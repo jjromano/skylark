@@ -223,13 +223,15 @@ Each phase is a shippable increment. Fable specs each into subagent tasks.
 ## 15. Appendix
 
 ### A. Phase 2 backlog (tracked, out of scope for v1)
-- Snippets / voice macros (trigger phrase inserts a text block).
-- Command Mode (highlight text, speak an edit instruction, rewrite the selection in place).
-- Text shortcuts (for example "btw" expands to "by the way").
-- User-defined custom mode prompts UI.
+- Snippets / voice macros (trigger phrase inserts a text block). **Shipped in v0.1.0** (2026-07-09, first complete release), listed in CHANGELOG.md as "Snippets (spoken triggers)".
+- Command Mode (highlight text, speak an edit instruction, rewrite the selection in place). **Shipped in v0.7.0** (2026-07-22) as "Voice command mode": bind a second shortcut, hold it, speak an instruction to rewrite the selection or generate text at the cursor.
+- Text shortcuts (for example "btw" expands to "by the way"). Satisfied by the Snippets feature above (spoken trigger phrase, not a typed one), also shipped in v0.1.0.
+- User-defined custom mode prompts UI. Still open; not touched by this pass.
 
 ### B. Explicitly skipped (not planned)
-- Cross-device sync, 100+ languages and translation, wake word, scratchpad, gamified stats, team/shared features, deep IDE integrations (file tagging, variable recognition).
+- Cross-device sync, wake word, scratchpad, team/shared features, deep IDE integrations (file tagging, variable recognition): still not planned.
+- 100+ languages and translation: partially reversed. **Translation mode shipped in v0.7.0** (2026-07-22, opt-in): dictate in one language, paste in another, covering 9 languages, well short of "100+". Cloud models translate best; on-device handles European languages; a failed translation falls back to the original words.
+- Gamified stats: partially reversed. **Insights shipped in v0.1.0** (2026-07-09): words dictated, WPM, time saved, streaks, per-app usage, a 12-week activity heatmap. Streaks are the one game-like element; there is no points/badges/leaderboard system, so "gamified" in the fuller sense described here was still skipped.
 
 ### C. Reference notes
 - Local engine landscape (Apple Silicon): Parakeet via FluidAudio on the Neural Engine is the low-latency, low-memory leader for English and streams naturally; Whisper via WhisperKit is the robustness fallback. Avoid the Python MLX path for a background app.
