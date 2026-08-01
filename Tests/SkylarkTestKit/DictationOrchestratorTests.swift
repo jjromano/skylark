@@ -670,7 +670,7 @@ struct DictationOrchestratorLivePreviewTests {
         // Latest HUD state should be a listening state carrying the preview text.
         var iterator = orchestrator.hudStates.makeAsyncIterator()
         let state = await iterator.next()
-        if case let .listening(_, preview) = state {
+        if case let .listening(_, preview, _) = state {
             #expect(preview?.volatile == "hello")
         } else {
             Issue.record("expected a .listening state with preview, got \(String(describing: state))")

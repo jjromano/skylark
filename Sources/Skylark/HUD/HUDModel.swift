@@ -48,6 +48,14 @@ final class HUDModel {
         return false
     }
 
+    /// Whole seconds left before the 2-minute recording cap, or nil while
+    /// there's plenty of headroom (the normal case). Read straight off the
+    /// state — the orchestrator is the only writer, exactly like `level`.
+    var capSecondsRemaining: Int? {
+        guard case let .listening(_, _, remaining) = state, let remaining else { return nil }
+        return max(0, Int(remaining.rounded(.up)))
+    }
+
     /// Auto-learn notice ("Learned "word"" + Undo), mirrored from
     /// `bannerController` so SwiftUI observes it like any other stored
     /// property. Set via `noteLearned`; dismissed via `undoLearnedBanner` or

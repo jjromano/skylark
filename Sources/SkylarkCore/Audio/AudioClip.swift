@@ -20,6 +20,13 @@ public struct AudioClip: Sendable, Equatable {
     public let rms: RMSTrace?
     /// First disruption observed while capturing, if any.
     public let interruption: CaptureInterruption?
+    /// True when capture stopped because it hit the hard sample cap
+    /// (`AudioCaptureService.maxSamples`, 120 s) rather than because the user
+    /// ended it. The samples are PINNED at the limit, not missing: everything the
+    /// buffer could hold is here, and the user was still speaking. Read by the
+    /// finalize decision so the cap keeps its own identity end to end (its own
+    /// log line, its own notice) instead of masquerading as a stalled tap.
+    public let capReached: Bool
 
     public init(
         samples: [Float],
@@ -27,7 +34,8 @@ public struct AudioClip: Sendable, Equatable {
         duration: TimeInterval,
         wallDuration: TimeInterval? = nil,
         rms: RMSTrace? = nil,
-        interruption: CaptureInterruption? = nil
+        interruption: CaptureInterruption? = nil,
+        capReached: Bool = false
     ) {
         self.samples = samples
         self.sampleRate = sampleRate
@@ -35,6 +43,7 @@ public struct AudioClip: Sendable, Equatable {
         self.wallDuration = wallDuration
         self.rms = rms
         self.interruption = interruption
+        self.capReached = capReached
     }
 
     /// An empty clip (nothing captured).
@@ -53,7 +62,13 @@ public struct AudioClip: Sendable, Equatable {
     /// stopped delivering mid-capture (mic seized by another app, coreaudiod
     /// hiccup). This is the interruption variant with NO silent tail to detect —
     /// the samples simply stop — so it can only be caught here.
+    ///
+    /// A capped clip is explicitly NOT stalled: past the cap the sample count is
+    /// pinned by design while wall time keeps running, so the ratio below is true
+    /// BY CONSTRUCTION for any hold past ~200 s. Reporting a designed limit as
+    /// "possible mic interruption" is what made P1-2 look like a hardware fault.
     public var tapStalled: Bool {
+        guard !capReached else { return false }
         guard let wallDuration, wallDuration >= Self.stalledTapMinWall else { return false }
         return duration < wallDuration * Self.stalledTapSampleRatio
     }
@@ -77,7 +92,8 @@ public struct AudioClip: Sendable, Equatable {
             duration: sampleRate > 0 ? Double(newSamples.count) / sampleRate : duration,
             wallDuration: wallDuration,
             rms: newSamples.count == samples.count ? rms : nil,
-            interruption: interruption
+            interruption: interruption,
+            capReached: capReached
         )
     }
 

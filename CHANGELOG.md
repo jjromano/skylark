@@ -6,6 +6,60 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.13.0 — 2026-07-31
+
+**P1 reliability and privacy release: every broken or blocked flow from the QA
+remediation ledger.**
+
+- **Your clipboard survives dictation.** The post-paste restore now checks
+  whether another writer took the pasteboard and skips itself if so — copying
+  something right after a dictation no longer loses it. A restore also never
+  fires sooner than 120 ms after the paste, and a pasted transcript is only
+  treated as landed when the target actually read it: pressing Return (the
+  press-enter option) now waits for that confirmation instead of firing after
+  a paste the target may have ignored.
+- **Esc works after you release the key.** Cancel now extends through
+  transcription and cleanup up to the instant text is written; after that a
+  note says it was too late. Esc during recording is unchanged.
+- **Hands-free mode actually ends when you stop talking — every time.**
+  Auto-endpointing silently worked only for the first hands-free session per
+  launch; every later one recorded until manually stopped. Fixed. The 120 s
+  recording cap now finalizes the session honestly ("Reached the 2-minute
+  recording limit — transcribed what fit") instead of silently discarding
+  audio and then blaming the microphone, and the pill shows an amber countdown
+  during the last 20 seconds.
+- **Cloud cleanup no longer uploads your whole dictionary.** Only terms that
+  approximate something you actually said are sent (none, when none match);
+  local cleanup keeps the full list on-device. The Dictionary pane now says
+  exactly this.
+- **Dictating via skylark://record/start pastes into the right app** instead
+  of into Skylark's own window (affects Shortcuts / Stream Deck workflows).
+- **Command Mode can no longer overwrite a selection you made after starting
+  it** — if the captured selection changed, nothing is written and a note says
+  so.
+- **A cleanup timeout of "Off" or "30 seconds" no longer blocks the first
+  paste** — before anything is on screen the wait is capped at 10 seconds; the
+  full setting still applies where raw text is already visible.
+- **Switching STT engines is race-free.** A stale cloud rebuild can no longer
+  land after you switched back to local (audio could have been uploaded while
+  the menu read Local), and an engine switch no longer tears down a model
+  mid-transcription — changes now apply at the next idle moment.
+- **Qwen model downloads validate before replacing.** Downloads are pinned to
+  an immutable revision, SHA-256-verified while staged, and swapped in
+  atomically — a failed update leaves your working model untouched.
+- **Two hands-free bugs the endpointing fix uncovered, also fixed:** the
+  auto-stop's own finalize was being cancelled with the VAD task, so an
+  endpointed session's transcription failed and the audio was dropped; and an
+  auto-stopped session left the hotkey layer's double-tap lock behind, eating
+  the next press. Both found and verified live.
+- **Sturdier internals:** a failed microphone start no longer leaks the audio
+  tap (and now says "Microphone capture failed"); the API key is read once and
+  cached in memory instead of hitting the Keychain on every cloud request; the
+  audio render thread no longer allocates or locks; VAD trimming keeps quiet
+  speech near the cut points; the waveform animates at a steady 20 Hz; the
+  Launch at Login toggle reflects reality; a dictation started while the
+  previous one is still processing now says so instead of vanishing.
+
 ## 0.12.3 — 2026-07-31
 
 **P0 reliability release: every corruption/crash finding from the 2026-07-30/31

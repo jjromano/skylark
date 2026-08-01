@@ -13,7 +13,14 @@ public protocol AudioCapturing: Sendable {
     var levels: AsyncStream<Float> { get }
     /// Raw 16 kHz mono frames for streaming VAD (hands-free endpointing only).
     /// Emitted only while frame delivery is enabled, so the push-to-talk path
-    /// pays no per-callback allocation.
+    /// pays nothing.
+    ///
+    /// CONTRACT: every access returns a FRESH stream and retires the previous
+    /// one. Consumers iterate it in a task that gets CANCELLED at the end of a
+    /// hands-free session, and a cancelled iteration finishes an `AsyncStream`
+    /// permanently — so a stored stream endpoints once per launch and then dies
+    /// silently (P1-2a). Implementations must mint per access; consumers must
+    /// take the stream ONCE per session and iterate that value.
     var frames: AsyncStream<[Float]> { get }
     /// Enable/disable raw-frame delivery on `frames`. Off by default.
     func setFramesWanted(_ wanted: Bool)
@@ -29,6 +36,11 @@ public protocol AudioCapturing: Sendable {
     /// utterance on the ones capture can't recover from; the rest are stamped
     /// onto the returned clip. Off the audio thread.
     var interruptions: AsyncStream<CaptureInterruption> { get }
+    /// Seconds left before capture hits its hard recording cap, once inside the
+    /// warning window; nil while there's plenty of headroom (the normal case) or
+    /// when the implementation has no cap. Read per HUD tick, so it must be a
+    /// cheap snapshot — never blocking, never a lock the audio thread can hold.
+    func capCountdown() -> TimeInterval?
 }
 
 public extension AudioCapturing {
@@ -39,4 +51,6 @@ public extension AudioCapturing {
     func setPreviewWanted(_ wanted: Bool) {}
     /// Default: nothing ever interrupts (fakes and Phase-0 callers).
     var interruptions: AsyncStream<CaptureInterruption> { AsyncStream { $0.finish() } }
+    /// Default: no cap to warn about (fakes return a preset clip).
+    func capCountdown() -> TimeInterval? { nil }
 }

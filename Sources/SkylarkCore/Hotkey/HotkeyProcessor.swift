@@ -106,6 +106,16 @@ public struct HotkeyProcessor: Sendable {
 
     // MARK: - Handlers
 
+    /// Release a hands-free lock without emitting anything. Used when the lock
+    /// guards a session the pipeline refused to start (it was still processing
+    /// the previous one) — left locked, the next press would be eaten as a
+    /// phantom stop. Returns whether a lock was actually released.
+    public mutating func exitDoubleTapLock() -> Bool {
+        guard case .doubleTapLock = state else { return false }
+        resetToIdle()
+        return true
+    }
+
     private mutating func handleTriggerDown(at now: ContinuousClock.Instant) -> HotkeyEvent? {
         switch state {
         case .idle:

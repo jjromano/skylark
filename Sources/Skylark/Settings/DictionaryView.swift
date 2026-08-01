@@ -25,6 +25,15 @@ struct DictionaryView: View {
                 Text("Add the correct spelling of a word or name so Skylark prefers it during recognition. Optionally list common misspellings (comma-separated) that should be auto-corrected to it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
+                // Disclosure for P1-6: cloud cleanup used to upload the WHOLE
+                // dictionary with every request; now only the terms the current
+                // transcript approximates travel, and the user is told so.
+                Label(
+                    "With cloud cleanup, terms that match what you said are sent along; the rest of your dictionary stays on this Mac. Local cleanup never sends any of it.",
+                    systemImage: "lock"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
 
             if let learnFromCorrections {

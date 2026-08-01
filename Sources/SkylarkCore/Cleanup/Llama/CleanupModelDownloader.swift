@@ -13,12 +13,11 @@ import os
 ///
 /// Atomicity: `URLSessionDownloadTask` already stages the download at a
 /// system-owned temporary location and only calls `didFinishDownloadingTo`
-/// once the transfer completes; this type then verifies the byte count
-/// against `LocalCleanupModel.downloadBytes` (the same check
-/// `LocalCleanupModel.isInstalled` uses) BEFORE the atomic
-/// `FileManager.moveItem` into the final `Cleanup/` path. A short/interrupted
-/// transfer is deleted rather than moved, so a half-downloaded file can never
-/// read as installed.
+/// once the transfer completes; from there `CleanupModelInstaller` re-stages the
+/// file next to its final path, verifies length + pinned SHA-256, and only then
+/// swaps it in. Nothing touches the already-installed model until the new bytes
+/// have passed — a truncated or corrupt transfer leaves the working model
+/// exactly where it was.
 ///
 /// Resume-or-restart: a failed transfer's resume data (if the server
 /// supports it) is kept in memory and consumed by the NEXT `start` call for
@@ -125,25 +124,20 @@ private final class DownloadDelegate: NSObject, URLSessionDownloadDelegate, @unc
     }
 
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
-        // Move SYNCHRONOUSLY: the OS deletes `location` as soon as this method
-        // returns, so verification + the atomic move both have to happen here.
+        // Runs SYNCHRONOUSLY: the OS deletes `location` as soon as this method
+        // returns, so the file has to be taken over (staged) before we come
+        // back. Verification + swap then happen on the staged copy, which we
+        // own. This is a URLSession delegate queue, not the paste path — the
+        // seconds spent hashing a multi-GB GGUF cost nothing that matters.
         defer { onFinished() }
         do {
-            if FileManager.default.fileExists(atPath: model.fileURL.path) {
-                try FileManager.default.removeItem(at: model.fileURL)
-            }
-            try FileManager.default.moveItem(at: location, to: model.fileURL)
+            try CleanupModelInstaller.install(downloaded: location, as: model) { progress(.loading) }
+            progress(.ready)
+        } catch let failure as CleanupModelInstaller.Failure {
+            progress(.failed(message: failure.description))
         } catch {
             progress(.failed(message: error.localizedDescription))
-            return
         }
-        let size = (try? FileManager.default.attributesOfItem(atPath: model.fileURL.path)[.size] as? Int64) ?? 0
-        guard size >= model.downloadBytes else {
-            try? FileManager.default.removeItem(at: model.fileURL)
-            progress(.failed(message: "download was incomplete (\(size)/\(model.downloadBytes) bytes)"))
-            return
-        }
-        progress(.ready)
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {

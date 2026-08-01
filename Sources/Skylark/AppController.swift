@@ -704,9 +704,14 @@ final class AppController {
     /// `SMAppService.mainApp` operates on the built, signed `.app` bundle; when
     /// run unbundled (`swift run`) its status reads `.notFound` — not an error,
     /// just "needs `make app` + a first launch from Finder" (surfaced in the UI).
-    var launchAtLoginStatus: SMAppService.Status {
-        SMAppService.mainApp.status
-    }
+    ///
+    /// STORED (not computed) so `@Observable` tracks it: the Settings toggle
+    /// binds to this, and a computed property reading `SMAppService` is invisible
+    /// to observation — the switch would register the tap, register no change,
+    /// and snap back (the v0.2.2/v0.7.3 bug class, CLAUDE.md). Refreshed from the
+    /// system after every change we make and whenever Settings opens, so an
+    /// external edit (System Settings → General → Login Items) still shows up.
+    private(set) var launchAtLoginStatus: SMAppService.Status = SMAppService.mainApp.status
 
     /// Human-readable reason `launchAtLoginStatus` isn't a plain on/off, or nil
     /// when it is.
@@ -721,6 +726,12 @@ final class AppController {
         }
     }
 
+    /// Re-read the system's login-item state into the stored property. Cheap and
+    /// local (Service Management's own registration record).
+    func refreshLaunchAtLoginStatus() {
+        launchAtLoginStatus = SMAppService.mainApp.status
+    }
+
     func setLaunchAtLogin(_ enabled: Bool) {
         do {
             if enabled {
@@ -731,6 +742,10 @@ final class AppController {
         } catch {
             showNote("Launch at Login failed: \(error.localizedDescription)")
         }
+        // Always re-read rather than assuming `enabled`: registering can land on
+        // `.requiresApproval` instead of `.enabled`, and a throw leaves the old
+        // state. The toggle must show what the system actually did.
+        refreshLaunchAtLoginStatus()
     }
 
     /// Live model selection (cleanup slug + STT engine), UserDefaults-backed.
@@ -884,7 +899,13 @@ final class AppController {
         }
         self.historyHub = historyHub
 
-        let client = OpenRouterClient(keyProvider: { KeychainStore().get() })
+        // Key comes from the in-memory cache, NOT a keychain read per request:
+        // `keyProvider` is called while building every request, including the
+        // cloud STT request on the dictation path, and a synchronous
+        // `SecItemCopyMatching` there can block on the keychain mutex (or an
+        // authorization prompt) for longer than the request's own timeout — the
+        // request hasn't started, so nothing is timing it. See `APIKeyCache`.
+        let client = OpenRouterClient(keyProvider: { APIKeyCache.shared.current() })
         openRouterClient = client
         modelSelection = ModelSelection(registry: registryStore)
 
@@ -1043,7 +1064,9 @@ final class AppController {
                 wasListening = isListening
                 wasIdle = isIdle
                 switch state {
-                case let .listening(level, preview):
+                // The cap countdown rides on the state itself (`HUDModel
+                // .capSecondsRemaining` reads it), so nothing to mirror here.
+                case let .listening(level, preview, _):
                     hud.pushLevel(level)
                     // Live-preview prototype text (nil unless the setting is on).
                     hud.preview = preview
@@ -1079,6 +1102,22 @@ final class AppController {
         Task { [monitor, weak self] in
             for await note in monitor.notes {
                 self?.showNote(note)
+            }
+        }
+        // A refused start (session still processing) may have left the hotkey
+        // layer holding a hands-free lock for a session that never began —
+        // release it so the next press isn't eaten as a phantom stop.
+        Task { [monitor, orchestrator] in
+            for await _ in orchestrator.refusedStarts {
+                await MainActor.run { monitor.noteStartRefused() }
+            }
+        }
+        // A hands-free session the pipeline ended itself (VAD endpoint, 120 s
+        // cap, cancel) leaves the hotkey layer's double-tap lock behind —
+        // release it so the next press starts fresh.
+        Task { [monitor, orchestrator] in
+            for await _ in orchestrator.handsFreeEnded {
+                await MainActor.run { monitor.noteHandsFreeSessionEnded() }
             }
         }
         // Model-preparation progress → menu line, HUD dot, readiness gate.
@@ -1466,6 +1505,13 @@ final class AppController {
 
     private static let deepLinkLogger = Logger(subsystem: "com.jjromano.skylark", category: "deeplink")
 
+    /// Refusals for a record deep link that has nowhere sensible to dictate.
+    /// Never any transcript content.
+    static let deepLinkSelfFocusedNote =
+        "Skylark has focus — click the app you want to dictate into, then try again"
+    static let deepLinkNoTargetNote =
+        "Couldn't tell which app to dictate into — click it first, then try again"
+
     /// Route a `skylark://` URL (Raycast/Shortcuts/terminal automation).
     /// Unknown routes are logged (no content) and otherwise ignored.
     func handleDeepLink(_ url: URL) {
@@ -1475,20 +1521,108 @@ final class AppController {
         }
         switch route {
         case .recordStart:
-            // Exactly like the HUD record button: start + arm hands-free.
-            Task { [orchestrator] in
-                await orchestrator.handle(.startRecording)
-                await orchestrator.handle(.engageHandsFree)
-            }
+            // Like the HUD record button (start + arm hands-free), but against
+            // an explicitly resolved target — see `startDeepLinkSession`.
+            startDeepLinkSession()
         case .recordStop:
             Task { [orchestrator] in await orchestrator.handle(.stopRecording) }
         case .recordToggle:
-            toggleHandsFree()
+            // Starting needs the target resolution; stopping doesn't.
+            if case .idle = hud.state {
+                startDeepLinkSession()
+            } else {
+                toggleHandsFree()
+            }
         case .recordCancel:
             cancelRecording()
         case .settings:
             showSettings()
         }
+    }
+
+    /// Where a deep-link dictation should land.
+    private enum DeepLinkTarget {
+        /// Dictate into this app.
+        case app(String)
+        /// Skylark's own window holds focus — there is nowhere to dictate.
+        case skylarkItself
+        /// Frontmost is Skylark (activated by `open`) and nothing behind it
+        /// could be resolved.
+        case unresolved
+    }
+
+    /// Begin a hands-free session from a deep link, dictating into the app the
+    /// user was actually working in (P1-4).
+    ///
+    /// `open skylark://record/start` ACTIVATES Skylark before macOS delivers the
+    /// URL, so the orchestrator's own fn-down frontmost read captured
+    /// `com.jjromano.skylark` (not AX-editable) and the transcript was pasted
+    /// into Skylark's own window — the dictation was simply lost. The Shortcuts
+    /// and Stream Deck workflows are exactly the ones that hit this. The hotkey
+    /// path is unaffected and still reads frontmost itself.
+    private func startDeepLinkSession() {
+        switch resolveDeepLinkTarget() {
+        case let .app(bundleID):
+            Task { [orchestrator] in
+                // Ordered awaits on one actor: the target is in place before the
+                // session captures it.
+                await orchestrator.setPendingTarget(bundleID: bundleID)
+                await orchestrator.handle(.startRecording)
+                await orchestrator.handle(.engageHandsFree)
+            }
+        case .skylarkItself:
+            // Refuse rather than paste into ourselves.
+            Self.deepLinkLogger.notice("record deep link refused — Skylark itself holds focus")
+            showNote(Self.deepLinkSelfFocusedNote)
+        case .unresolved:
+            Self.deepLinkLogger.notice("record deep link refused — no resolvable target app")
+            showNote(Self.deepLinkNoTargetNote)
+        }
+    }
+
+    /// Resolve the app a deep-link dictation should target, at URL-receipt time.
+    ///
+    /// Frontmost is normally the answer (a deep link fired from a hotkey manager
+    /// that doesn't activate us). When frontmost is Skylark we distinguish two
+    /// cases: a real Skylark window holding key focus means the user is genuinely
+    /// in Skylark (refuse), while no key window means `open` activated a
+    /// menu-bar-only app and the real target is whatever sits behind us.
+    private func resolveDeepLinkTarget() -> DeepLinkTarget {
+        let own = Bundle.main.bundleIdentifier
+        if let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier, frontmost != own {
+            return .app(frontmost)
+        }
+        // The HUD panels are `.nonactivatingPanel` and answer `canBecomeKey ==
+        // false`, so a non-nil key window really is Settings/History/onboarding.
+        if NSApp.keyWindow != nil { return .skylarkItself }
+        guard let behind = Self.frontmostRegularAppBehindSelf() else { return .unresolved }
+        return .app(behind)
+    }
+
+    /// Bundle ID of the frontmost REGULAR app that isn't us, read from the
+    /// window server's front-to-back on-screen window list. Layer 0 filters out
+    /// menu-bar items, status windows and other chrome; the activation-policy
+    /// check filters out agents that have no user-facing window to dictate into.
+    ///
+    /// Only pid and layer are read, both of which the window list reports
+    /// without Screen Recording permission (window *titles* are the part that
+    /// needs it, and we never ask for one).
+    private static func frontmostRegularAppBehindSelf() -> String? {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
+        guard let windows = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return nil
+        }
+        for window in windows {
+            guard let layer = window[kCGWindowLayer as String] as? Int, layer == 0,
+                  let pid = window[kCGWindowOwnerPID as String] as? pid_t, pid != ownPID,
+                  let app = NSRunningApplication(processIdentifier: pid),
+                  app.activationPolicy == .regular,
+                  let bundleID = app.bundleIdentifier
+            else { continue }
+            return bundleID
+        }
+        return nil
     }
 
     // MARK: - Cleanup override (menu bar)
@@ -1577,35 +1711,53 @@ final class AppController {
         sttModels = (try? await registryStore.all(kind: .stt)) ?? sttModels
     }
 
+    private static let engineLogger = Logger(subsystem: "com.jjromano.skylark", category: "engine")
+
+    /// Staleness guard for transcriber rebuilds. Every rebuild path is
+    /// asynchronous (keychain read, engine warm-up, waiting out a live session),
+    /// so without it the LAST completion wins instead of the last SELECTION —
+    /// and a cloud rebuild landing after a local one uploads audio while the menu
+    /// reads "Local". See `STTRebuildGate`.
+    @ObservationIgnored private var rebuildGate = STTRebuildGate()
+
     /// Build the transcriber for the current STT choice and swap it into the
     /// orchestrator, honouring the memory policy: only the active local engine
     /// stays warm. Cloud wraps the active local engine in a `FallbackTranscriber`;
     /// a missing key falls straight back to local with a one-time notice.
+    ///
+    /// Every path takes a gate token and rechecks it before constructing and
+    /// again before installing; a superseded rebuild drops its work silently.
     private func rebuildTranscriber() {
-        switch modelSelection.sttChoice {
-        case .localParakeet:
-            switchLocalEngine(to: .localParakeet)
-        case .localWhisper:
-            switchLocalEngine(to: .localWhisper)
-        case .localApple:
-            switchLocalEngine(to: .localApple)
+        let choice = modelSelection.sttChoice
+        let token = rebuildGate.begin(choice)
+        switch choice {
+        case .localParakeet, .localWhisper, .localApple:
+            switchLocalEngine(to: choice, token: token)
         case .cloud(let slug):
             // Read the key OFF the main actor: with a self-signed dev build,
             // `SecItemCopyMatching` can raise a keychain authorization prompt
             // and block until it's answered — on the main actor at launch that
             // froze the entire app (no menu-bar icon, no UI) until the dialog
-            // was dismissed.
+            // was dismissed. That same unbounded wait is why the completion
+            // below cannot trust the selection it started with.
             Task.detached { [weak self] in
-                let hasKey = KeychainStore().get() != nil
-                await MainActor.run { self?.finishCloudRebuild(slug: slug, hasKey: hasKey) }
+                let hasKey = APIKeyCache.shared.reload() != nil
+                await MainActor.run { self?.finishCloudRebuild(slug: slug, hasKey: hasKey, token: token) }
             }
         }
     }
 
-    private func finishCloudRebuild(slug: String, hasKey: Bool) {
+    private func finishCloudRebuild(slug: String, hasKey: Bool, token: STTRebuildGate.Token) {
+        // Recheck BEFORE building anything: the keychain read that got us here is
+        // unbounded (an unanswered authorization prompt holds it open), so the
+        // user may have moved to a local engine — and completed a local rebuild —
+        // in the meantime. Installing now would leave a cloud-primary
+        // transcriber behind a menu that reads "Local", and the next dictation
+        // would upload audio. Privacy invariant, not a cosmetic race.
+        guard isCurrentRebuild(token) else { return }
         guard hasKey else {
             showNote("No API key — using local engine")
-            switchLocalEngine(to: activeLocal)
+            switchLocalEngine(to: activeLocal, token: token)
             return
         }
         let entry = sttModels.first { $0.slug == slug }
@@ -1619,8 +1771,10 @@ final class AppController {
         let localFallback = localEngine(for: activeLocal)
         let idle: [any Transcriber] = [parakeet, whisper, appleSpeech].filter { $0.id != localFallback.id }
         let fallback = FallbackTranscriber(primary: cloud, fallback: localFallback, notice: notice)
-        Task { [orchestrator, idle] in
+        Task { [orchestrator, idle, weak self] in
+            guard let self, await self.waitForIdleSession(token) else { return }
             try? await fallback.warmUp()
+            guard self.isCurrentRebuild(token) else { return }
             await orchestrator.setTranscriber(fallback)
             await orchestrator.setTranscriberReady(true)
             for engine in idle { await Self.shutdownEngine(engine) }
@@ -1629,19 +1783,50 @@ final class AppController {
 
     /// Switch the active local engine, warming the new one and (after the switch
     /// completes) shutting the other down to stay within the 16 GB memory budget.
-    private func switchLocalEngine(to choice: STTChoice) {
+    private func switchLocalEngine(to choice: STTChoice, token: STTRebuildGate.Token) {
         activeLocal = choice
         let keep = localEngine(for: choice)
         let drop: [any Transcriber] = [parakeet, whisper, appleSpeech].filter { $0.id != keep.id }
         Task { [orchestrator, keep, drop, weak self] in
+            guard let self, await self.waitForIdleSession(token) else { return }
             let ready = await Self.engineReady(keep)
             if !ready { await orchestrator.setTranscriberReady(false) }
+            guard self.isCurrentRebuild(token) else { return }
             await orchestrator.setTranscriber(keep)
             try? await keep.warmUp()
+            guard self.isCurrentRebuild(token) else { return }
             await orchestrator.setTranscriberReady(true)
             for engine in drop { await Self.shutdownEngine(engine) }
-            self?.applyWhisperTuning()
+            self.applyWhisperTuning()
         }
+    }
+
+    /// Whether `token` still owns its rebuild's outcome (no newer rebuild, and
+    /// the live selection still matches). Logs the drop — no user content, just
+    /// the fact that a stale completion was discarded.
+    private func isCurrentRebuild(_ token: STTRebuildGate.Token) -> Bool {
+        guard rebuildGate.isCurrent(token, selection: modelSelection.sttChoice) else {
+            Self.engineLogger.debug(
+                "stt rebuild superseded — dropping stale completion (gen \(token.generation, privacy: .public))"
+            )
+            return false
+        }
+        return true
+    }
+
+    /// Suspend until the pipeline is between sessions, so an engine swap never
+    /// lands mid-dictation: `setTranscriber` would change the engine an in-flight
+    /// decode reports its timings and history label from, and the teardown right
+    /// after it would `shutdown()` a model WhisperKit is still decoding with.
+    /// Like every other setting here, an engine change takes effect on the next
+    /// dictation. Returns false if the rebuild was superseded while waiting (a
+    /// newer one owns the outcome, including releasing these engines).
+    private func waitForIdleSession(_ token: STTRebuildGate.Token) async -> Bool {
+        while await orchestrator.phase != .idle {
+            guard isCurrentRebuild(token) else { return false }
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        return isCurrentRebuild(token)
     }
 
     private static func engineReady(_ engine: any Transcriber) async -> Bool {
@@ -1915,7 +2100,12 @@ final class AppController {
         case .ready:
             cleanupModelStates[model.id] = .ready(bytes: ModelPaths.installedSize(at: model.fileURL))
         case let .failed(message):
-            cleanupModelStates[model.id] = .notDownloaded
+            // A failed download no longer implies "not downloaded": the installer
+            // validates the new bytes while staged and leaves any previously
+            // installed model in place, so re-derive the row from disk.
+            cleanupModelStates[model.id] = model.isInstalled
+                ? .ready(bytes: ModelPaths.installedSize(at: model.fileURL))
+                : .notDownloaded
             showNote("\(model.displayName) download failed: \(message)")
         }
     }
@@ -2028,6 +2218,9 @@ final class AppController {
     }
 
     func showSettings() {
+        // Login-item state can change behind our back (System Settings → Login
+        // Items); re-read it before the pane that shows it appears.
+        refreshLaunchAtLoginStatus()
         if let window = settingsWindow {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -2088,7 +2281,11 @@ final class AppController {
     /// `completion` (if any) runs on the main actor after the flag updates.
     func refreshAPIKeyPresence(completion: (@MainActor () -> Void)? = nil) {
         Task.detached(priority: .utility) {
-            let exists = KeychainStore().exists()
+            // One off-main read serves both purposes: it warms `APIKeyCache` (so
+            // no request path ever reads the keychain) and tells us whether a key
+            // exists. The key itself stays in memory only — never persisted,
+            // never logged.
+            let exists = APIKeyCache.shared.reload() != nil
             await MainActor.run { [weak self] in
                 self?.hasAPIKey = exists
                 completion?()

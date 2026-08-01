@@ -106,7 +106,16 @@ public actor FluidAudioVAD: SpeechEndpointer {
                 logger.debug("VAD chunk error: \(error.localizedDescription, privacy: .public)")
             }
         }
-        streamState = state
+        if ended {
+            // Utterance over: drop the streaming state and the partial-chunk
+            // buffer now rather than holding them until the next `beginSession`.
+            // Small (a Silero hidden state + <256 ms of samples), but there is no
+            // reason for a finished session's working set to outlive it.
+            streamState = nil
+            leftover = []
+        } else {
+            streamState = state
+        }
         return ended
     }
 

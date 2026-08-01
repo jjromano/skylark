@@ -648,6 +648,46 @@ public final class HotkeyMonitor: @unchecked Sendable {
         if let event {
             continuation.yield(event)
         }
+        // A hands-free lock formed from a start the orchestrator refused
+        // (previous dictation still processing) guards a session that never
+        // began — left in place it eats the next press as a phantom "stop".
+        // The refusal signal can land before or after the lock forms, so this
+        // TTL check covers the lock-after-refusal ordering; noteStartRefused
+        // covers refusal-after-lock.
+        if processor.state == .doubleTapLock,
+           let refused = startRefusedAt,
+           refused.duration(to: ContinuousClock.now) < Self.startRefusalTTL {
+            startRefusedAt = nil
+            if processor.exitDoubleTapLock() {
+                logger.notice("hands-free lock released: its start was refused (still processing)")
+            }
+        }
+    }
+
+    /// The pipeline refused a `.startRecording` (a session was still
+    /// processing). Remember it briefly so a double-tap lock formed from that
+    /// refused start is released instead of eating the next press.
+    static let startRefusalTTL: Duration = .milliseconds(1500)
+    private var startRefusedAt: ContinuousClock.Instant?
+
+    /// The pipeline ended a hands-free session on its own (VAD endpoint, the
+    /// 120 s cap, cancel) — release the double-tap lock so the next press
+    /// starts a fresh session instead of being eaten as a phantom stop.
+    /// Idempotent: a tap-ended session has already released it.
+    @MainActor
+    public func noteHandsFreeSessionEnded() {
+        if processor.exitDoubleTapLock() {
+            logger.notice("hands-free lock released: session ended by the pipeline")
+        }
+    }
+
+    @MainActor
+    public func noteStartRefused() {
+        startRefusedAt = ContinuousClock.now
+        if processor.exitDoubleTapLock() {
+            startRefusedAt = nil
+            logger.notice("hands-free lock released: its start was refused (still processing)")
+        }
     }
 
     /// Translate the command processor's (dictation-flavored) output into the

@@ -87,6 +87,10 @@ struct APIKeyCard: View {
         Task {
             do {
                 try KeychainStore().set(entered)
+                // Publish to the in-memory cache the client reads from, so this
+                // validation (and the next request) uses the key just saved
+                // rather than whatever was cached before it.
+                APIKeyCache.shared.publish(entered)
                 let info = try await client.validateKey()
                 status = Self.describe(info)
                 isError = false
@@ -104,6 +108,7 @@ struct APIKeyCard: View {
 
     private func remove() {
         try? KeychainStore().delete()
+        APIKeyCache.shared.publish(nil)
         status = "Key removed."
         isError = false
         key = ""

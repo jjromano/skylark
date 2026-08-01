@@ -367,7 +367,7 @@ private struct GeneralPane: View {
                     Text("Off — wait for cleanup").tag(0)
                 }
                 .disabled(controller.cleanupOverride == "raw")
-                Text("How long a paste waits for cleanup before falling back. A slow cloud cleanup first degrades to the local model, then to raw text — and now tells you when it does. “Off” waits with no cap.")
+                Text("How long a paste waits for cleanup before falling back. A slow cloud cleanup first degrades to the local model, then to raw text — and now tells you when it does. Before anything is on screen the wait is always capped at 10 seconds; “30 seconds” and “Off” apply in full only after raw text is already visible.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Toggle("Use on-screen context", isOn: Binding(

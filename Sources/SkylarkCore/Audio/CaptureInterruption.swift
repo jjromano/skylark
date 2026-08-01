@@ -28,6 +28,13 @@ public struct CaptureInterruption: Sendable, Equatable {
         /// this is terminal for the utterance and for the hotkey until the user
         /// re-grants. The raw value names Accessibility because it reaches the log.
         case permissionLost = "accessibilityLost"
+        /// The capture buffer reached its hard cap (`AudioCaptureService
+        /// .maxSamples` — 120 s). NOT a fault: a designed limit. Past it every
+        /// further sample is dropped on the floor, so the session ends here
+        /// exactly as if the user had released the trigger. Pretending to still
+        /// record audio nobody keeps is the P1-2 failure (a hands-free session
+        /// sat "recording" for 253 s while the last 133 s went nowhere).
+        case capReached
     }
 
     public let reason: Reason
@@ -50,7 +57,10 @@ public extension CaptureInterruption.Reason {
     /// audio will ever arrive. `permissionLost` qualifies too, for the opposite
     /// reason: audio may still flow but the TRIGGER is dead, so the release that
     /// would normally end the session can never arrive; not finalizing here holds
-    /// the mic open forever. `configurationChange` restarted successfully
+    /// the mic open forever. `capReached` qualifies for a third reason: audio
+    /// still flows and the trigger still lives, but nothing more can be STORED —
+    /// finalizing at the cap is the only honest end. `configurationChange`
+    /// restarted successfully
     /// (recording continues; the clip carries the marker). `triggerTapStalled`
     /// does NOT finalize: it also fires on a benign main-loop stall while the user
     /// is still holding, so finalizing would clip them; the marker is recorded and
@@ -58,7 +68,7 @@ public extension CaptureInterruption.Reason {
     var finalizesUtterance: Bool {
         switch self {
         case .configurationChange, .triggerTapStalled: return false
-        case .restartFailed, .permissionLost: return true
+        case .restartFailed, .permissionLost, .capReached: return true
         }
     }
 }

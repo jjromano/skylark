@@ -41,6 +41,10 @@ public struct SpeechRegion: Sendable, Equatable {
 /// - Clip shorter than `minClipDuration` → UNTOUCHED (nothing worth the scan).
 /// - A trim that would save less than `minSavings`, or leave less than
 ///   `minKeptDuration` of audio → UNTOUCHED.
+/// - Head/tail audio that is AUDIBLE (above a fraction of the utterance's own
+///   peak) is kept even though the VAD called it non-speech — the audible guard
+///   (audit U7). A quiet first word the model missed is still energy on the
+///   wire, and energy outranks the model here.
 ///
 /// O(regions) — the samples themselves are never touched here; the caller does one
 /// slice copy if there's something to cut.
@@ -60,19 +64,42 @@ public enum VadClipTrimmer {
         /// Audio that must survive a trim; below it, the clip is left whole (a
         /// backstop against a VAD that found only a blip of a real utterance).
         public var minKeptDuration: TimeInterval
+        /// Audible-guard threshold, as a FRACTION of the utterance's own peak.
+        /// Head/tail audio above it is never cut, however the VAD scored it.
+        /// Relative on purpose: an absolute floor would either block every trim
+        /// in a noisy room or miss a quiet word in a silent one.
+        public var audibleRatio: Float
+        /// Absolute floor under the ratio, so a clip whose "peak" is itself noise
+        /// can't make every sample count as audible.
+        public var audibleFloor: Float
+        /// How far the audible guard keeps looking through quiet audio before it
+        /// gives up: sound separated from the utterance by more than this is a
+        /// different sound (a door, a cough at the top of a long clip), not a
+        /// word the VAD missed. Generous — the walk over silence is microseconds.
+        public var audibleGap: TimeInterval
+        /// Window the audible guard measures in (peak per window).
+        public var audibleWindow: TimeInterval
 
         public init(
             leadPadding: TimeInterval,
             tailPadding: TimeInterval,
             minClipDuration: TimeInterval,
             minSavings: TimeInterval,
-            minKeptDuration: TimeInterval
+            minKeptDuration: TimeInterval,
+            audibleRatio: Float = 0.05,
+            audibleFloor: Float = 0.008,
+            audibleGap: TimeInterval = 1.5,
+            audibleWindow: TimeInterval = 0.02
         ) {
             self.leadPadding = leadPadding
             self.tailPadding = tailPadding
             self.minClipDuration = minClipDuration
             self.minSavings = minSavings
             self.minKeptDuration = minKeptDuration
+            self.audibleRatio = audibleRatio
+            self.audibleFloor = audibleFloor
+            self.audibleGap = audibleGap
+            self.audibleWindow = audibleWindow
         }
 
         /// Defaults for 16 kHz capture: a 0.45 s prefill (Handy's smoothing
@@ -145,11 +172,20 @@ public enum VadClipTrimmer {
 
     /// Decide what to keep. `regions` are unpadded speech runs in sample offsets,
     /// in any order; `sampleCount` is the clip's length.
+    ///
+    /// Pass `samples` (the clip itself) to enable the AUDIBLE GUARD: before any
+    /// cut is made, the head and tail about to be deleted are walked outward from
+    /// the speech and the cut is pulled back past anything above the noise floor.
+    /// That is the answer to audit U7 ("partial VAD detection silently deletes
+    /// quiet leading or trailing speech") — a word the model scored as non-speech
+    /// still has energy, and energy is an independent witness the VAD can't
+    /// veto. Omitting `samples` keeps the pre-v0.12.4 behaviour exactly.
     public static func decide(
         regions: [SpeechRegion],
         sampleCount: Int,
         sampleRate: Double,
-        configuration: Configuration = .default
+        configuration: Configuration = .default,
+        samples: [Float]? = nil
     ) -> Verdict {
         guard sampleCount > 0, sampleRate > 0 else { return .untouched }
         guard isWorthScanning(
@@ -174,9 +210,24 @@ public enum VadClipTrimmer {
 
         let lead = Int((configuration.leadPadding * sampleRate).rounded())
         let tail = Int((configuration.tailPadding * sampleRate).rounded())
-        let keepStart = max(0, firstStart - max(0, lead))
-        let keepEnd = min(sampleCount, lastEnd + max(0, tail))
+        var keepStart = max(0, firstStart - max(0, lead))
+        var keepEnd = min(sampleCount, lastEnd + max(0, tail))
         guard keepEnd > keepStart else { return .untouched }
+
+        // U7: never cut across audible audio the VAD merely failed to score.
+        if let samples, samples.count == sampleCount {
+            let threshold = audibleThreshold(
+                samples: samples, speech: firstStart..<lastEnd, configuration: configuration
+            )
+            keepStart = widenHead(
+                to: keepStart, samples: samples, threshold: threshold,
+                pad: lead, sampleRate: sampleRate, configuration: configuration
+            )
+            keepEnd = widenTail(
+                from: keepEnd, samples: samples, threshold: threshold,
+                pad: tail, sampleRate: sampleRate, configuration: configuration
+            )
+        }
 
         let headSamples = keepStart
         let tailSamples = sampleCount - keepEnd
@@ -191,5 +242,94 @@ public enum VadClipTrimmer {
             headTrimmed: Double(headSamples) / sampleRate,
             tailTrimmed: Double(tailSamples) / sampleRate
         )
+    }
+
+    // MARK: - Audible guard (U7)
+
+    /// The level below which head/tail audio counts as non-speech: a fraction of
+    /// the utterance's OWN peak, floored absolutely. Relative because the useful
+    /// question is "is this as loud as the speech we found?", not "is this loud?".
+    private static func audibleThreshold(
+        samples: [Float], speech: Range<Int>, configuration: Configuration
+    ) -> Float {
+        let speechPeak = peak(samples, in: speech)
+        return max(configuration.audibleFloor, speechPeak * configuration.audibleRatio)
+    }
+
+    /// Pull the head cut back through audible windows adjacent to the speech,
+    /// stopping at the first genuine gap (`audibleGap` of sub-threshold audio).
+    /// Costs one `audibleGap`-long scan in the normal case — the head really is
+    /// silence, so the walk stops almost immediately.
+    private static func widenHead(
+        to keepStart: Int,
+        samples: [Float],
+        threshold: Float,
+        pad: Int,
+        sampleRate: Double,
+        configuration: Configuration
+    ) -> Int {
+        guard keepStart > 0 else { return keepStart }
+        let window = max(1, Int((configuration.audibleWindow * sampleRate).rounded()))
+        let gapWindows = max(1, Int((configuration.audibleGap / configuration.audibleWindow).rounded()))
+        var cursor = keepStart
+        var silentRun = 0
+        var earliest = keepStart
+        while cursor > 0 {
+            let lower = max(0, cursor - window)
+            if peak(samples, in: lower..<cursor) >= threshold {
+                earliest = lower
+                silentRun = 0
+            } else {
+                silentRun += 1
+                if silentRun >= gapWindows { break }
+            }
+            cursor = lower
+        }
+        guard earliest < keepStart else { return keepStart }
+        // The recovered onset gets the same lead pad the VAD's own onset got.
+        return max(0, earliest - max(0, pad))
+    }
+
+    /// Tail counterpart of `widenHead`.
+    private static func widenTail(
+        from keepEnd: Int,
+        samples: [Float],
+        threshold: Float,
+        pad: Int,
+        sampleRate: Double,
+        configuration: Configuration
+    ) -> Int {
+        guard keepEnd < samples.count else { return keepEnd }
+        let window = max(1, Int((configuration.audibleWindow * sampleRate).rounded()))
+        let gapWindows = max(1, Int((configuration.audibleGap / configuration.audibleWindow).rounded()))
+        var cursor = keepEnd
+        var silentRun = 0
+        var latest = keepEnd
+        while cursor < samples.count {
+            let upper = min(samples.count, cursor + window)
+            if peak(samples, in: cursor..<upper) >= threshold {
+                latest = upper
+                silentRun = 0
+            } else {
+                silentRun += 1
+                if silentRun >= gapWindows { break }
+            }
+            cursor = upper
+        }
+        guard latest > keepEnd else { return keepEnd }
+        return min(samples.count, latest + max(0, pad))
+    }
+
+    /// Peak magnitude over `range`. Index-based (no slice copy).
+    private static func peak(_ samples: [Float], in range: Range<Int>) -> Float {
+        let lower = max(0, range.lowerBound)
+        let upper = min(samples.count, range.upperBound)
+        guard lower < upper else { return 0 }
+        var maximum: Float = 0
+        for i in lower..<upper {
+            let magnitude = abs(samples[i])
+            if magnitude > maximum { maximum = magnitude }
+        }
+        return maximum
     }
 }

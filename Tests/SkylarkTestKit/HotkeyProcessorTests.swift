@@ -153,3 +153,30 @@ struct HotkeyProcessorTests {
         #expect(p.process(.triggerUp, at: at(650)) == nil)
     }
 }
+
+@Suite("HotkeyProcessor refused-start lock release")
+struct HotkeyProcessorRefusedStartTests {
+    @Test("exitDoubleTapLock releases only a hands-free lock")
+    func exitReleasesOnlyLock() {
+        var p = HotkeyProcessor()
+        let t0 = ContinuousClock.now
+        // Idle: nothing to release.
+        let idleRelease = p.exitDoubleTapLock()
+        #expect(!idleRelease)
+        // Held key: must NOT be disturbed (a real session is recording).
+        _ = p.process(.triggerDown, at: t0)
+        let heldRelease = p.exitDoubleTapLock()
+        #expect(!heldRelease)
+        #expect(p.state == .pressAndHold(start: t0))
+        // Form the lock via a quick double tap, then release it.
+        _ = p.process(.triggerUp, at: t0.advanced(by: .milliseconds(50)))
+        _ = p.process(.triggerDown, at: t0.advanced(by: .milliseconds(120)))
+        _ = p.process(.triggerUp, at: t0.advanced(by: .milliseconds(170)))
+        #expect(p.state == .doubleTapLock)
+        let lockedRelease = p.exitDoubleTapLock()
+        #expect(lockedRelease)
+        #expect(p.state == .idle)
+        // After release, the next press starts a fresh session (not a stop).
+        #expect(p.process(.triggerDown, at: t0.advanced(by: .seconds(1))) == .startRecording)
+    }
+}

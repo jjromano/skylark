@@ -15,6 +15,25 @@ public struct InsertionToken: @unchecked Sendable, Equatable {
         case paste
     }
 
+    /// How far the insertion actually got. Posting Cmd-V is NOT evidence that
+    /// anything landed (P1-9): the events go to the HID tap and a target that
+    /// ignores them leaves the caret empty while we happily record success —
+    /// and the restore ceiling then takes the transcript back off the clipboard,
+    /// so the only copy outside History is gone. `.posted` is the honest state
+    /// at the moment `insert` returns; `confirmedLanding()` upgrades it to
+    /// `.readConfirmed` once the target reads our pasteboard promise.
+    public enum PasteLanding: Sendable, Equatable {
+        /// AX write, verified by read-back. No clipboard involved.
+        case axVerified
+        /// Cmd-V posted AND the target read the pasteboard: the text landed.
+        case readConfirmed
+        /// Cmd-V posted, no target read (yet). May never have landed.
+        case posted
+        /// The keystroke could not be synthesized; text left on the clipboard
+        /// as the user's manual fallback (deliberately NOT restored).
+        case notPosted
+    }
+
     public let method: Method
     /// The exact text inserted, including any smart-spacing separator prefix —
     /// this is what sits on screen, so the in-place replace matches against it.
@@ -22,15 +41,69 @@ public struct InsertionToken: @unchecked Sendable, Equatable {
     /// The smart-spacing separator (`""` or `" "`) prepended at insertion, kept
     /// so an in-place cleanup replace re-applies the same prefix.
     public let leadingSeparator: String
-    /// True when the paste path could not confirm insertion; text was left on
-    /// the clipboard as the user's fallback and NOT restored.
-    public let pasteUncertain: Bool
+    /// What we actually know about the insertion at the time this token was made.
+    public let landing: PasteLanding
+    /// The AX range the inserted run occupied at insertion time (AX path only).
+    /// The in-place cleanup replace anchors here instead of re-deriving the
+    /// range from the LIVE caret, which would follow the user's cursor onto an
+    /// older identical phrase (audit U3).
+    let axRange: CFRange?
+    /// Resolves the paste landing asynchronously (nil for AX/synthetic tokens).
+    let landingSignal: PasteLandingSignal?
+
+    /// True when the insertion is not known to have landed; for the `.notPosted`
+    /// case the text was left on the clipboard as the user's fallback.
+    /// Conservative by construction: a merely-posted paste counts as uncertain.
+    public var pasteUncertain: Bool { landing == .posted || landing == .notPosted }
 
     public init(method: Method, text: String, leadingSeparator: String = "", pasteUncertain: Bool) {
         self.method = method
         self.text = text
         self.leadingSeparator = leadingSeparator
-        self.pasteUncertain = pasteUncertain
+        // Source-compatible mapping for callers/test doubles that only know the
+        // Bool: certain + AX = verified write, certain + paste = the target read
+        // it, uncertain = the keystroke never went out.
+        switch (method, pasteUncertain) {
+        case (_, true): landing = .notPosted
+        case (.ax, false): landing = .axVerified
+        case (.paste, false): landing = .readConfirmed
+        }
+        axRange = nil
+        landingSignal = nil
+    }
+
+    /// Honest form: state exactly what is known about the insertion.
+    public init(method: Method, text: String, leadingSeparator: String = "", landing: PasteLanding) {
+        self.init(method: method, text: text, leadingSeparator: leadingSeparator, landing: landing, axRange: nil, landingSignal: nil)
+    }
+
+    /// Full form (module-internal: `axRange`/`landingSignal` are implementation
+    /// detail). No defaults on the last two, so a 4-argument call unambiguously
+    /// resolves to the public initializer above.
+    init(
+        method: Method,
+        text: String,
+        leadingSeparator: String = "",
+        landing: PasteLanding,
+        axRange: CFRange?,
+        landingSignal: PasteLandingSignal?
+    ) {
+        self.method = method
+        self.text = text
+        self.leadingSeparator = leadingSeparator
+        self.landing = landing
+        self.axRange = axRange
+        self.landingSignal = landingSignal
+    }
+
+    /// The landing once the evidence is in: awaits the target's pasteboard read
+    /// (resolved on read, on the restore ceiling, or on teardown — never hangs).
+    /// Off the latency path by design: `insert` returns before this resolves, so
+    /// only callers that need the truth (history, command-mode replace) pay for
+    /// it. Immediate callers (press-Return) must NOT await it.
+    public func confirmedLanding() async -> PasteLanding {
+        guard let landingSignal else { return landing }
+        return await landingSignal.value()
     }
 
     public static func == (lhs: InsertionToken, rhs: InsertionToken) -> Bool {
@@ -54,19 +127,29 @@ public struct CommandSelection: @unchecked Sendable, Equatable {
     /// when the selection was captured without a replaceable handle).
     let element: AXUIElement?
     let range: CFRange?
+    /// Who owned the selection when it was captured. Part of the anchor: a paste
+    /// fallback is only safe while the same app in the same field still holds the
+    /// same selected range (P1-5).
+    let bundleID: String?
+    let pid: pid_t
 
     /// Public initializer (no AX anchor) — used by tests and any caller that
-    /// only carries the selection text; replacement then uses the paste path.
+    /// only carries the selection text. Without an anchor there is nothing to
+    /// verify against, so replacement refuses rather than pasting blind.
     public init(text: String) {
         self.text = text
         self.element = nil
         self.range = nil
+        self.bundleID = nil
+        self.pid = 0
     }
 
-    init(text: String, element: AXUIElement, range: CFRange) {
+    init(text: String, element: AXUIElement, range: CFRange, bundleID: String?, pid: pid_t) {
         self.text = text
         self.element = element
         self.range = range
+        self.bundleID = bundleID
+        self.pid = pid
     }
 
     public static func == (lhs: CommandSelection, rhs: CommandSelection) -> Bool {
@@ -79,6 +162,23 @@ public struct CommandSelection: @unchecked Sendable, Equatable {
     }
 }
 
+/// Why a Voice Command Mode replacement did or didn't happen. `replaceSelection`
+/// flattens this to a Bool for existing callers; the distinction exists because
+/// "the anchor moved" needs a DIFFERENT user-visible note from "the write
+/// failed" — in the stale case the command result was deliberately not applied
+/// anywhere, and the user must be told which of their text is untouched.
+public enum SelectionReplaceOutcome: Sendable, Equatable {
+    /// The captured selection was replaced (AX-verified, or pasted over the
+    /// still-matching selection).
+    case replaced
+    /// The captured selection is no longer what's selected (focus, field, range
+    /// or text changed). Nothing was written. Suggested note:
+    /// "Selection changed — command result not applied".
+    case anchorStale
+    /// The anchor still matched but the write itself didn't land.
+    case failed
+}
+
 /// Inserts text at the cursor (ARCHITECTURE §2).
 public protocol TextInjecting: Sendable {
     func insert(_ text: String) async throws -> InsertionToken
@@ -89,10 +189,15 @@ public protocol TextInjecting: Sendable {
     /// inserts the command result at the cursor instead.
     func readSelection() async -> CommandSelection?
     /// Replace a previously-read selection with `text`, verified by read-back;
-    /// falls back to a clipboard-preserving paste over the live selection when
-    /// AX can't confirm. Returns true when the replacement landed. On false the
-    /// caller surfaces a failure and leaves the selection as-is.
+    /// falls back to a clipboard-preserving paste ONLY while the captured
+    /// selection is provably still the live one. Returns true when the
+    /// replacement landed. On false the caller surfaces a failure and leaves the
+    /// selection as-is.
     func replaceSelection(_ selection: CommandSelection, with text: String) async -> Bool
+    /// As `replaceSelection`, but says WHY it failed so the caller can tell the
+    /// user the difference between "your selection moved, nothing was applied"
+    /// and "the write failed".
+    func replaceSelectionOutcome(_ selection: CommandSelection, with text: String) async -> SelectionReplaceOutcome
     /// Whether the focused element supports precise AX insertion right now. The
     /// orchestrator probes this at paste time to pick the cleanup strategy
     /// (in-place replace vs. wait-for-clean).
@@ -127,6 +232,12 @@ public extension TextInjecting {
 
     /// Default: replacement unsupported for simple doubles.
     func replaceSelection(_ selection: CommandSelection, with text: String) async -> Bool { false }
+
+    /// Default: defer to the Bool variant (doubles that only implement that one
+    /// keep working; they just can't distinguish stale from failed).
+    func replaceSelectionOutcome(_ selection: CommandSelection, with text: String) async -> SelectionReplaceOutcome {
+        await replaceSelection(selection, with: text) ? .replaced : .failed
+    }
 }
 
 /// Posts a real Cmd-V (or an injected substitute in tests).
@@ -203,10 +314,15 @@ public final class TextInjector: TextInjecting {
     /// posts to (`.cghidEventTap`), for the spoken "press enter" command. No
     /// clipboard involvement.
     ///
-    /// Call this only *after* `insert` has returned: on the paste path `insert`
-    /// awaits the post-paste settle grace before returning, and on the AX path the
-    /// write is synchronous, so by the time this runs the injected text has
-    /// already landed and the Return keystroke arrives after it in the target app.
+    /// Call this only *after* `insert` has returned. On the AX path the write is
+    /// synchronous, so the text is already in the field. On the paste path
+    /// `insert` returns as soon as the Cmd-V events are POSTED — it does not wait
+    /// for the target to consume them (that would put the read-signal ceiling on
+    /// the dictation latency path). Ordering still holds: both the chord and this
+    /// Return go to `.cghidEventTap`, so the target dequeues them in order. What
+    /// does NOT hold is that the paste landed at all — if the target ignored the
+    /// Cmd-V, this Return submits an empty field. Callers that must not do that
+    /// gate on `InsertionToken.confirmedLanding()` first (P1-9).
     /// Posting two CGEvents is fast and non-blocking; it stays off the audio path
     /// because the app layer invokes it on the injection path, never per audio frame.
     ///
@@ -251,9 +367,16 @@ public final class TextInjector: TextInjecting {
         //    write is verified by read-back — Chrome/Electron fields report
         //    `.success` but silently drop the insert, so a bare success is not
         //    trusted (see `insertViaAX`).
-        if let element = Self.insertViaAX(toInsert) {
+        if let landed = Self.insertViaAX(toInsert) {
             rememberInsertion(text: toInsert, pid: targetPid)
-            return InsertionToken(method: .ax(element), text: toInsert, leadingSeparator: separator, pasteUncertain: false)
+            return InsertionToken(
+                method: .ax(landed.element),
+                text: toInsert,
+                leadingSeparator: separator,
+                landing: .axVerified,
+                axRange: landed.range,
+                landingSignal: nil
+            )
         }
         // 2) Clipboard-preserving paste fallback (AX unavailable or unconfirmed).
         logger.debug("AX insert unconfirmed; using clipboard paste fallback")
@@ -272,12 +395,19 @@ public final class TextInjector: TextInjecting {
         let separator = leadingSeparator(targetPid: targetPid)
         let toInsert = separator + text
         Self.logInjectTarget(logger)
-        guard let element = Self.insertViaAX(toInsert) else {
+        guard let landed = Self.insertViaAX(toInsert) else {
             logger.debug("direct AX insert unconfirmed; caller will wait-for-clean")
             return nil
         }
         rememberInsertion(text: toInsert, pid: targetPid)
-        return InsertionToken(method: .ax(element), text: toInsert, leadingSeparator: separator, pasteUncertain: false)
+        return InsertionToken(
+            method: .ax(landed.element),
+            text: toInsert,
+            leadingSeparator: separator,
+            landing: .axVerified,
+            axRange: landed.range,
+            landingSignal: nil
+        )
     }
 
     /// In-place replacement of the just-inserted range (ARCHITECTURE §3).
@@ -293,7 +423,12 @@ public final class TextInjector: TextInjecting {
             // no longer matched (focus moved, or the app dropped the AX write) —
             // THROW so the caller keeps the "raw kept" note instead of recording
             // the clean text as if it landed (it didn't; raw is still on screen).
-            let landed = Self.performAXReplace(element: element, original: token.text, replacement: token.leadingSeparator + text)
+            let landed = Self.performAXReplace(
+                element: element,
+                original: token.text,
+                replacement: token.leadingSeparator + text,
+                anchor: token.axRange
+            )
             if !landed { throw InjectionError.replaceFailed }
         }
     }
@@ -307,21 +442,83 @@ public final class TextInjector: TextInjecting {
         guard let element = Self.focusedEditableElement() else { return nil }
         guard let range = Self.selectedRange(element), range.length > 0 else { return nil }
         guard let text = Self.string(in: element, range: range), !text.isEmpty else { return nil }
-        return CommandSelection(text: text, element: element, range: range)
+        var pid: pid_t = 0
+        AXUIElementGetPid(element, &pid)
+        return CommandSelection(
+            text: text,
+            element: element,
+            range: range,
+            bundleID: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            pid: pid
+        )
     }
 
     /// Replace a read selection with `text`. Prefers a verified AX write over the
-    /// exact selected range; on any failure (focus moved, field drops the write,
-    /// or no AX handle) falls back to a clipboard-preserving paste, which Cmd-V's
-    /// over the live selection to replace it. Returns true when text landed.
+    /// exact selected range; when that write can't be confirmed it falls back to
+    /// a clipboard-preserving Cmd-V — but ONLY while the captured anchor is still
+    /// live.
+    ///
+    /// P1-5: the command runs an LLM between read and write, so seconds pass. A
+    /// Cmd-V there types over whatever is selected NOW, which after a click or a
+    /// Cmd-A elsewhere is unrelated content the user never asked to rewrite — a
+    /// silent destructive edit with no undo affordance we control. Aborting loses
+    /// only the command result (still reproducible); pasting loses the user's
+    /// document text. So: bundle + pid + element + range + selected text must all
+    /// still match, or nothing is written.
     public func replaceSelection(_ selection: CommandSelection, with text: String) async -> Bool {
-        if let element = selection.element, let range = selection.range,
-           Self.axReplaceSelection(element: element, range: range, original: selection.text, replacement: text) {
-            return true
+        await replaceSelectionOutcome(selection, with: text) == .replaced
+    }
+
+    public func replaceSelectionOutcome(_ selection: CommandSelection, with text: String) async -> SelectionReplaceOutcome {
+        guard let element = selection.element, let range = selection.range else {
+            // No anchor was ever captured (hand-built selection): there is
+            // nothing to verify against, so a paste would be exactly the blind
+            // overwrite this guard exists to prevent.
+            logger.notice("command replace aborted: selection carries no AX anchor")
+            return .anchorStale
         }
-        // Paste fallback: Cmd-V replaces the current selection in place.
+        if Self.axReplaceSelection(element: element, range: range, original: selection.text, replacement: text) {
+            return .replaced
+        }
+        // The AX write was refused or silently dropped (Chrome/Electron), OR the
+        // anchor is stale. Only the first justifies pasting over the live
+        // selection — distinguish before touching the clipboard.
+        guard Self.anchorIsLive(selection) else {
+            logger.notice("command replace aborted: selection anchor is stale")
+            return .anchorStale
+        }
         let token = await performClipboardPaste(text, pasteboard: .general, executor: executor)
-        return !token.pasteUncertain
+        // Honest confirmation (P1-9): a posted Cmd-V the target ignored must not
+        // be reported as a landed rewrite. Off the latency path — the command
+        // result is already on screen if it landed at all.
+        return await token.confirmedLanding() == .readConfirmed ? .replaced : .failed
+    }
+
+    /// True when everything the captured selection was anchored to still holds:
+    /// same frontmost app, same owning process, same focused element, the same
+    /// selected range, and the same text selected. Anything less — or anything
+    /// unverifiable — and a Cmd-V would land somewhere the user didn't select.
+    ///
+    /// The text check reads `kAXSelectedText` first and only then the
+    /// parameterized range read: Chrome/Electron fields expose the former but
+    /// not the latter, and they are precisely the targets that depend on the
+    /// paste fallback, so verifying them via the range read alone would abort
+    /// every command-mode rewrite there.
+    static func anchorIsLive(_ selection: CommandSelection) -> Bool {
+        guard let element = selection.element, let range = selection.range else { return false }
+        if let bundleID = selection.bundleID,
+           NSWorkspace.shared.frontmostApplication?.bundleIdentifier != bundleID { return false }
+        guard let focused = focusedEditableElement(), CFEqual(focused, element) else { return false }
+        var pid: pid_t = 0
+        AXUIElementGetPid(focused, &pid)
+        guard selection.pid == 0 || pid == selection.pid else { return false }
+        // An unreadable live range is tolerated (some web fields don't publish
+        // it); a range that reads back DIFFERENT is a moved selection.
+        if let live = selectedRange(element), live.location != range.location || live.length != range.length {
+            return false
+        }
+        guard let live = selectedText(element) ?? string(in: element, range: range) else { return false }
+        return live == selection.text
     }
 
     /// Re-select `range` and overwrite it with `replacement`, verified by
@@ -489,68 +686,148 @@ public final class TextInjector: TextInjecting {
     }
 
     /// Attempts AX insertion and confirms it by read-back. Returns the focused
-    /// element only when the inserted text is verifiably present at the caret;
-    /// nil otherwise so the caller falls back to the clipboard paste.
+    /// element AND the range the text landed in (the anchor a later in-place
+    /// replace uses, audit U3) only when the inserted text is verifiably present
+    /// at the caret; nil otherwise so the caller falls back to the clipboard paste.
     ///
     /// Chrome, Electron, and some web fields answer `AXUIElementSetAttributeValue`
     /// with `.success` yet never apply the write, so a bare success is not
     /// trustworthy. We re-use the same range read the in-place replace relies on:
     /// a field that can't read our text back at the expected range is treated as
     /// not-landed (paste instead).
-    static func insertViaAX(_ text: String) -> AXUIElement? {
+    static func insertViaAX(_ text: String) -> (element: AXUIElement, range: CFRange?)? {
         guard let focused = focusedEditableElement() else { return nil }
         guard AXUIElementSetAttributeValue(focused, kAXSelectedTextAttribute as CFString, text as CFTypeRef) == .success else {
             return nil
         }
-        guard axInsertLanded(element: focused, insertedText: text) else { return nil }
-        return focused
+        guard case let .landed(range) = axInsertLanded(element: focused, insertedText: text) else { return nil }
+        return (focused, range)
     }
 
-    /// True when `insertedText` is verifiably present at the caret after an AX
-    /// set. The caret sits collapsed at the end of the inserted run, so the run
-    /// occupies `[caret - len, len]`; we read that range back and compare. Any
-    /// unreadable attribute (field doesn't support the range read) → false, so
-    /// the caller pastes instead. Empty text needs no verification.
-    static func axInsertLanded(element: AXUIElement, insertedText: String) -> Bool {
+    /// Whether an AX write is verifiably on screen, and where it went.
+    enum AXInsertOutcome: Equatable {
+        /// Verified present. `range` is the run's anchor, nil only for an empty
+        /// insert (nothing to anchor).
+        case landed(range: CFRange?)
+        /// Not verifiably present — the caller must paste instead.
+        case notLanded
+
+        static func == (lhs: AXInsertOutcome, rhs: AXInsertOutcome) -> Bool {
+            switch (lhs, rhs) {
+            case (.notLanded, .notLanded): return true
+            case let (.landed(a), .landed(b)):
+                return a?.location == b?.location && a?.length == b?.length
+            default: return false
+            }
+        }
+    }
+
+    /// The range `insertedText` verifiably occupies after an AX set, or nil when
+    /// it isn't there. The caret sits collapsed at the end of the inserted run,
+    /// so the run occupies `[caret - len, len]`; we read that range back and
+    /// compare. Any unreadable attribute (field doesn't support the range read)
+    /// → nil, so the caller pastes instead.
+    ///
+    /// The range is RETURNED (not just validated) because the later in-place
+    /// cleanup replace must anchor to where the text actually went, not to
+    /// wherever the caret has wandered by then (audit U3). Empty text needs no
+    /// verification and has no anchor.
+    static func axInsertLanded(element: AXUIElement, insertedText: String) -> AXInsertOutcome {
         let len = utf16Count(insertedText)
-        guard len > 0 else { return true }
+        guard len > 0 else { return .landed(range: nil) }
         guard let caret = selectedRange(element),
               let range = candidateRange(caretLocation: caret.location, insertedUTF16Count: len),
-              let readBack = string(in: element, range: range)
+              let readBack = string(in: element, range: range),
+              readBack == insertedText
         else {
-            return false
+            return .notLanded
         }
-        return readBack == insertedText
+        return .landed(range: range)
     }
 
     // MARK: - In-place replacement (AX)
 
-    /// Precisely replaces the `original` run ending at the caret with
-    /// `replacement`. Returns true when the replacement was applied; false (no
-    /// mutation) on any mismatch — focus moved, caret math impossible, or the
-    /// text at the computed range isn't what we inserted.
-    static func performAXReplace(element: AXUIElement, original: String, replacement: String) -> Bool {
+    /// Precisely replaces the `original` run — the one recorded in `anchor` at
+    /// insertion time — with `replacement`. Returns true when the replacement was
+    /// applied; false (no mutation) on any mismatch: focus moved, caret math
+    /// impossible, or the text at the range isn't what we inserted.
+    ///
+    /// U3 (audit): deriving the range from the LIVE caret is what made this
+    /// rewritable-anywhere. If the user parked the caret at the end of an EARLIER
+    /// identical phrase in the same field during the cleanup window, the derived
+    /// range landed on that older copy and the content check passed — cleanup
+    /// then rewrote text the user never dictated. Anchoring to the range the
+    /// insert actually verified removes the caret from the decision entirely; the
+    /// caret-derived path survives only for tokens that carry no anchor (test
+    /// doubles and any caller that built a token by hand).
+    static func performAXReplace(element: AXUIElement, original: String, replacement: String, anchor: CFRange?) -> Bool {
         // 1) Focus must still be the token's element (user hasn't clicked away).
         guard let focused = focusedEditableElement(), CFEqual(focused, element) else { return false }
 
-        // 2) Read the caret (selected range); expected collapsed at the end of
-        //    the inserted text. AX ranges are UTF-16 code units.
-        guard let caret = selectedRange(element) else { return false }
-        guard let candidate = candidateRange(caretLocation: caret.location, insertedUTF16Count: utf16Count(original)) else {
-            return false
+        // 2) Where our text went. Recorded anchor when we have one; otherwise the
+        //    caret (expected collapsed at the end of the inserted text). AX ranges
+        //    are UTF-16 code units.
+        let liveCaret = selectedRange(element)
+        let candidate: CFRange
+        if let anchor {
+            candidate = anchor
+        } else {
+            guard let liveCaret,
+                  let derived = candidateRange(caretLocation: liveCaret.location, insertedUTF16Count: utf16Count(original))
+            else {
+                return false
+            }
+            candidate = derived
         }
 
         // 3) Verify the candidate range actually holds our inserted text.
         guard let atRange = string(in: element, range: candidate), atRange == original else { return false }
 
-        // 4) Select the range, replace it, restore a collapsed caret at the end.
+        // 4) Select the range and replace it.
         guard setSelectedRange(element, candidate) else { return false }
         guard AXUIElementSetAttributeValue(element, kAXSelectedTextAttribute as CFString, replacement as CFTypeRef) == .success else {
             return false
         }
-        let newCaret = CFRange(location: candidate.location + utf16Count(replacement), length: 0)
-        _ = setSelectedRange(element, newCaret)
+        // 5) Put the caret back where the USER had it, shifted by the length
+        //    change. Anchoring (step 2) means the replace no longer has to happen
+        //    at the caret, so blindly collapsing at the end of the replacement
+        //    would now yank a caret the user had moved on — e.g. dictate, keep
+        //    typing further down, cleanup lands a second later and steals the
+        //    cursor mid-word. Without a readable caret, fall back to the old
+        //    end-of-replacement behaviour.
+        let target = liveCaret.map {
+            caretAfterReplace(
+                caret: $0,
+                anchor: candidate,
+                originalUTF16Count: utf16Count(original),
+                replacementUTF16Count: utf16Count(replacement)
+            )
+        } ?? CFRange(location: candidate.location + utf16Count(replacement), length: 0)
+        _ = setSelectedRange(element, target)
         return true
+    }
+
+    /// Where the caret belongs after an anchored replace.
+    ///
+    /// - Caret at or after the end of the replaced run: shift by the length
+    ///   delta (the classic "caret sat at the end of the dictation" case lands
+    ///   collapsed at the end of the replacement, exactly as before).
+    /// - Caret entirely before the run: unchanged — those offsets didn't move.
+    /// - Caret overlapping the run (the user selected part of what we rewrote):
+    ///   collapse at the end of the replacement; the text it referred to is gone.
+    public nonisolated static func caretAfterReplace(
+        caret: CFRange,
+        anchor: CFRange,
+        originalUTF16Count: Int,
+        replacementUTF16Count: Int
+    ) -> CFRange {
+        let runEnd = anchor.location + originalUTF16Count
+        if caret.location >= runEnd {
+            let delta = replacementUTF16Count - originalUTF16Count
+            return CFRange(location: max(0, caret.location + delta), length: caret.length)
+        }
+        if caret.location + caret.length <= anchor.location { return caret }
+        return CFRange(location: anchor.location + replacementUTF16Count, length: 0)
     }
 
     // MARK: - Range math (pure, unit-tested)
@@ -575,6 +852,15 @@ public final class TextInjector: TextInjecting {
         var range = CFRange()
         guard AXValueGetValue(ref as! AXValue, .cfRange, &range) else { return nil }
         return range
+    }
+
+    /// The live selected text, via the plain (non-parameterized) attribute that
+    /// even web fields support. Empty selection reads as nil.
+    private static func selectedText(_ element: AXUIElement) -> String? {
+        var ref: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextAttribute as CFString, &ref) == .success,
+              let text = ref as? String, !text.isEmpty else { return nil }
+        return text
     }
 
     private static func string(in element: AXUIElement, range: CFRange) -> String? {
@@ -637,6 +923,12 @@ public final class TextInjector: TextInjecting {
         if target == before { target = before + 1 }
 
         await waitForCommit(pasteboard: pasteboard, target: target, interval: pollInterval, cap: pollCap)
+        // The value the restore must still see. Recorded after the commit wait so
+        // it is the count OUR write settled on; anything else at restore time is
+        // somebody else's clipboard now (P1-1). A foreign write landing inside
+        // the few ms of the commit wait would be adopted as ours — unavoidable
+        // and vanishingly rare next to the 120-500 ms window this closes.
+        restore.recordWrite(changeCount: pasteboard.changeCount)
 
         let pasted = await executor.synthesizePaste()
 
@@ -646,7 +938,18 @@ public final class TextInjector: TextInjecting {
             // the text is on screen the instant Cmd-V posts.
             restore.arm()
             pendingRestore = restore
-            return InsertionToken(method: .paste, text: text, pasteUncertain: false)
+            // `.posted`, NOT landed (P1-9): the events are merely in the HID
+            // queue. The pasteboard read that proves the target took them is tens
+            // of ms away, so the token carries the signal instead of this call
+            // waiting for it — awaiting here would put the restore ceiling on the
+            // dictation latency path.
+            return InsertionToken(
+                method: .paste,
+                text: text,
+                landing: .posted,
+                axRange: nil,
+                landingSignal: restore.landingSignal
+            )
         } else {
             // Leave the text on the clipboard as the user's fallback (do NOT
             // restore) — but as REAL data, not a promise: nothing keeps the
@@ -658,7 +961,7 @@ public final class TextInjector: TextInjecting {
             item.setString(text, forType: .string)
             item.setData(Data(), forType: PasteRestoreCoordinator.transientType)
             pasteboard.writeObjects([item])
-            return InsertionToken(method: .paste, text: text, pasteUncertain: true)
+            return InsertionToken(method: .paste, text: text, landing: .notPosted)
         }
     }
 

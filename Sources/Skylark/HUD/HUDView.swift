@@ -121,18 +121,20 @@ struct HUDView: View {
         HStack(spacing: isMinimal ? 6 : 8) {
             // Whisper mode: hollow dot (stroke only) as a subtle quiet-speech cue.
             // The minimal style drops the dot — the waveform alone is the cue.
+            // Approaching the recording cap the dot goes amber, borrowing the
+            // processing pill's colour rather than inventing one.
             if !isMinimal {
                 Group {
                     if model.isWhisperMode {
-                        Circle().strokeBorder(.red, lineWidth: 1.5)
+                        Circle().strokeBorder(recordTint, lineWidth: 1.5)
                     } else {
-                        Circle().fill(.red)
+                        Circle().fill(recordTint)
                     }
                 }
                 .frame(width: 8, height: 8)
             }
             // Live waveform: newest level enters from the trailing edge. Driven
-            // at the levels-stream cadence (~15–20 Hz) with eased height changes.
+            // at the levels-stream cadence (~20 Hz) with eased height changes.
             HStack(spacing: 1) {
                 ForEach(Array(model.waveform.enumerated()), id: \.offset) { _, level in
                     Capsule()
@@ -142,6 +144,25 @@ struct HUDView: View {
             }
             .frame(height: waveformBand)
             .animation(.easeOut(duration: 0.08), value: model.waveform)
+            capCountdown
+        }
+    }
+
+    /// Listening dot colour: red normally, amber inside the cap warning window.
+    private var recordTint: Color {
+        model.capSecondsRemaining == nil ? .red : .orange
+    }
+
+    /// Subtle countdown to the 2-minute recording cap. Absent (zero-width) until
+    /// the last stretch, so the ordinary pill is untouched.
+    @ViewBuilder
+    private var capCountdown: some View {
+        if let seconds = model.capSecondsRemaining {
+            Text("\(seconds)s")
+                .font(.system(size: isMinimal ? 9 : 10, weight: .semibold).monospacedDigit())
+                .foregroundStyle(Color.orange.opacity(0.95))
+                .help("Recording stops at the 2-minute limit")
+                .transition(.opacity)
         }
     }
 

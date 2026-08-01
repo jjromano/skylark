@@ -18,6 +18,12 @@ public enum CleanupPrompt {
     /// System/instruction text for a cloud cleanup request. Kept verbatim from
     /// the original shared prompt at `.standard`; `OpenRouterCleaner` is its
     /// only caller.
+    ///
+    /// `context.dictionaryTerms` reaching this builder has already been narrowed
+    /// to the terms the current transcript plausibly contains — the orchestrator
+    /// applies `DictionaryRelevance` before any cloud request, so a private
+    /// dictionary is no longer uploaded wholesale (P1-6). An empty list emits no
+    /// dictionary line at all, which is why the `isEmpty` guard below matters.
     public static func instructions(context: CleanupContext) -> String {
         var text = cloudTask(for: context.intensity)
         if !context.dictionaryTerms.isEmpty {
@@ -38,6 +44,9 @@ public enum CleanupPrompt {
     /// raw→cleaned examples. Same `<transcript>` fencing and data-not-
     /// instructions rule as `instructions`, and it keeps the dictionary/register
     /// suffixes. `LocalCleaner` is its only caller.
+    ///
+    /// Unlike the cloud builder, this one receives the FULL dictionary: nothing
+    /// leaves the machine on the local tier, so there is nothing to withhold.
     public static func compactInstructions(context: CleanupContext) -> String {
         var text = compactTask(for: context.intensity)
         if !context.dictionaryTerms.isEmpty {

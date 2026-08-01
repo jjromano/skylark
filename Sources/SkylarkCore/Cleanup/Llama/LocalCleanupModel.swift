@@ -25,6 +25,13 @@ public struct LocalCleanupModel: Sendable, Hashable, Identifiable {
     /// header) so the download UI can show real progress and the manager can
     /// detect a truncated file.
     public let downloadBytes: Int64
+    /// Lowercase hex SHA-256 of the GGUF at `remoteURL`, or nil for a file we
+    /// didn't fetch (`custom(fileURL:)`). A GGUF is parsed and executed as model
+    /// weights, so a downloaded one is verified against this digest before it is
+    /// installed (see `CleanupModelInstaller`). Taken from the Hugging Face
+    /// blob metadata (`lfs.sha256`, echoed as `x-linked-etag` on the resolve
+    /// redirect) for the pinned revision in `remoteURL`.
+    public let sha256: String?
     /// KV-cache size to allocate. The cleanup instructions run ~1.2 k tokens, so
     /// 4096 leaves ample room for a long dictation plus its response while
     /// keeping the cache small (context size drives the resident-memory cost).
@@ -42,6 +49,7 @@ public struct LocalCleanupModel: Sendable, Hashable, Identifiable {
         fileName: String,
         remoteURL: URL?,
         downloadBytes: Int64,
+        sha256: String? = nil,
         contextTokens: UInt32 = 4096,
         suppressesThinking: Bool,
         directory: URL = ModelPaths.cleanupModels
@@ -52,6 +60,7 @@ public struct LocalCleanupModel: Sendable, Hashable, Identifiable {
         self.fileURL = directory.appendingPathComponent(fileName)
         self.remoteURL = remoteURL
         self.downloadBytes = downloadBytes
+        self.sha256 = sha256
         self.contextTokens = contextTokens
         self.suppressesThinking = suppressesThinking
     }
@@ -85,7 +94,9 @@ public struct LocalCleanupModel: Sendable, Hashable, Identifiable {
     /// Present and plausibly complete. Size is checked because an interrupted
     /// download leaves a short file that llama.cpp would fail to load — treating
     /// it as "not installed" keeps the pipeline on its Apple/raw fallback and
-    /// lets the download manager re-fetch.
+    /// lets the download manager re-fetch. Deliberately size-only: the SHA-256 is
+    /// verified once, at install time (`CleanupModelInstaller`), because hashing
+    /// gigabytes on every menu render would be absurd.
     public var isInstalled: Bool {
         let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
         guard let size = attributes?[.size] as? Int64 else { return false }
@@ -103,8 +114,15 @@ public struct LocalCleanupModel: Sendable, Hashable, Identifiable {
         // Qwen's own `Qwen/Qwen3-1.7B-GGUF` repo publishes only Q8_0 (1.8 GB);
         // unsloth's requantization of the same Apache-2.0 weights provides the
         // Q4_K_M we want. URL + byte size verified live.
-        remoteURL: URL(string: "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/main/Qwen3-1.7B-Q4_K_M.gguf")!,
+        //
+        // PINNED to an immutable revision, not `resolve/main`: `main` is a
+        // mutable pointer, so a re-quantized upload would change the bytes under
+        // a fixed size/digest (and a moving target can't be digest-checked at
+        // all). Revision d7f544eead698dbd1f15126ef60b45a1e1933222 is the repo's
+        // main as of 2026-07-31 (HF API `sha`; repo last modified 2025-06-08).
+        remoteURL: URL(string: "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/d7f544eead698dbd1f15126ef60b45a1e1933222/Qwen3-1.7B-Q4_K_M.gguf")!,
         downloadBytes: 1_107_409_472,
+        sha256: "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897",
         suppressesThinking: true
     )
 
@@ -115,8 +133,12 @@ public struct LocalCleanupModel: Sendable, Hashable, Identifiable {
         id: "qwen3-4b-instruct",
         displayName: "Qwen3 4B Instruct",
         fileName: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-        remoteURL: URL(string: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/main/Qwen3-4B-Instruct-2507-Q4_K_M.gguf")!,
+        // Pinned revision (see `qwen3_1_7B`):
+        // a06e946bb6b655725eafa393f4a9745d460374c9 is the repo's main as of
+        // 2026-07-31 (HF API `sha`; repo last modified 2025-08-20).
+        remoteURL: URL(string: "https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF/resolve/a06e946bb6b655725eafa393f4a9745d460374c9/Qwen3-4B-Instruct-2507-Q4_K_M.gguf")!,
         downloadBytes: 2_497_281_120,
+        sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597",
         suppressesThinking: false
     )
 

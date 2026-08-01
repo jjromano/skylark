@@ -1,3 +1,4 @@
+import CoreFoundation
 import Testing
 import SkylarkCore
 
@@ -48,5 +49,62 @@ struct TextInjectorReplaceTests {
         let range = TextInjector.candidateRange(caretLocation: 5, insertedUTF16Count: 5)
         #expect(range?.location == 0)
         #expect(range?.length == 5)
+    }
+
+    // MARK: - Caret preservation across an anchored replace (audit U3)
+
+    /// The classic case — caret sat collapsed at the end of the dictation —
+    /// still lands collapsed at the end of the cleaned text.
+    @Test("Caret at the end of the run follows the replacement")
+    func caretAtEndFollows() {
+        let caret = TextInjector.caretAfterReplace(
+            caret: CFRange(location: 20, length: 0),      // end of a 10-unit run at 10
+            anchor: CFRange(location: 10, length: 10),
+            originalUTF16Count: 10,
+            replacementUTF16Count: 14
+        )
+        #expect(caret.location == 24)
+        #expect(caret.length == 0)
+    }
+
+    /// Anchoring means cleanup can land while the user has typed on elsewhere.
+    /// Their caret must move with the text, not jump to our edit.
+    @Test("Caret typing further down shifts by the length delta")
+    func caretAfterRunShifts() {
+        let shorter = TextInjector.caretAfterReplace(
+            caret: CFRange(location: 200, length: 0),
+            anchor: CFRange(location: 10, length: 10),
+            originalUTF16Count: 10,
+            replacementUTF16Count: 7
+        )
+        #expect(shorter.location == 197)
+        #expect(shorter.length == 0)
+    }
+
+    @Test("Caret before the run is untouched")
+    func caretBeforeRunUnchanged() {
+        let caret = TextInjector.caretAfterReplace(
+            caret: CFRange(location: 3, length: 2),
+            anchor: CFRange(location: 10, length: 10),
+            originalUTF16Count: 10,
+            replacementUTF16Count: 4
+        )
+        #expect(caret.location == 3)
+        #expect(caret.length == 2)
+    }
+
+    /// A selection overlapping the rewritten run refers to text that no longer
+    /// exists; collapse at the end of the replacement rather than leave a
+    /// selection spanning half of the new text.
+    @Test("Selection overlapping the run collapses at the replacement end")
+    func caretOverlappingCollapses() {
+        let caret = TextInjector.caretAfterReplace(
+            caret: CFRange(location: 12, length: 30),
+            anchor: CFRange(location: 10, length: 10),
+            originalUTF16Count: 10,
+            replacementUTF16Count: 6
+        )
+        #expect(caret.location == 16)
+        #expect(caret.length == 0)
     }
 }

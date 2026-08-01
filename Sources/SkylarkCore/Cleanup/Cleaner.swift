@@ -84,6 +84,21 @@ public struct CleanupContext: Sendable {
         self.translateTo = translateTo
     }
 
+    /// Copy carrying a different dictionary term list. The orchestrator narrows
+    /// the list to the terms the current transcript plausibly contains before a
+    /// CLOUD request (`DictionaryRelevance`), so a private dictionary isn't
+    /// uploaded wholesale on every cleanup; local cleanup keeps the full list.
+    public func withDictionaryTerms(_ terms: [String]) -> CleanupContext {
+        CleanupContext(
+            targetAppBundleID: targetAppBundleID,
+            registerHint: registerHint,
+            dictionaryTerms: terms,
+            intensity: intensity,
+            fieldContext: fieldContext,
+            translateTo: translateTo
+        )
+    }
+
     /// Copy carrying `fieldContext` — the orchestrator merges the (late,
     /// off-path) AX read into the setup-built context at cleanup time. A nil or
     /// empty context clears it, so an absent read leaves a plain context.
