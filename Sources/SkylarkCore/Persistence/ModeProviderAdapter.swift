@@ -26,6 +26,7 @@ public struct ModeProviderAdapter: ModeProviding {
             cloudCleanupSlug: record.cleanupTier.cloudSlug,
             registerHint: record.registerHint,
             whisperModeOverride: record.whisperModeOverride,
+            customPrompt: record.customPrompt,
             isDefault: record.isDefault
         )
     }
@@ -41,6 +42,7 @@ public struct ModeProviderAdapter: ModeProviding {
             cleanupTier: mode.cleanupTier,
             registerHint: mode.registerHint,
             whisperModeOverride: mode.whisperModeOverride,
+            customPrompt: mode.customPrompt,
             isDefault: mode.isDefault
         )
     }

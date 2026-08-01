@@ -229,7 +229,32 @@ private struct ModeEditorSheet: View {
     @State private var cloudSlug: String
     @State private var registerHint: String
     @State private var whisperModeOverride: WhisperModeOverride
+    @State private var customPrompt: String
     @State private var isDefault: Bool
+
+    /// Live character budget. Mirrors `DictationMode.customPromptLimit` rather
+    /// than restating the number, so the cap can only ever be changed in one
+    /// place. Over-limit is a warning, not a block: `sanitizeCustomPrompt`
+    /// truncates on save, and saying so beats silently dropping the tail.
+    private var customPromptOverLimit: Bool {
+        customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).count
+            > DictationMode.customPromptLimit
+    }
+
+    private var customPromptCaption: String {
+        let used = customPrompt.trimmingCharacters(in: .whitespacesAndNewlines).count
+        let limit = DictationMode.customPromptLimit
+        if customPromptOverLimit {
+            return "Over the \(limit)-character limit — the extra \(used - limit) will be trimmed when you save."
+        }
+        return """
+        Added to this mode's cleanup instructions on top of the standard rules, \
+        never replacing them. Cleanup still has to keep your meaning, so an \
+        instruction that rewrites too aggressively is rejected and the raw text \
+        stands. Sent to the cloud model when this mode uses cloud cleanup. \
+        \(used)/\(limit)
+        """
+    }
 
     init(
         existing: ModeRecord?,
@@ -245,6 +270,7 @@ private struct ModeEditorSheet: View {
         _bundlePattern = State(initialValue: existing?.bundleIDPattern ?? "")
         _registerHint = State(initialValue: existing?.registerHint ?? "")
         _whisperModeOverride = State(initialValue: existing?.whisperModeOverride ?? .followGlobal)
+        _customPrompt = State(initialValue: existing?.customPrompt ?? "")
         _isDefault = State(initialValue: existing?.isDefault ?? false)
         switch existing?.cleanupTier {
         case .some(.raw):
@@ -294,6 +320,18 @@ private struct ModeEditorSheet: View {
                     }
                 }
                 TextField("Register hint (optional, e.g. \"casual chat\")", text: $registerHint)
+            }
+
+            Section("Custom instruction") {
+                TextField(
+                    "Optional, e.g. \"keep bullet points on separate lines\"",
+                    text: $customPrompt,
+                    axis: .vertical
+                )
+                .lineLimit(3...6)
+                Text(customPromptCaption)
+                    .font(.caption)
+                    .foregroundStyle(customPromptOverLimit ? .orange : .secondary)
             }
 
             Section("Whisper Mode") {
@@ -346,6 +384,9 @@ private struct ModeEditorSheet: View {
             registerHint: registerHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? nil : registerHint.trimmingCharacters(in: .whitespacesAndNewlines),
             whisperModeOverride: whisperModeOverride,
+            // `ModeRecord.init` runs `sanitizeCustomPrompt`, so trimming and the
+            // length cap are applied once, in the model, for every writer.
+            customPrompt: customPrompt,
             isDefault: existing?.isDefault ?? false
         )
         onSave(record, isDefault)

@@ -226,7 +226,10 @@ Each phase is a shippable increment. Fable specs each into subagent tasks.
 - Snippets / voice macros (trigger phrase inserts a text block). **Shipped in v0.1.0** (2026-07-09, first complete release), listed in CHANGELOG.md as "Snippets (spoken triggers)".
 - Command Mode (highlight text, speak an edit instruction, rewrite the selection in place). **Shipped in v0.7.0** (2026-07-22) as "Voice command mode": bind a second shortcut, hold it, speak an instruction to rewrite the selection or generate text at the cursor.
 - Text shortcuts (for example "btw" expands to "by the way"). Satisfied by the Snippets feature above (spoken trigger phrase, not a typed one), also shipped in v0.1.0.
-- User-defined custom mode prompts UI. Still open; not touched by this pass.
+- User-defined custom mode prompts UI. **Shipped in v0.15.0** (2026-08-01) as
+  Settings → Modes → Custom instruction: a per-mode free-text instruction, capped
+  at 500 characters, appended to the standard cleanup rules rather than replacing
+  them (the faithfulness guard still judges the output). This closes Appendix A.
 
 ### B. Explicitly skipped (not planned)
 - Cross-device sync, wake word, scratchpad, team/shared features, deep IDE integrations (file tagging, variable recognition): still not planned.

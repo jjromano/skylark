@@ -549,6 +549,56 @@ struct PersistenceTests {
         #expect(columns.contains("whisper_mode_override"))
     }
 
+    // MARK: - Migration v6 (custom_prompt column, PRD Appendix A)
+
+    @Test("v6 migration adds custom_prompt as a nullable column; pre-existing rows read back as nil")
+    func v6MigrationAddsCustomPromptColumn() throws {
+        // Same technique as the v5 test above: migrate up through "v5", write a
+        // row in that pre-"v6" shape, then finish the chain. The additive
+        // migration's point is that NULL already means "no custom instruction",
+        // so an existing mode must survive with no backfill and produce a prompt
+        // byte-identical to the pre-v6 one.
+        let dbQueue = try DatabaseQueue()
+        try SkylarkDatabase.migrator.migrate(dbQueue, upTo: "v5")
+
+        try dbQueue.write { db in
+            try db.execute(
+                sql: """
+                INSERT INTO modes (id, name, bundle_id_pattern, engine, cleanup_tier, cloud_cleanup_slug, register_hint, is_default)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                arguments: ["default", "Default", nil, nil, "local", nil, nil, true]
+            )
+        }
+
+        try SkylarkDatabase.migrator.migrate(dbQueue)
+
+        let columns = try dbQueue.read { db in try db.columns(in: "modes").map(\.name) }
+        #expect(columns.contains("custom_prompt"))
+
+        let modes = try dbQueue.read { db in try ModeRecord.fetchAll(db) }
+        let preExisting = try #require(modes.first { $0.id == "default" })
+        #expect(preExisting.customPrompt == nil)
+    }
+
+    @Test("Mode custom_prompt round-trips through the store, sanitized")
+    func modeCustomPromptRoundTrips() async throws {
+        let store = ModeStore(db: try makeDB())
+        try await store.upsert(ModeRecord(
+            id: "mail", name: "Mail", cleanupTier: .local,
+            customPrompt: "  sign off with 'Thanks, JJ'  ", isDefault: false
+        ))
+        try await store.upsert(ModeRecord(
+            id: "plain", name: "Plain", cleanupTier: .raw, isDefault: false
+        ))
+
+        let modes = try await store.all()
+        // Stored trimmed, not as typed.
+        #expect(modes.first { $0.id == "mail" }?.customPrompt == "sign off with 'Thanks, JJ'")
+        // Unspecified stays NULL rather than becoming an empty string.
+        #expect(modes.first { $0.id == "plain" }?.customPrompt == nil)
+    }
+
     // MARK: - Whisper Mode override (R3)
 
     @Test("Mode whisper_mode_override round-trips through the store (on/off/follow-global)")

@@ -1868,11 +1868,24 @@ final class AppController {
             // froze the entire app (no menu-bar icon, no UI) until the dialog
             // was dismissed. That same unbounded wait is why the completion
             // below cannot trust the selection it started with.
-            Task.detached { [weak self] in
-                let hasKey = APIKeyCache.shared.reload() != nil
-                await MainActor.run { self?.finishCloudRebuild(slug: slug, hasKey: hasKey, token: token) }
+            // `Task` (not `Task.detached`) inherits this method's main-actor
+            // isolation, so `self` is never sent across an isolation boundary —
+            // a detached task capturing `self` and hopping back through
+            // `MainActor.run` is a "sending 'self' risks causing data races"
+            // error under Swift 6.2 strict concurrency (the toolchain CLAUDE.md
+            // pins). The keychain read still happens off the main actor.
+            Task { [weak self] in
+                let hasKey = await Self.reloadAPIKeyOffMainActor()
+                self?.finishCloudRebuild(slug: slug, hasKey: hasKey, token: token)
             }
         }
+    }
+
+    /// Reloads the cached API key on a background executor and reports only
+    /// whether one exists. Split out so the caller stays main-actor-isolated
+    /// while the potentially-blocking keychain read does not.
+    private nonisolated static func reloadAPIKeyOffMainActor() async -> Bool {
+        await Task.detached(priority: .userInitiated) { APIKeyCache.shared.reload() != nil }.value
     }
 
     private func finishCloudRebuild(slug: String, hasKey: Bool, token: STTRebuildGate.Token) {

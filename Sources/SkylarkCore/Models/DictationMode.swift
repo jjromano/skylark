@@ -44,7 +44,35 @@ public struct DictationMode: Sendable, Codable, Equatable, Identifiable {
     public let registerHint: String?
     /// Per-mode Whisper Mode override (R3). Default `.followGlobal`.
     public let whisperModeOverride: WhisperModeOverride
+    /// Free-text instruction the user writes for this mode (PRD Appendix A,
+    /// "user-defined custom mode prompts"). ADDED to the standard cleanup
+    /// contract, never a replacement for it, and truncated to
+    /// `customPromptLimit` before it reaches a model. nil/empty = no extra
+    /// instruction, which is byte-identical to the pre-v6 prompt.
+    public let customPrompt: String?
     public let isDefault: Bool
+
+    /// Hard ceiling on a custom instruction, in characters. Keeps a stray paste
+    /// out of the token budget on every dictation (the prompt rides on the
+    /// latency path for paste targets) and bounds what a cloud request carries.
+    public static let customPromptLimit = 500
+
+    /// The instruction as a cleaner should consume it: trimmed, nil when empty,
+    /// and clamped to `customPromptLimit`. Every prompt builder must read this
+    /// rather than `customPrompt` directly.
+    public var sanitizedCustomPrompt: String? {
+        Self.sanitizeCustomPrompt(customPrompt)
+    }
+
+    /// Shared sanitizer so the store, the UI, and the prompt builders cannot
+    /// drift on what "empty" and "too long" mean.
+    public static func sanitizeCustomPrompt(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard trimmed.count > customPromptLimit else { return trimmed }
+        return String(trimmed.prefix(customPromptLimit))
+    }
 
     public init(
         id: String,
@@ -54,6 +82,7 @@ public struct DictationMode: Sendable, Codable, Equatable, Identifiable {
         cloudCleanupSlug: String? = nil,
         registerHint: String? = nil,
         whisperModeOverride: WhisperModeOverride = .followGlobal,
+        customPrompt: String? = nil,
         isDefault: Bool = false
     ) {
         self.id = id
@@ -63,6 +92,7 @@ public struct DictationMode: Sendable, Codable, Equatable, Identifiable {
         self.cloudCleanupSlug = cloudCleanupSlug
         self.registerHint = registerHint
         self.whisperModeOverride = whisperModeOverride
+        self.customPrompt = customPrompt
         self.isDefault = isDefault
     }
 

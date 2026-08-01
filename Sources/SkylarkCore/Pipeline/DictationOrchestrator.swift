@@ -1839,7 +1839,10 @@ public actor DictationOrchestrator {
             // Every correct-spelling phrase is protected during recognition.
             dictionaryTerms: entries.map(\.phrase),
             intensity: intensity,
-            translateTo: translateTo
+            translateTo: translateTo,
+            // The resolved mode's standing instruction (schema v6). Sanitized
+            // at the model seam, so an empty one leaves the prompt untouched.
+            customInstruction: mode.sanitizedCustomPrompt
         )
         let corrector = DictionaryCorrector(entries: entries)
         let snippets = await snippetProvider?() ?? []

@@ -64,14 +64,26 @@ public final class AudioDeviceManager {
     /// never take the app's main actor (menu bar, HUD, Settings) down with
     /// it. `onChange` fires on the main actor once the list lands.
     public func refresh() {
-        Task.detached { [weak self] in
-            let found = Self.inputDevices()
-            await MainActor.run {
-                guard let self else { return }
-                self.devices = found
-                self.onChange?()
-            }
+        // `Task` (not `Task.detached`) inherits this method's main-actor
+        // isolation, so `self` never crosses an isolation boundary — a detached
+        // task capturing `self` and hopping back via `MainActor.run` is a
+        // "sending 'self' risks causing data races" error under Swift 6.2's
+        // strict concurrency, which is the toolchain CLAUDE.md pins. The
+        // blocking HAL reads still happen off the main actor, inside
+        // `enumerateOffMainActor()`.
+        Task { [weak self] in
+            let found = await Self.enumerateOffMainActor()
+            guard let self else { return }
+            self.devices = found
+            self.onChange?()
         }
+    }
+
+    /// Runs the synchronous CoreAudio enumeration on a background executor and
+    /// returns its `Sendable` result. Split out so the caller can stay
+    /// main-actor-isolated while the blocking part does not.
+    private nonisolated static func enumerateOffMainActor() async -> [AudioInputDevice] {
+        await Task.detached(priority: .userInitiated) { Self.inputDevices() }.value
     }
 
     private func handleDeviceListChanged() {

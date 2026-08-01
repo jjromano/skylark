@@ -68,6 +68,9 @@ public struct ModeRecord: Sendable, Equatable, Identifiable {
     public var registerHint: String?
     /// Per-mode Whisper Mode override (R3, schema v5). Default `.followGlobal`.
     public var whisperModeOverride: WhisperModeOverride
+    /// Per-mode custom cleanup instruction (schema v6). Stored sanitized; see
+    /// `DictationMode.sanitizeCustomPrompt`.
+    public var customPrompt: String?
     public var isDefault: Bool
 
     public init(
@@ -78,6 +81,7 @@ public struct ModeRecord: Sendable, Equatable, Identifiable {
         cleanupTier: CleanupTier,
         registerHint: String? = nil,
         whisperModeOverride: WhisperModeOverride = .followGlobal,
+        customPrompt: String? = nil,
         isDefault: Bool
     ) {
         self.id = id
@@ -87,6 +91,7 @@ public struct ModeRecord: Sendable, Equatable, Identifiable {
         self.cleanupTier = cleanupTier
         self.registerHint = registerHint
         self.whisperModeOverride = whisperModeOverride
+        self.customPrompt = DictationMode.sanitizeCustomPrompt(customPrompt)
         self.isDefault = isDefault
     }
 }
@@ -101,6 +106,7 @@ extension ModeRecord: FetchableRecord {
         cleanupTier = CleanupTier(serialized: tierText) ?? .raw
         registerHint = row["register_hint"]
         whisperModeOverride = WhisperModeOverride(serialized: row["whisper_mode_override"])
+        customPrompt = DictationMode.sanitizeCustomPrompt(row["custom_prompt"])
         isDefault = row["is_default"]
     }
 }
@@ -117,6 +123,7 @@ extension ModeRecord: PersistableRecord {
         container["cloud_cleanup_slug"] = cleanupTier.cloudSlug
         container["register_hint"] = registerHint
         container["whisper_mode_override"] = whisperModeOverride.serialized
+        container["custom_prompt"] = customPrompt
         container["is_default"] = isDefault
     }
 }

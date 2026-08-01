@@ -185,6 +185,20 @@ public final class SkylarkDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v6") { db in
+            // Per-mode custom cleanup instruction (PRD Appendix A's last open
+            // v1-backlog item, "user-defined custom mode prompts UI"). NULL =
+            // no extra instruction, i.e. exactly the pre-v6 prompt. Purely
+            // additive; every existing row reads back as NULL with no backfill.
+            //
+            // This ADDS to the standard cleanup contract, it never replaces it:
+            // the faithfulness/hygiene guard still runs on the output, so an
+            // over-aggressive user instruction gets rejected and raw stands.
+            try db.alter(table: "modes") { t in
+                t.add(column: "custom_prompt", .text)
+            }
+        }
+
         return migrator
     }
 }

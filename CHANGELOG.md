@@ -6,6 +6,32 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.15.0 — 2026-08-01
+
+**Per-mode custom instructions, and the build box can compile the app again.**
+
+- **Settings → Modes → Custom instruction:** each mode can now carry your own
+  standing instruction for cleanup, for example "keep bullet points on separate
+  lines" for your notes app or "sign off with Thanks, JJ" for mail. It is
+  *added* to the standard cleanup rules, never a replacement for them: the
+  faithfulness guard still runs, so an instruction that rewrites too
+  aggressively is rejected and your raw text stands. Capped at 500 characters
+  with a live counter, and the caption says plainly that it is sent to the
+  cloud model when that mode uses cloud cleanup. Modes without an instruction
+  produce a byte-identical prompt to before, so cleanup quality is unchanged
+  (eval baselines still 13/17 Apple, 15/17 Qwen 4B).
+
+  This was the last open item in the PRD's Phase 2 backlog appendix.
+
+- **Fixed: the app no longer builds on its own documented toolchain.** `main`
+  had two `sending 'self' risks causing data races` errors that Swift 6.3
+  accepts and the Swift 6.2.3 Command Line Tools reject, so the headless build
+  box could not compile or test the app at all, on any commit. Both sites
+  (audio device enumeration and the cloud speech-engine rebuild) now inherit
+  main-actor isolation instead of sending `self` out of a detached task; the
+  blocking CoreAudio and keychain reads still happen off the main actor, so
+  behavior is unchanged.
+
 ## 0.14.0 — 2026-07-31
 
 **Pre-1.0 batch: the recovered backlog, registry curation, and evidence

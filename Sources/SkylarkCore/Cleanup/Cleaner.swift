@@ -67,6 +67,13 @@ public struct CleanupContext: Sendable {
     /// `CleanupHygiene.validate`). Ignored by `RawPassthrough` (Tier 0 needs a
     /// cleanup model to translate, so raw dictation is never translated).
     public let translateTo: String?
+    /// Free-text instruction from the active mode (PRD Appendix A's
+    /// "user-defined custom mode prompts"). Already sanitized and length-capped
+    /// by `DictationMode.sanitizeCustomPrompt`. Appended to the standard
+    /// instructions, never replacing them; the hygiene/faithfulness guard still
+    /// judges the result, so an over-aggressive instruction degrades to raw
+    /// rather than shipping a mangled transcript. nil = no extra instruction.
+    public let customInstruction: String?
 
     public init(
         targetAppBundleID: String? = nil,
@@ -74,7 +81,8 @@ public struct CleanupContext: Sendable {
         dictionaryTerms: [String] = [],
         intensity: CleanupIntensity = .standard,
         fieldContext: FieldContext? = nil,
-        translateTo: String? = nil
+        translateTo: String? = nil,
+        customInstruction: String? = nil
     ) {
         self.targetAppBundleID = targetAppBundleID
         self.registerHint = registerHint
@@ -82,6 +90,7 @@ public struct CleanupContext: Sendable {
         self.intensity = intensity
         self.fieldContext = fieldContext
         self.translateTo = translateTo
+        self.customInstruction = customInstruction
     }
 
     /// Copy carrying a different dictionary term list. The orchestrator narrows
@@ -95,7 +104,8 @@ public struct CleanupContext: Sendable {
             dictionaryTerms: terms,
             intensity: intensity,
             fieldContext: fieldContext,
-            translateTo: translateTo
+            translateTo: translateTo,
+            customInstruction: customInstruction
         )
     }
 
@@ -110,7 +120,8 @@ public struct CleanupContext: Sendable {
             dictionaryTerms: dictionaryTerms,
             intensity: intensity,
             fieldContext: resolved,
-            translateTo: translateTo
+            translateTo: translateTo,
+            customInstruction: customInstruction
         )
     }
 }
