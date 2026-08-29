@@ -7,7 +7,8 @@ import SkylarkCore
 ///
 /// The load-bearing property is that a mode WITHOUT an instruction produces a
 /// byte-identical prompt to the pre-v6 build, so adding the feature cannot move
-/// the cleanup eval baselines (13/17 Apple, 15/17 Qwen 4B).
+/// the cleanup eval baselines (13/17 Apple, 15/17 Qwen 4B as of the 17-example
+/// corpus; the corpus grew to 29 at v0.16.0, floors pending re-base on the Air).
 @Suite("Custom mode prompt")
 struct CustomModePromptTests {
 

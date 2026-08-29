@@ -62,6 +62,8 @@ public enum CleanupHygiene {
     ///     meta-commentary tells (still meaningful — a chatbot preface is a
     ///     failure in any language) are KEPT, plus translated-only rejections
     ///     for leaked fence tags and separator-repeated untranslated output.
+    ///     The two source-language *repair* passes (`EmphasisRepair`,
+    ///     `SpokenNumbers`) are skipped for the same reason.
     public static func validate(
         _ output: String,
         transcript: String,
@@ -113,13 +115,20 @@ public enum CleanupHygiene {
         if let fieldContext, echoesFieldContext(cleaned, transcript: transcript, fieldContext: fieldContext) {
             throw CleanerError.unusableOutput
         }
+        // Everything below runs on already-trusted output and REPAIRS it —
+        // nothing here can reject. Both passes compare against the source-
+        // language transcript, so both are skipped for translations.
+        guard !translated else { return cleaned }
+        // Emphasis the model invented from audible stress (added `!`, ALL-CAPS,
+        // markdown bold) is downgraded to what the raw licenses. Rejecting a
+        // good cleanup over one `!` would be worse than the mark.
+        let repaired = EmphasisRepair.repair(cleaned, raw: transcript)
         // Deterministic spoken-number → digit/currency/percent pass as a safety
         // net for anything the model left unformatted (small local models are
         // unreliable here). Runs only on already-trusted output, and is
         // idempotent, so digits the model formatted correctly are untouched.
-        // Skipped for translations (English number words don't appear in the
-        // translated result).
-        return translated ? cleaned : SpokenNumbers.format(cleaned)
+        // (English number words don't appear in a translated result either.)
+        return SpokenNumbers.format(repaired)
     }
 
     // MARK: - Guards

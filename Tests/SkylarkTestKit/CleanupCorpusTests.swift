@@ -10,6 +10,12 @@ struct CleanupCorpusTests {
     /// `cleanup-eval-and-open-items` memory). This is a FLOOR the live eval
     /// must clear, not a target — raise it deliberately when a genuine
     /// quality improvement lifts the bar, never to silence a regression.
+    ///
+    /// The corpus grew from 17 to 29 examples at v0.16.0 (pausePunctuation +
+    /// spokenPunctuation categories). This count (13) was measured against the
+    /// OLD 17-example corpus and has NOT been re-based against the new 29 —
+    /// it stays as-is (out of the now-larger `examples.count`) until measured
+    /// fresh on the Air; do not edit it to "fix" the ratio.
     private static let appleIntelligenceBaseline = 13
 
     // MARK: - Model-free gate (runs on every change)

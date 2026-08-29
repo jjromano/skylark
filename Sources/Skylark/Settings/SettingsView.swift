@@ -259,6 +259,18 @@ private struct GeneralPane: View {
                         .font(.caption)
                     }
                 }
+                Picker("Hands-free stops after", selection: Binding(
+                    get: { controller.handsFreeSilenceSeconds },
+                    set: { controller.setHandsFreeSilenceSeconds($0) }
+                )) {
+                    Text("1 second").tag(1)
+                    Text("2 seconds").tag(2)
+                    Text("3 seconds").tag(3)
+                }
+                .pickerStyle(.segmented)
+                Text("How long a pause ends a hands-free dictation. Push-to-talk is not affected.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } header: {
                 Text("Dictation shortcut")
             } footer: {
@@ -275,6 +287,11 @@ private struct GeneralPane: View {
                     onCapture: { controller.setHotkeyCommand($0) },
                     onClear: { controller.setHotkeyCommand(nil) }
                 )
+                if controller.hotkeyCommand == nil {
+                    Text("Not set. Assign a key to rewrite selected text by voice: select text, hold the key, say what to change.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } header: {
                 Text("Voice command shortcut")
             } footer: {

@@ -35,8 +35,20 @@ extension SpeechEndpointer {
 
 /// FluidAudio Silero-VAD endpointer.
 public actor FluidAudioVAD: SpeechEndpointer {
-    /// Silence that ends an utterance (tuned in one place, per spec ≈ 1.0 s).
-    public static let minSilenceDuration: TimeInterval = 1.0
+    /// Default silence that ends a hands-free utterance (Settings → General
+    /// "Hands-free stops after"; user-configurable 1–3 s via
+    /// `setMinSilenceDuration`).
+    public static let minSilenceDuration: TimeInterval = 2.0
+
+    /// Allowed values for the hands-free silence tolerance (Settings →
+    /// General "Hands-free stops after").
+    public static let allowedSilenceSeconds: [Int] = [1, 2, 3]
+
+    /// Clamp an arbitrary (e.g. corrupted UserDefaults) value to
+    /// `allowedSilenceSeconds`, defaulting anything else to the 2 s default.
+    public static func clampedSilenceSeconds(_ seconds: Int) -> Int {
+        allowedSilenceSeconds.contains(seconds) ? seconds : Int(minSilenceDuration)
+    }
 
     private let baseDirectory: URL
     private var vad: VadManager?
@@ -62,6 +74,12 @@ public actor FluidAudioVAD: SpeechEndpointer {
     public func setTuning(_ tuning: WhisperModeTuning) {
         segmentationConfig.speechPadding = tuning.vadSpeechPadding
         segmentationConfig.minSpeechDuration = tuning.vadMinSpeechDuration
+    }
+
+    /// Set from Settings → General ("Hands-free stops after": 1/2/3 s).
+    /// Takes effect on the next `beginSession`.
+    public func setMinSilenceDuration(_ seconds: TimeInterval) {
+        segmentationConfig.minSilenceDuration = seconds
     }
 
     public func prepare() async {

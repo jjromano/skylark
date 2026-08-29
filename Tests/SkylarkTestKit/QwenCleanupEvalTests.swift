@@ -32,6 +32,12 @@ struct QwenCleanupEvalTests {
     /// (see `cleanup-eval-and-open-items` memory). These are FLOORS the live
     /// eval must clear, not targets — raise one deliberately when a genuine
     /// quality improvement lifts the bar, never to silence a regression.
+    ///
+    /// The corpus grew from 17 to 29 examples at v0.16.0 (pausePunctuation +
+    /// spokenPunctuation categories). These counts (15/17, 7/17) were measured
+    /// against the OLD 17-example corpus and have NOT been re-based against
+    /// the new 29 — they stay as-is (out of the now-larger `examples.count`)
+    /// until measured fresh on the Air; do not edit them to "fix" the ratio.
     private static let baselines: [String: Int] = [
         "qwen3-4b-instruct": 15,
         "qwen3-1.7b": 7,

@@ -7,6 +7,9 @@ struct OnboardingView: View {
     let apiKeyClient: OpenRouterClient
     /// Display name of the configured dictation key (e.g. "Fn (Globe)").
     var hotkeyName: String = "Fn (Globe)"
+    /// Display name of the Voice Command Mode key, or nil when unbound
+    /// (unbound is the default — see `HotkeyBinding.defaultsKeyCommand`).
+    var commandHotkeyName: String?
     var onClose: () -> Void
 
     /// Window geometry lives here because the window is sized once from these
@@ -68,6 +71,11 @@ struct OnboardingView: View {
                 GestureRow(icon: "hand.tap.fill", text: "Hold \(hotkeyName), speak, release — the text lands where your cursor is.")
                 GestureRow(icon: "hand.tap", text: "Double-tap \(hotkeyName) for hands-free; it stops when you go quiet.")
                 GestureRow(icon: "escape", text: "Press Esc while recording to cancel.")
+                if let commandHotkeyName {
+                    GestureRow(icon: "wand.and.stars", text: "Voice Command Mode: select text, hold \(commandHotkeyName), and speak an instruction to rewrite it.")
+                } else {
+                    GestureRow(icon: "wand.and.stars", text: "Voice Command Mode rewrites selected text by voice. Assign a key in Settings to turn it on.")
+                }
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)

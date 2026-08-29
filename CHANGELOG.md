@@ -6,6 +6,52 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.16.0 - 2026-08-29
+
+**Pausing to think no longer ends your sentence, and you can say your
+punctuation out loud.**
+
+- **Thinking pauses stop turning into periods.** The speech recogniser marks
+  every longer pause as a full stop, so "I want to... draft the document" came
+  out as two sentences, and the local model then kept and multiplied those
+  breaks. A deterministic repair now runs before cleanup on every tier except
+  Raw: a period that lands after a word no sentence can end on ("to", "the",
+  "and", "was"), or in front of a word that cannot open one ("which", "than"),
+  is removed and the fragments rejoined. A break before "and", "but",
+  "because" and similar is joined too, with a comma only when what follows is
+  a complete clause ("I shipped it, but I am tired") and never when it is not
+  ("ship the feature and then tell the team"). Real sentence ends, questions
+  and exclamations are left alone. Raw mode stays byte-verbatim.
+- **The cleanup prompts now re-punctuate instead of adding punctuation.** All
+  three intensities on both the local and cloud tiers are told the
+  transcript's punctuation is a pause-length guess, not grammar, and to
+  rebuild it from meaning. The local prompt's "split run-ons into separate
+  sentences" instruction, the direct cause of the local tier being worse, is
+  gone, and the on-device examples now include pause-shredded input.
+- **Spoken punctuation.** Say "exclamation mark", "question mark", "comma",
+  "period" or "full stop", "colon", "semicolon", "dash", "open quote" /
+  "close quote", "open paren" / "close paren" and the mark is written: "I
+  love that exclamation mark" becomes "I love that!". The model only treats
+  the word as a command where punctuation belongs, so "a period of rest" stays
+  a phrase. Works at every intensity, including Light.
+- **Stressing a word no longer gets you exclamation marks or CAPS.** The
+  prompts forbid turning vocal emphasis into typography, and a repair pass
+  enforces it: an exclamation mark the transcript did not contain and you did
+  not say is downgraded to a period, a word the model upper-cased is put back
+  to how it was spoken, and stray bold markers are stripped. Acronyms you
+  actually said stay as they are.
+- **One- or two-word dictations skip the model.** "yes" is capitalised and
+  given a period on the spot instead of taking a full cleanup round trip, the
+  slowest and most hallucination-prone case.
+- **Hands-free dictation waits longer before stopping.** The pause that ends a
+  double-tap hands-free session was a fixed 1 second; it is now 2 seconds by
+  default and adjustable (1s / 2s / 3s) in Settings, General. Push-to-talk is
+  unaffected.
+- **Voice Command Mode is easier to find.** Its hotkey ships unassigned, so
+  Settings now says what it does and that a key needs assigning.
+- Clipboard snapshots respect a "never allow" pasteboard setting on newer
+  macOS instead of forcing a read. FluidAudio updated to 0.15.6.
+
 ## 0.15.0 — 2026-08-01
 
 **Per-mode custom instructions, and the build box can compile the app again.**

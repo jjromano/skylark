@@ -353,7 +353,7 @@ struct CaptureCapTests {
 
     // MARK: - Hands-free endpointing (P1-2a / audit U6)
 
-    @Test("Hands-free ends one second after speech stops")
+    @Test("Hands-free ends after the default silence tolerance once speech stops")
     func handsFreeEndpointsAfterSilence() async {
         let capture = CappedCapture(clip: clip(speech: 3))
         let endpointer = CountingEndpointer()
@@ -376,11 +376,12 @@ struct CaptureCapTests {
         await settle()
         await #expect(orchestrator.phase == .idle)
         #expect(await injector.count() == 1)
-        // 20 speech frames + exactly 10 quiet ones = the documented ≈1 s. Proves
-        // the endpointer is fed continuously and stops being fed the moment it
-        // ends the session (the starvation bug fed it nothing at all).
+        // 20 speech frames + exactly 20 quiet ones = the default 2 s tolerance
+        // (`FluidAudioVAD.minSilenceDuration`). Proves the endpointer is fed
+        // continuously and stops being fed the moment it ends the session (the
+        // starvation bug fed it nothing at all).
         let fed = await endpointer.fed()
-        #expect(fed == 30)
+        #expect(fed == 20 + Int(FluidAudioVAD.minSilenceDuration * 10))
         // Frame delivery is enabled for the session and disabled at finalize.
         #expect(capture.framesWanted == [true, false])
     }
@@ -404,7 +405,7 @@ struct CaptureCapTests {
             await orchestrator.handle(.engageHandsFree)
             await armFrames(capture, after: generation)
             for _ in 0..<10 { capture.emit(speech) }
-            for _ in 0..<15 { capture.emit(quiet) }
+            for _ in 0..<(Int(FluidAudioVAD.minSilenceDuration * 10) + 5) { capture.emit(quiet) }
             await settle()
             await #expect(orchestrator.phase == .idle)
         }

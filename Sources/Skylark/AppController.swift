@@ -491,6 +491,13 @@ final class AppController {
     static let vadTrimKey = VadClipTrimmer.enabledKey
     private(set) var vadClipTrimEnabled: Bool
 
+    /// How long a pause ends a hands-free (double-tap-lock) dictation — 1, 2,
+    /// or 3 seconds (Settings → General). Push-to-talk is unaffected; Fn
+    /// release ends those regardless. Stored (not computed) for the same
+    /// `@Observable`-tracking reason as `cleanupOverride` above.
+    static let handsFreeSilenceSecondsKey = "handsFree.silenceSeconds"
+    private(set) var handsFreeSilenceSeconds: Int
+
     // MARK: - History (Settings → History)
 
     /// Audio retention opt-in (default OFF — PRD §8, phase-5a spec §2).
@@ -888,6 +895,8 @@ final class AppController {
         cleanupIntensity = CleanupIntensity.persisted()
         cleanupTimeoutSeconds = (UserDefaults.standard.object(forKey: Self.cleanupTimeoutKey) as? Int) ?? 2
         vadClipTrimEnabled = VadClipTrimmer.persistedEnabled()
+        let storedSilenceSeconds = UserDefaults.standard.object(forKey: Self.handsFreeSilenceSecondsKey) as? Int
+        handsFreeSilenceSeconds = FluidAudioVAD.clampedSilenceSeconds(storedSilenceSeconds ?? 2)
 
         // Composition root: one on-disk database; fall back to in-memory
         // providers (no history/persisted modes) if it can't open.
@@ -1201,9 +1210,10 @@ final class AppController {
         // Prepare the ACTIVE local speech engine + VAD concurrently at launch
         // (VAD degrades gracefully). Every other engine stays cold until selected.
         warmActiveEngineAtLaunch()
-        Task { [endpointer, whisperModeOn] in
+        Task { [endpointer, whisperModeOn, handsFreeSilenceSeconds] in
             await endpointer.prepare()
             await endpointer.setTuning(.forWhisperMode(whisperModeOn))
+            await endpointer.setMinSilenceDuration(TimeInterval(handsFreeSilenceSeconds))
         }
 
         // Track the frontmost app so the orchestrator resolves modes at fn-down.
@@ -1801,6 +1811,16 @@ final class AppController {
         Task { [orchestrator] in await orchestrator.setVadTrimEnabled(enabled) }
     }
 
+    /// Set the hands-free silence tolerance (Settings → General). Persists and
+    /// pushes to the endpointer; takes effect on the next hands-free session
+    /// (`beginSession`). Push-to-talk is not affected.
+    func setHandsFreeSilenceSeconds(_ seconds: Int) {
+        let clamped = FluidAudioVAD.clampedSilenceSeconds(seconds)
+        handsFreeSilenceSeconds = clamped
+        UserDefaults.standard.set(clamped, forKey: Self.handsFreeSilenceSecondsKey)
+        Task { [endpointer] in await endpointer.setMinSilenceDuration(TimeInterval(clamped)) }
+    }
+
     // MARK: - Quick-switch (menu bar)
 
     var currentCleanupSlug: String { modelSelection.cleanupSlug }
@@ -2337,7 +2357,8 @@ final class AppController {
         let view = OnboardingView(
             permissions: permissions,
             apiKeyClient: openRouterClient,
-            hotkeyName: hotkeyKeyboard.displayName
+            hotkeyName: hotkeyKeyboard.displayName,
+            commandHotkeyName: hotkeyCommand?.displayName
         ) { [weak self] in
             self?.onboardingWindow?.close()
             self?.onboardingWindow = nil

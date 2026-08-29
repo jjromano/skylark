@@ -87,7 +87,11 @@ download progress in the meantime.
   than pasting.
 - **Double-tap the key** — hands-free mode: keeps recording until it detects
   silence (Voice Activity Detection auto-stops it), or until you press the
-  key again to stop it manually.
+  key again to stop it manually. How long a pause counts as silence is
+  configurable in Settings → General (1–3 s; push-to-talk is unaffected).
+- **Voice Command Mode** — select text, hold the command-mode key (Settings →
+  General; unbound by default), and speak an instruction ("make this
+  formal", "translate to Spanish") to rewrite the selection in place.
 - **Esc** — cancels the current recording (push-to-talk or hands-free)
   without inserting anything.
 - **Say "… press enter"** (opt-in, Settings → General) — strips the command

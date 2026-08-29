@@ -864,6 +864,17 @@ public actor DictationOrchestrator {
         let rawText = stripped.text
         let pressEnter = stripped.pressEnter
 
+        // Pause-punctuation repair (v0.16.0): the recogniser inserts a period
+        // wherever the speaker paused to think, so the transcript reaching
+        // cleanup is already shredded into false sentences. Rejoin them BEFORE
+        // any cleaner sees the text — which also stops `LocalCleaner`'s chunker
+        // from cutting a long dictation at one of those false boundaries.
+        // Deterministic and sub-millisecond, so it sits on the paste path.
+        // Tier 0 stays byte-verbatim: it is a raw passthrough by contract.
+        let cleanupInput = (effectiveTier == .raw || rawText.isEmpty)
+            ? rawText
+            : SentenceBoundaryRepair.repair(rawText)
+
         // Snippet expansion: a whole-utterance trigger inserts its saved text
         // verbatim — no cleanup stage (the replacement is already final).
         let snippetReplacement = SnippetMatcher.match(text: rawText, snippets: setup.snippets)
@@ -872,7 +883,7 @@ public actor DictationOrchestrator {
         // request carries only the dictionary terms this transcript plausibly
         // contains; a local one (including the post-timeout fallback) keeps the
         // full list, because nothing leaves the machine there.
-        let contexts = cleanupContexts(cleanupContext, entries: setup.entries, tier: effectiveTier, transcript: rawText)
+        let contexts = cleanupContexts(cleanupContext, entries: setup.entries, tier: effectiveTier, transcript: cleanupInput)
 
         phase = .injecting
 
@@ -957,7 +968,7 @@ public actor DictationOrchestrator {
             // would race the keystroke (a chat message would send, then get
             // edited), so wait for clean here even on AX targets.
             let cleaner = cleaners.cleaner(for: effectiveTier)
-            let outcome = await cleanForPaste(cleaner, tier: effectiveTier, text: rawText, contexts: contexts)
+            let outcome = await cleanForPaste(cleaner, tier: effectiveTier, text: cleanupInput, contexts: contexts)
             if let outcome {
                 syncCleanupEngine = outcome.engine
                 if outcome.text != rawText { syncCleanText = outcome.text }
@@ -999,9 +1010,11 @@ public actor DictationOrchestrator {
                 let tier = effectiveTier
                 injectMethod = Self.methodString(token)
                 cleanupEngineRan = "detached"
+                let detachedCleanupInput = cleanupInput
                 Task { [weak self] in
                     await self?.runCleanupAndReplace(
-                        token: token, rawText: rawText, cleaner: cleaner, tier: tier,
+                        token: token, rawText: rawText, cleanupText: detachedCleanupInput,
+                        cleaner: cleaner, tier: tier,
                         contexts: detachedContexts, historyTimestamp: historyTimestamp,
                         rescoreSamples: rescoreSamples, rescoreTimings: rescoreTimings
                     )
@@ -1012,7 +1025,7 @@ public actor DictationOrchestrator {
                 // unsafe here). Race the cleaner against a 2 s clock; on timeout/
                 // failure inject raw — and say so.
                 let cleaner = cleaners.cleaner(for: effectiveTier)
-                let outcome = await cleanForPaste(cleaner, tier: effectiveTier, text: rawText, contexts: contexts)
+                let outcome = await cleanForPaste(cleaner, tier: effectiveTier, text: cleanupInput, contexts: contexts)
                 if let outcome {
                     syncCleanupEngine = outcome.engine
                     if outcome.text != rawText { syncCleanText = outcome.text }
@@ -1863,13 +1876,20 @@ public actor DictationOrchestrator {
         return setup
     }
 
-    /// Run the cleaner on `rawText` (capped at the cleanup timeout) and, on a
-    /// changed result, replace the AX-inserted range in place. A slow cloud
+    /// Run the cleaner on `cleanupText` (capped at the cleanup timeout) and, on
+    /// a changed result, replace the AX-inserted range in place. A slow cloud
     /// degrades to local cleanup; if even that yields nothing, raw stands and a
     /// note says so (no longer a silent keep).
+    ///
+    /// `rawText` is what is ON SCREEN (and what history records) — the
+    /// pre-repair transcript. `cleanupText` is the boundary-repaired text the
+    /// cleaner actually sees. The two differ whenever the recogniser invented a
+    /// sentence break, and the no-op check below compares against `rawText`
+    /// because that is what a replace would be replacing.
     private func runCleanupAndReplace(
         token: InsertionToken,
         rawText: String,
+        cleanupText: String,
         cleaner: any Cleaner,
         tier: CleanupTier,
         contexts: CleanupContexts,
@@ -1880,17 +1900,25 @@ public actor DictationOrchestrator {
         // Deep-vocabulary pass (optional; detached, off the paste path). Rescore
         // the raw text FIRST, then feed the (possibly corrected) text to cleanup.
         // Any failure returns nil → we keep rawText (optional-stage invariant).
-        var sourceText = rawText
+        // The rescorer's word timings align to the PRE-repair transcript, so it
+        // gets `rawText` and its result is boundary-repaired afterwards;
+        // `cleanupText` is that same repair already applied to `rawText`.
+        var sourceText = cleanupText
         if let rescorer, let rescoreTimings, !rescoreSamples.isEmpty,
            let rescored = await rescorer.rescore(rawText: rawText, samples: rescoreSamples, timings: rescoreTimings) {
-            sourceText = rescored
+            sourceText = SentenceBoundaryRepair.repair(rescored)
         }
 
+        // Too short to be worth a generation — the deterministic result is both
+        // faster and safer than letting a model invent structure around it.
+        var outcome = shortTranscriptOutcome(sourceText, context: contexts.primary)
         // The DETACHED path is the one place "Off" still means unbounded: the raw
         // text is already on screen, so a long cleanup delays nothing the user is
         // waiting for. (Contrast `cleanForPaste`, which is capped — see
         // `prePasteCleanupCeiling`.)
-        var outcome = await cleanWithTimeout(cleaner, sourceText, context: contexts.primary, cap: cleanupTimeout)
+        if outcome == nil {
+            outcome = await cleanWithTimeout(cleaner, sourceText, context: contexts.primary, cap: cleanupTimeout)
+        }
         if outcome == nil {
             // Cloud too slow → degrade to local cleanup (it replaces the on-screen
             // raw in place) instead of leaving raw silently.
@@ -1984,6 +2012,16 @@ public actor DictationOrchestrator {
         return outcome
     }
 
+    /// The deterministic stand-in for cleanup on a transcript too short to be
+    /// worth a generation (WS7). `nil` means the normal cleanup dispatch runs.
+    /// Only ever reached on a non-raw tier — tier 0 returns before any of this.
+    /// Translation mode never skips: a one-word "hello" still has to become
+    /// "hola", which only the model can do.
+    private func shortTranscriptOutcome(_ text: String, context: CleanupContext) -> CleanOutcome? {
+        guard context.translateTo == nil, ShortTranscript.isShort(text) else { return nil }
+        return CleanOutcome(text: ShortTranscript.format(text), engine: ShortTranscript.engineLabel)
+    }
+
     /// The cap for a pre-paste cleanup: the configured timeout, never above the
     /// ceiling, and the ceiling itself when the setting is "Off".
     func prePasteCap(_ configured: Duration?) -> Duration {
@@ -1997,6 +2035,10 @@ public actor DictationOrchestrator {
     private func cleanForPaste(
         _ cleaner: any Cleaner, tier: CleanupTier, text: String, contexts: CleanupContexts
     ) async -> CleanOutcome? {
+        // A one- or two-word utterance skips the model entirely (WS7): the round
+        // trip is the slowest part of the shortest dictation, and it is exactly
+        // where a small model is most likely to invent structure.
+        if let short = shortTranscriptOutcome(text, context: contexts.primary) { return short }
         if let outcome = await cleanWithTimeout(
             cleaner, text, context: contexts.primary, cap: prePasteCap(cleanupTimeout)
         ) {

@@ -241,13 +241,22 @@ public struct LocalCleaner: Cleaner {
     /// the word lowercase is the capital a seam artifact we should undo.
     private static func lowercasedContinuation(_ chunk: String, raw: String) -> String {
         let firstWord = chunk.split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? chunk
-        if firstWord == "I" || firstWord.hasPrefix("I'") || firstWord.hasPrefix("I\u{2019}") { return chunk }
-        // All-caps acronym (e.g. "API", "SQL") — leave it.
-        let letters = firstWord.filter { $0.isLetter }
-        if letters.count >= 2, letters == letters.uppercased() { return chunk }
+        // "I"/"I'…" and all-caps acronyms are never down-cased.
+        if preservesContinuationCase(firstWord) { return chunk }
         // Only a word the raw dictation spelled lowercase is a seam artifact.
         guard rawHasLowercased(firstWord, in: raw) else { return chunk }
         return chunk.prefix(1).lowercased() + chunk.dropFirst()
+    }
+
+    /// True when `firstWord`'s leading capital must survive a join onto the
+    /// preceding fragment: the pronoun "I" (and its contractions), or an
+    /// all-caps token of 2+ letters (an acronym like "API"/"SQL"). Shared with
+    /// `SentenceBoundaryRepair`, which applies the same rule when it removes a
+    /// recogniser-inserted period.
+    static func preservesContinuationCase(_ firstWord: String) -> Bool {
+        if firstWord == "I" || firstWord.hasPrefix("I'") || firstWord.hasPrefix("I\u{2019}") { return true }
+        let letters = firstWord.filter { $0.isLetter }
+        return letters.count >= 2 && letters == letters.uppercased()
     }
 
     /// True when `word` (reduced to its alphanumeric core, lowercased) appears as

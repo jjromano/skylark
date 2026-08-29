@@ -81,5 +81,50 @@ public enum CleanupCorpus {
         .init("faithful/already-clean",
               raw: "The migration ran cleanly on staging.",
               expected: "The migration ran cleanly on staging."),
+
+        // Added at v0.16.0 for the re-punctuation contract: the speech
+        // recognizer inserts a period wherever the speaker paused to think,
+        // producing a false sentence boundary mid-clause. A faithful cleanup
+        // re-punctuates from grammar/meaning, not from those periods.
+        .init("pausePunctuation/mid-clause",
+              raw: "I want to. Draft the document.",
+              expected: "I want to draft the document."),
+        .init("pausePunctuation/and-then",
+              raw: "I think we should ship the feature. And then tell the team on Friday.",
+              expected: "I think we should ship the feature and then tell the team on Friday."),
+        .init("pausePunctuation/but-clause",
+              raw: "I shipped it. But I am tired.",
+              expected: "I shipped it, but I am tired."),
+        .init("pausePunctuation/deadline",
+              raw: "We should move the deadline to. Next Friday at the earliest.",
+              expected: "We should move the deadline to next Friday at the earliest."),
+        .init("pausePunctuation/auth-bug",
+              raw: "Can you look at the. Auth bug before standup?",
+              expected: "Can you look at the auth bug before standup?"),
+        .init("pausePunctuation/currency",
+              raw: "It costs about. Twenty three dollars.",
+              expected: "It costs about $23."),
+
+        // Added at v0.16.0 for the spoken-punctuation contract: a command
+        // word ("comma", "question mark", …) becomes the mark it names, but
+        // the same word used as an ordinary noun stays a word.
+        .init("spokenPunctuation/exclamation",
+              raw: "I love that exclamation mark",
+              expected: "I love that!"),
+        .init("spokenPunctuation/question",
+              raw: "we need to ship this week question mark",
+              expected: "We need to ship this week?"),
+        .init("spokenPunctuation/noun-not-command",
+              raw: "I need a period of rest before the next sprint",
+              expected: "I need a period of rest before the next sprint."),
+        .init("spokenPunctuation/comma",
+              raw: "send the report to alice comma then ping bob",
+              expected: "Send the report to Alice, then ping Bob."),
+        .init("spokenPunctuation/colon",
+              raw: "first the parser colon it is slow",
+              expected: "First the parser: it is slow."),
+        .init("spokenPunctuation/semicolon",
+              raw: "the tests pass semicolon the build is green",
+              expected: "The tests pass; the build is green."),
     ]
 }
