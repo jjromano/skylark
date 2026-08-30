@@ -376,6 +376,21 @@ private struct GeneralPane: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
                 }
+                if controller.cleanupOverride == "auto" {
+                    // Auto resolves to the frontmost app's MODE, and every mode
+                    // ships set to on-device. A user who picks a cloud model in
+                    // "Speech & cleanup" and leaves this on Auto gets on-device
+                    // cleanup forever while Settings shows them a cloud model —
+                    // the silent mismatch this note exists to end.
+                    Label(
+                        "Auto uses each app's mode, and modes ship set to on-device cleanup. "
+                            + "The cloud cleanup model below only runs for a mode you have set to Cloud — "
+                            + "choose Cloud here to use it everywhere.",
+                        systemImage: "info.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
                 Picker("Cleanup intensity", selection: Binding(
                     get: { controller.cleanupIntensity },
                     set: { controller.setCleanupIntensity($0) }

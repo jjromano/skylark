@@ -38,8 +38,18 @@ public struct ModelRegistryEntry: Sendable, Equatable, Codable, Identifiable {
         // it from installs); gpt-oss-120b is the big-model replacement.
         .init(slug: "meta-llama/llama-3.1-8b-instruct", label: "Llama 3.1 8B", providerPin: nil, kind: .cleanup, sort: 1),
         .init(slug: "openai/gpt-oss-120b", label: "GPT-OSS 120B (Groq)", providerPin: "groq", kind: .cleanup, sort: 2),
-        // Cloud STT — Groq is whisper-large-v3-turbo's sole provider (no pin needed).
-        .init(slug: "openai/whisper-large-v3-turbo", label: "Groq Fast Whisper", providerPin: nil, kind: .stt, sort: 0),
+        // Cloud STT. NOTE: `providerPin` is inert for every row here —
+        // OpenRouter does NOT apply per-request routing controls (`order`,
+        // `only`, `allow_fallbacks`, `sort`) on /api/v1/audio/transcriptions,
+        // and the response does not say which provider served the request.
+        //
+        // whisper-large-v3-turbo in particular is no longer Groq-only: OpenRouter
+        // load-balances it across Groq and DeepInfra by price, which are far
+        // apart on speed. That is why cloud STT latency varies by seconds with no
+        // relation to clip length, and why the old "Groq Fast Whisper" label was
+        // a promise the transport cannot keep. Pinning a fast provider requires
+        // calling that provider directly, not through OpenRouter.
+        .init(slug: "openai/whisper-large-v3-turbo", label: "Whisper large-v3-turbo", providerPin: nil, kind: .stt, sort: 0),
         .init(slug: "openai/gpt-4o-transcribe", label: "GPT-4o Transcribe", providerPin: nil, kind: .stt, sort: 1),
         .init(slug: "openai/gpt-4o-mini-transcribe", label: "GPT-4o Mini Transcribe", providerPin: nil, kind: .stt, sort: 2),
         // 2026 transcription entrants — each has a single OpenRouter provider

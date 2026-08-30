@@ -100,6 +100,10 @@ public actor DictationOrchestrator {
 
     /// Temporary global cleanup override from the menu bar (nil = auto/use mode).
     private var tierOverride: CleanupTier?
+    /// Watches the paste-path timeout rate so a cleanup budget that is chronically
+    /// too short recommends a fix instead of silently costing the user its full
+    /// cap on every other dictation.
+    private var cleanupWatchdog = CleanupTimeoutWatchdog()
     /// How long the PASTE path waited on cleanup for the utterance in flight.
     /// Reset per dictation; read once by `recordLatency`. Zero on the detached
     /// AX path, where cleanup happens after the text is already on screen.
@@ -377,6 +381,9 @@ public actor DictationOrchestrator {
     /// resolved mode's tier); a value forces that tier for every dictation.
     public func setTierOverride(_ tier: CleanupTier?) {
         tierOverride = tier
+        // A different tier is a different engine with a different speed; the
+        // old timeout history describes a setup that no longer exists.
+        cleanupWatchdog.reset()
     }
 
     /// Cleanup timeout (Settings → General). A value caps how long a paste waits
@@ -385,6 +392,9 @@ public actor DictationOrchestrator {
     /// the next dictation.
     public func setCleanupTimeout(_ timeout: Duration?) {
         cleanupTimeout = timeout
+        // Re-arm: the user just acted on the recommendation (or made it worse),
+        // and either way the next window should be judged on its own.
+        cleanupWatchdog.reset()
     }
 
     /// Set the global cleanup intensity (Settings → General, Cleanup
@@ -2040,6 +2050,15 @@ public actor DictationOrchestrator {
 
     /// The cap for a pre-paste cleanup: the configured timeout, never above the
     /// ceiling, and the ceiling itself when the setting is "Off".
+    /// Whole seconds of the cap the user actually waited, for the watchdog's
+    /// message. Uses the EFFECTIVE cap (`prePasteCap`), not the configured
+    /// value, so "Off" — which is still ceilinged on the paste path — reports
+    /// the ceiling it really waited rather than a meaningless 0.
+    private func timeoutSecondsLabel(_ configured: Duration?) -> Int {
+        let effective = prePasteCap(configured)
+        return max(1, Int((effective.milliseconds / 1000).rounded()))
+    }
+
     func prePasteCap(_ configured: Duration?) -> Duration {
         guard let configured else { return prePasteCeiling }
         return min(configured, prePasteCeiling)
@@ -2063,13 +2082,26 @@ public actor DictationOrchestrator {
         if let outcome = await cleanWithTimeout(
             cleaner, text, context: contexts.primary, cap: prePasteCap(cleanupTimeout)
         ) {
+            cleanupWatchdog.record(.completed)
             return outcome
         }
         if let local = await localFallbackAfterTimeout(text, context: contexts.local, timedOutTier: tier) {
+            // The cloud tier timed out but local rescued it, so the user still
+            // got cleaned text. Not a wasted wait.
+            cleanupWatchdog.record(.completed)
             return local
         }
+        cleanupWatchdog.record(.timedOut)
         logger.notice("cleanup degraded: timeout→raw kept for paste target (tier \(Self.tierString(tier), privacy: .public))")
         noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
+        // Once the pattern is established, say what to actually DO about it —
+        // the per-dictation note above never explains that a setting is wrong.
+        if let advice = cleanupWatchdog.recommendationIfNeeded(
+            timeoutSeconds: timeoutSecondsLabel(cleanupTimeout)
+        ) {
+            logger.notice("cleanup timeout watchdog: recommending a settings change")
+            noteContinuation.yield(advice)
+        }
         return nil
     }
 

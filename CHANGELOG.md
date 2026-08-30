@@ -6,6 +6,35 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.18.0 - 2026-08-30
+
+**Skylark now tells you when a setting is costing you time, instead of quietly
+paying the price on every dictation.**
+
+- **Cleanup that keeps timing out now recommends a fix.** If cleanup misses its
+  time limit on half of your recent dictations, Skylark says so once, names how
+  many it was and what each one cost, and tells you the two ways out: raise the
+  cleanup timeout, or set cleanup to Raw so it stops waiting. Before this, every
+  timed-out dictation waited the full limit and pasted the raw text anyway, and
+  the only clue was a per-dictation note that never explained that a setting was
+  wrong. Changing the timeout or the cleanup tier re-arms it, so it never nags.
+
+- **Settings now explains what "Auto" cleanup actually does.** Auto follows each
+  app's mode, and modes ship set to on-device cleanup, so choosing a cloud
+  cleanup model while Auto was selected did nothing at all: the Settings screen
+  showed a cloud model that never ran. The Cleanup section now says this
+  outright and points to the setting that makes the choice take effect.
+
+- **The cloud speech model "Groq Fast Whisper" is now called
+  "Whisper large-v3-turbo", because the old name promised something the app
+  cannot deliver.** OpenRouter serves that model from more than one provider and
+  spreads requests across them by price, and its transcription endpoint accepts
+  no routing preference and does not report which provider ran. That is why
+  cloud dictation speed swings by seconds with no relation to how long you
+  spoke. Nothing about how it works changed here, only the label; getting a
+  consistently fast provider needs a direct connection to that provider, which
+  is not built yet.
+
 ## 0.17.0 - 2026-08-30
 
 **Diagnostics can now say WHERE a slow dictation spent its time.**
