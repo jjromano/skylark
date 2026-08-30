@@ -100,6 +100,10 @@ public actor DictationOrchestrator {
 
     /// Temporary global cleanup override from the menu bar (nil = auto/use mode).
     private var tierOverride: CleanupTier?
+    /// How long the PASTE path waited on cleanup for the utterance in flight.
+    /// Reset per dictation; read once by `recordLatency`. Zero on the detached
+    /// AX path, where cleanup happens after the text is already on screen.
+    private var pasteCleanupElapsed: Duration = .zero
     private var silencePeakThreshold: Float = SilenceDetector.peakThreshold
     /// Whether Whisper Mode post-capture clip normalization runs. Pushed by
     /// `applyWhisperTuning` alongside the silence floor, so it mirrors the same
@@ -727,6 +731,9 @@ public actor DictationOrchestrator {
 
         // Fn-up → text-inserted is THE latency metric.
         let t0 = ContinuousClock.now
+        // Fresh per utterance: the detached AX path never calls `cleanForPaste`,
+        // so a stale value would bill this dictation for the previous one's wait.
+        pasteCleanupElapsed = .zero
         let interval = signposter.beginInterval("fnup_to_inserted")
         defer { signposter.endInterval("fnup_to_inserted", interval) }
 
@@ -1071,6 +1078,7 @@ public actor DictationOrchestrator {
         let summary = recordLatency(
             captureClose: t0.duration(to: afterCapture),
             transcribe: afterCapture.duration(to: afterTranscribe),
+            cleanup: pasteCleanupElapsed,
             inject: afterTranscribe.duration(to: afterInject),
             total: t0.duration(to: afterInject)
         )
@@ -1084,7 +1092,10 @@ public actor DictationOrchestrator {
             tier: \(Self.tierString(effectiveTier), privacy: .public), \
             cleanup-ran: \(cleanupEngineRan, privacy: .public), \
             inject: \(injectMethod, privacy: .public), \
-            latency-ms: \(summary.totalMs, format: .fixed(precision: 1), privacy: .public)
+            latency-ms: \(summary.totalMs, format: .fixed(precision: 1), privacy: .public), \
+            stt-ms: \(summary.transcribeMs, format: .fixed(precision: 1), privacy: .public), \
+            cleanup-ms: \(summary.cleanupMs, format: .fixed(precision: 1), privacy: .public), \
+            inject-ms: \(summary.injectMs, format: .fixed(precision: 1), privacy: .public)
             """)
 
         // A bare "press enter" (no remaining text, no snippet) inserts nothing —
@@ -1098,6 +1109,7 @@ public actor DictationOrchestrator {
                 modeID: setup.mode.id,
                 durationSec: clip.duration,
                 latencyMs: summary.totalMs,
+                stages: summary,
                 clip: clip
             )
         }
@@ -1485,6 +1497,7 @@ public actor DictationOrchestrator {
         modeID: String,
         durationSec: TimeInterval,
         latencyMs: Double,
+        stages: DictationLatency,
         clip: AudioClip
     ) {
         guard let historyRecord else { return }
@@ -1499,7 +1512,10 @@ public actor DictationOrchestrator {
             durationMs: Int((durationSec * 1000).rounded()),
             latencyMs: Int(latencyMs.rounded()),
             audioPath: nil,
-            cleanupEngine: cleanupEngine
+            cleanupEngine: cleanupEngine,
+            transcribeMs: Int(stages.transcribeMs.rounded()),
+            cleanupMs: Int(stages.cleanupMs.rounded()),
+            injectMs: Int(stages.injectMs.rounded())
         )
         historyRecord(record, clip)
     }
@@ -2035,6 +2051,11 @@ public actor DictationOrchestrator {
     private func cleanForPaste(
         _ cleaner: any Cleaner, tier: CleanupTier, text: String, contexts: CleanupContexts
     ) async -> CleanOutcome? {
+        // Every exit below records how long the user waited on cleanup, so
+        // `recordLatency` can bill it separately from the paste itself. A
+        // burned-through timeout is the expensive case and MUST be visible.
+        let cleanupStart = ContinuousClock.now
+        defer { pasteCleanupElapsed = cleanupStart.duration(to: ContinuousClock.now) }
         // A one- or two-word utterance skips the model entirely (WS7): the round
         // trip is the slowest part of the shortest dictation, and it is exactly
         // where a small model is most likely to invent structure.
@@ -2084,11 +2105,19 @@ public actor DictationOrchestrator {
     // MARK: - Latency
 
     @discardableResult
-    private func recordLatency(captureClose: Duration, transcribe: Duration, inject: Duration, total: Duration) -> DictationLatency {
+    private func recordLatency(
+        captureClose: Duration, transcribe: Duration, cleanup: Duration, inject: Duration, total: Duration
+    ) -> DictationLatency {
+        // `inject` is measured transcribe→inserted, which SPANS the paste-path
+        // cleanup wait. Bill the cleanup separately and leave the remainder as
+        // the true insertion cost; clamp at zero so a clock hiccup can never
+        // report a negative stage.
+        let injectOnly = max(0, inject.milliseconds - cleanup.milliseconds)
         let summary = DictationLatency(
             captureCloseMs: captureClose.milliseconds,
             transcribeMs: transcribe.milliseconds,
-            injectMs: inject.milliseconds,
+            cleanupMs: cleanup.milliseconds,
+            injectMs: injectOnly,
             totalMs: total.milliseconds
         )
         recentLatencies.append(summary)
@@ -2096,6 +2125,7 @@ public actor DictationOrchestrator {
         logger.info("""
             dictation latency ms — capture-close: \(summary.captureCloseMs, format: .fixed(precision: 1), privacy: .public), \
             transcribe: \(summary.transcribeMs, format: .fixed(precision: 1), privacy: .public), \
+            cleanup: \(summary.cleanupMs, format: .fixed(precision: 1), privacy: .public), \
             inject: \(summary.injectMs, format: .fixed(precision: 1), privacy: .public), \
             total: \(summary.totalMs, format: .fixed(precision: 1), privacy: .public)
             """)

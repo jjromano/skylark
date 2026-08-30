@@ -6,6 +6,33 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.17.0 - 2026-08-30
+
+**Diagnostics can now say WHERE a slow dictation spent its time.**
+
+- **The exported diagnostics report breaks each dictation into stages**: time in
+  speech recognition, time waiting on cleanup, and time actually inserting the
+  text, next to the total. Until now only the total was recorded, and the
+  cleanup wait was quietly counted as part of the paste, so a cleanup that used
+  up its whole time limit and then gave you the raw text back looked identical
+  to a slow paste. That is the difference between "your speech engine is slow"
+  and "your cleanup model never finishes", and the old report could not tell
+  them apart.
+
+- **The report now counts the dictations where cleanup made you wait and gave
+  you nothing**, with the total time lost. If cleanup keeps hitting its time
+  limit, that line says so in one number.
+
+- **Log entries are no longer limited to the current app launch.** The report
+  used to read only the running process's logs, so an export taken after a
+  restart showed a couple of lines covering one dictation while the table above
+  it listed dozens, with nothing to explain the gap. It now reads the wider
+  system log where permitted, and when it cannot, it says so in the report
+  instead of leaving you to guess.
+
+  Existing history rows keep working; they show a dash in the new columns
+  because their stage timings were never recorded.
+
 ## 0.16.1 - 2026-08-29
 
 **Fix: saying "yes period" pasted the word "period".**

@@ -19,6 +19,12 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
     /// Which cleanup engine produced `cleanText` ("raw", "local", or a cloud
     /// model slug); nil when cleanup never landed or for pre-v4 rows.
     public var cleanupEngine: String?
+    /// Per-stage latency (ms) for this utterance; nil for pre-0.17.0 rows.
+    /// `cleanupMs` is the PASTE-path cleanup wait only — 0 when cleanup ran
+    /// detached after an AX insert, because the user was not waiting on it.
+    public var transcribeMs: Int?
+    public var cleanupMs: Int?
+    public var injectMs: Int?
 
     public init(
         id: Int64? = nil,
@@ -33,7 +39,10 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
         wordCount: Int = 0,
         appBundleID: String? = nil,
         appName: String? = nil,
-        cleanupEngine: String? = nil
+        cleanupEngine: String? = nil,
+        transcribeMs: Int? = nil,
+        cleanupMs: Int? = nil,
+        injectMs: Int? = nil
     ) {
         self.id = id
         self.timestamp = timestamp
@@ -48,6 +57,9 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
         self.appBundleID = appBundleID
         self.appName = appName
         self.cleanupEngine = cleanupEngine
+        self.transcribeMs = transcribeMs
+        self.cleanupMs = cleanupMs
+        self.injectMs = injectMs
     }
 
     enum CodingKeys: String, CodingKey {
@@ -63,6 +75,9 @@ public struct HistoryRecord: Sendable, Equatable, Codable, Identifiable {
         case appBundleID = "app_bundle_id"
         case appName = "app_name"
         case cleanupEngine = "cleanup_engine"
+        case transcribeMs = "transcribe_ms"
+        case cleanupMs = "cleanup_ms"
+        case injectMs = "inject_ms"
     }
 }
 

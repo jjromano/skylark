@@ -216,11 +216,17 @@ public enum DiagnosticsReport {
             return out
         }
 
-        let header = ["#", "timestamp", "app", "stt", "dur_ms", "raw_w", "cln_w", "cleanup", "lat_ms"]
+        let header = ["#", "timestamp", "app", "stt", "dur_ms", "raw_w", "cln_w", "cleanup",
+                      "stt_ms", "cln_ms", "inj_ms", "lat_ms"]
         var rows: [[String]] = [header]
 
         var truncationCount = 0
         var silentTailCount = 0
+        // A cleanup that burned its whole budget and still returned raw text is
+        // pure waste: the user waited and got nothing for it. This is the one
+        // signal the pre-0.17.0 export could not show at all.
+        var wastedCleanupCount = 0
+        var wastedCleanupMs = 0
 
         for (idx, r) in records.enumerated() {
             let rawWords = WordCount.count(r.rawText)
@@ -239,6 +245,11 @@ public enum DiagnosticsReport {
                 silentTailCount += 1
             }
 
+            if let cleanupMs = r.cleanupMs, cleanupMs > 0, r.cleanText == nil {
+                wastedCleanupCount += 1
+                wastedCleanupMs += cleanupMs
+            }
+
             rows.append([
                 "\(idx + 1)",
                 timestamp(r.timestamp),
@@ -248,6 +259,9 @@ public enum DiagnosticsReport {
                 "\(rawWords)",
                 cleanWords.map { "\($0)" } ?? "-",
                 r.cleanupEngine ?? "-",
+                r.transcribeMs.map { "\($0)" } ?? "-",
+                r.cleanupMs.map { "\($0)" } ?? "-",
+                r.injectMs.map { "\($0)" } ?? "-",
                 "\(r.latencyMs)",
             ])
         }
@@ -257,6 +271,11 @@ public enum DiagnosticsReport {
         out += "  dictations shown: \(records.count)\n"
         out += "  likely cleanup truncation (clean words < 50% of raw): \(truncationCount)\n"
         out += "  likely mic/silent-tail (words/sec < 1.2 over >4s clip): \(silentTailCount)\n"
+        if wastedCleanupCount > 0 {
+            out += "  cleanup waited then returned raw: \(wastedCleanupCount)"
+                + " (\(wastedCleanupMs) ms of pure wait)\n"
+        }
+        out += "  (stt_ms/cln_ms/inj_ms are blank for rows recorded before 0.17.0)\n"
         return out
     }
 

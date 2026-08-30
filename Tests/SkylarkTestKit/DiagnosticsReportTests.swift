@@ -173,6 +173,52 @@ struct DiagnosticsReportTests {
         #expect(report.contains("(no recent dictations)"))
         #expect(report.contains("unified log unavailable: test"))
     }
+
+    @Test("Per-stage timings are rendered, and a burned-through cleanup is called out")
+    func stageTimingsAndWastedCleanup() {
+        // The reported case: cleanup waited its full 2 s cap and still returned
+        // raw (clean_text nil). The pre-0.17.0 export could not show this at
+        // all, because cleanup time was folded into the inject span and never
+        // persisted, so a wasted 2 s looked exactly like a slow paste.
+        let wasted = HistoryRecord(
+            timestamp: Self.fixedDate, rawText: "one two three four five six seven",
+            cleanText: nil, engine: "openai/whisper-large-v3-turbo",
+            durationMs: 3264, latencyMs: 6038, appName: "Claude",
+            cleanupEngine: nil, transcribeMs: 3800, cleanupMs: 2000, injectMs: 238
+        )
+        let healthy = HistoryRecord(
+            timestamp: Self.fixedDate, rawText: "one two three four",
+            cleanText: "One two three four.", engine: "parakeet",
+            durationMs: 1900, latencyMs: 900, appName: "Claude",
+            cleanupEngine: "local", transcribeMs: 300, cleanupMs: 480, injectMs: 120
+        )
+        let out = DiagnosticsReport.build(
+            environment: environment(), settings: settings(),
+            dictations: [wasted, healthy], logs: []
+        )
+        #expect(out.contains("stt_ms"))
+        #expect(out.contains("cln_ms"))
+        #expect(out.contains("inj_ms"))
+        #expect(out.contains("3800"))
+        #expect(out.contains("2000"))
+        #expect(out.contains("cleanup waited then returned raw: 1"))
+        #expect(out.contains("2000 ms of pure wait"))
+    }
+
+    @Test("Rows recorded before 0.17.0 render a dash rather than a bogus zero")
+    func preMigrationRowsShowDash() {
+        let old = HistoryRecord(
+            timestamp: Self.fixedDate, rawText: "one two three", cleanText: nil,
+            engine: "parakeet", durationMs: 1000, latencyMs: 700, appName: "Claude"
+        )
+        let out = DiagnosticsReport.build(
+            environment: environment(), settings: settings(),
+            dictations: [old], logs: []
+        )
+        #expect(out.contains("blank for rows recorded before 0.17.0"))
+        // A nil stage must never be counted as a measured 0 ms.
+        #expect(!out.contains("cleanup waited then returned raw"))
+    }
 }
 
 /// Test fixture that constructs a `HistoryRecord` with only the fields the

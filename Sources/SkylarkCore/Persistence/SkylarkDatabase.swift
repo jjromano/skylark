@@ -199,6 +199,20 @@ public final class SkylarkDatabase: Sendable {
             }
         }
 
+        migrator.registerMigration("v7") { db in
+            // Per-stage latency, so a diagnostics export can say WHERE a slow
+            // dictation spent its time instead of only how long it took in
+            // total. Before this, cleanup time was folded into the inject span
+            // and never persisted at all, which made a cleanup that burned its
+            // whole timeout and returned raw indistinguishable from a slow
+            // paste. NULL for every pre-v7 row; no backfill is possible.
+            try db.alter(table: "history") { t in
+                t.add(column: "transcribe_ms", .integer)
+                t.add(column: "cleanup_ms", .integer)
+                t.add(column: "inject_ms", .integer)
+            }
+        }
+
         return migrator
     }
 }

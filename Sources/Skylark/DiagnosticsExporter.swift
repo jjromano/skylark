@@ -72,7 +72,21 @@ enum DiagnosticsExporter {
     /// result (the API can throw or be unavailable — we degrade, never crash).
     private static func fetchLogs(window: TimeInterval) -> (logs: [DiagnosticsReport.LogEntry], note: String?) {
         do {
-            let store = try OSLogStore(scope: .currentProcessIdentifier)
+            // Prefer the SYSTEM store: `.currentProcessIdentifier` only sees the
+            // CURRENT launch, so an export taken after any relaunch silently
+            // returned a couple of lines covering one dictation while the
+            // history table showed dozens — the reader had no way to tell that
+            // apart from "the app barely logged anything". `.system` needs a
+            // logging entitlement we may not have, so fall back and SAY WHICH
+            // scope produced the result rather than leaving it ambiguous.
+            var scopeNote: String?
+            let store: OSLogStore
+            if let system = try? OSLogStore(scope: .system) {
+                store = system
+            } else {
+                store = try OSLogStore(scope: .currentProcessIdentifier)
+                scopeNote = "current app launch only (system log scope unavailable to this build)"
+            }
             let position = store.position(date: Date().addingTimeInterval(-window))
             let predicate = NSPredicate(format: "subsystem == %@", subsystem)
             var result: [DiagnosticsReport.LogEntry] = []
@@ -89,7 +103,13 @@ enum DiagnosticsExporter {
                 result = Array(result.suffix(maxLogEntries))
             }
             let hours = Int((window / 3600).rounded())
-            let note = result.isEmpty ? "no matching log entries in the last \(hours)h" : nil
+            let note: String?
+            if result.isEmpty {
+                note = "no matching log entries in the last \(hours)h"
+                    + (scopeNote.map { " — \($0)" } ?? "")
+            } else {
+                note = scopeNote.map { "scope: \($0); older dictations in the table above have no log lines here" }
+            }
             return (result, note)
         } catch {
             return ([], "unified log unavailable: \(error.localizedDescription)")
