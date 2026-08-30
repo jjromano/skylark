@@ -6,6 +6,19 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.16.1 - 2026-08-29
+
+**Fix: saying "yes period" pasted the word "period".**
+
+- Short dictations that end in spoken punctuation now reach the cleanup model
+  like any other. In 0.16.0 a dictation of one or two words skipped the model
+  entirely to save latency, which was right for "yes" but wrong for "yes
+  period", "done exclamation mark" or "new line": the command word was pasted
+  literally instead of becoming a mark or a line break. The skip now stands
+  aside whenever the last word or two is a punctuation or layout command, so
+  the feature added in 0.16.0 works at every length. A plain "yes" or "ok
+  thanks" still skips the model and stays fast.
+
 ## 0.16.0 - 2026-08-29
 
 **Pausing to think no longer ends your sentence, and you can say your

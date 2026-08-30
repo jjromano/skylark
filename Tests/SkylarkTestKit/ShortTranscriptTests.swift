@@ -12,6 +12,24 @@ struct ShortTranscriptTests {
         #expect(ShortTranscript.isShort("yes"))
         #expect(ShortTranscript.isShort("ok thanks"))
         #expect(!ShortTranscript.isShort("yes ship it"))
+    }
+
+    @Test("A short transcript ending in a spoken command still reaches the model")
+    func spokenCommandsAreNeverShort() {
+        // Regression (v0.16.1): these pasted the command word literally
+        // ("Yes period.") because the skip fired before the model could apply
+        // the v0.16.0 spoken-punctuation rule.
+        #expect(!ShortTranscript.isShort("yes period"))
+        #expect(!ShortTranscript.isShort("done exclamation mark"))
+        #expect(!ShortTranscript.isShort("really question mark"))
+        #expect(!ShortTranscript.isShort("new line"))
+        #expect(!ShortTranscript.isShort("new paragraph"))
+        #expect(!ShortTranscript.isShort("wait comma"))
+        #expect(!ShortTranscript.isShort("period"))
+        #expect(!ShortTranscript.isShort("Period."))
+        // An ordinary short utterance is unaffected.
+        #expect(ShortTranscript.isShort("yes"))
+        #expect(ShortTranscript.isShort("ok thanks"))
         #expect(!ShortTranscript.isShort("Skylark stub: end-to-end pipeline works."))
     }
 

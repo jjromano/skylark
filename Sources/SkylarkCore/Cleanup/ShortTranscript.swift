@@ -23,11 +23,47 @@ public enum ShortTranscript {
     /// Characters that already terminate the utterance, so no period is added.
     private static let terminators: Set<Character> = [".", "!", "?", ":", ";", ",", "\u{2026}"]
 
+    /// Single-word spoken punctuation commands (v0.16.0 spoken-punctuation rule).
+    private static let singleWordCommands: Set<String> = [
+        "period", "comma", "colon", "semicolon", "dash",
+    ]
+
+    /// Two-word spoken punctuation and layout commands.
+    private static let twoWordCommands: Set<String> = [
+        "full stop", "question mark", "exclamation mark", "exclamation point",
+        "open quote", "close quote", "open paren", "close paren",
+        "new line", "new paragraph",
+    ]
+
     /// True when `text` is short enough to skip the cleanup model. Empty text is
     /// NOT "short" — it is handled upstream (nothing is inserted at all).
+    ///
+    /// A transcript ending in a spoken punctuation or layout command is NEVER
+    /// short, however few words it has: "yes period" must reach the model to
+    /// become "Yes." and "new line" must become a line break. Skipping them
+    /// would paste the command word literally ("Yes period."), defeating the
+    /// feature the skip knows nothing about. Deciding whether the word is a
+    /// command or an ordinary noun ("a period") is exactly the judgment the
+    /// model is for, so the guard hands every candidate over rather than
+    /// guessing here.
     public static func isShort(_ text: String) -> Bool {
         let count = wordCount(text)
-        return count > 0 && count < wordThreshold
+        guard count > 0, count < wordThreshold else { return false }
+        return !endsWithSpokenCommand(text)
+    }
+
+    /// Whether `text`'s final one or two words are a spoken punctuation or
+    /// layout command. Compares on letters only, so "period." and "Period"
+    /// both match.
+    static func endsWithSpokenCommand(_ text: String) -> Bool {
+        let words = text
+            .split(whereSeparator: { $0.isWhitespace })
+            .map { $0.filter { $0.isLetter }.lowercased() }
+            .filter { !$0.isEmpty }
+        guard let last = words.last else { return false }
+        if singleWordCommands.contains(last) { return true }
+        guard words.count >= 2 else { return false }
+        return twoWordCommands.contains(words[words.count - 2] + " " + last)
     }
 
     /// Capitalise the first letter and terminate the sentence. Whitespace-only
