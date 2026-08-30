@@ -6,6 +6,32 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.19.0 - 2026-08-30
+
+**Cloud dictation can now go straight to Groq, instead of taking whichever
+provider OpenRouter happened to pick.**
+
+- **New speech engine: "Groq direct — Whisper large-v3-turbo"**, in Settings →
+  General. It talks to Groq's own API rather than routing through OpenRouter.
+  This matters because OpenRouter serves that model from more than one provider
+  and spreads requests across them by price, its transcription endpoint ignores
+  any routing preference you send, and its response never says which provider
+  ran. That is why cloud dictation speed swung by seconds with no relation to
+  how long you spoke. Going direct reaches one known provider every time, with
+  one less hop in between.
+
+- **The audio is also a third smaller on the way up.** The OpenRouter path
+  encodes your recording as base64 text inside a JSON message, which inflates it
+  by 33% and builds the whole thing twice in memory while you wait for the
+  paste. The direct path uploads the bytes as bytes.
+
+- **Groq needs its own key**, entered in Settings → Account under "Groq API
+  key". It is stored separately from your OpenRouter key and the two are never
+  interchanged. Without a Groq key the engine falls back to local, and says so.
+  Your OpenRouter key still powers everything else, including cloud cleanup,
+  which was never affected by this: OpenRouter does honour provider pinning on
+  its chat endpoint, so cleanup already reaches the provider Skylark asks for.
+
 ## 0.18.0 - 2026-08-30
 
 **Skylark now tells you when a setting is costing you time, instead of quietly

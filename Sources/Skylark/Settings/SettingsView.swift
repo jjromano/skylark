@@ -457,6 +457,7 @@ private struct GeneralPane: View {
                     Text("Local — Parakeet").tag(STTChoice.localParakeet)
                     Text("Local — Whisper large-v3-turbo").tag(STTChoice.localWhisper)
                     Text("Local — Apple Speech (macOS)").tag(STTChoice.localApple)
+                    Text("Groq direct — Whisper large-v3-turbo").tag(STTChoice.groqDirect)
                     ForEach(controller.sttModels) { entry in
                         Text(entry.label).tag(STTChoice.cloud(slug: entry.slug))
                     }
@@ -1168,6 +1169,9 @@ private struct AccountPane: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 APIKeyCard(client: client, showRemove: true) {
+                    controller.apiKeyDidChange()
+                }
+                GroqKeyCard(showRemove: true) {
                     controller.apiKeyDidChange()
                 }
                 updatesCard

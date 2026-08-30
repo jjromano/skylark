@@ -10,6 +10,11 @@ public enum STTChoice: Sendable, Equatable, Hashable {
     case localApple
     /// Cloud STT via OpenRouter, identified by registry slug.
     case cloud(slug: String)
+    /// Cloud STT straight to Groq, bypassing OpenRouter's routing. A separate
+    /// case rather than another `cloud` slug because it is a different
+    /// transport with its own API key: OpenRouter ignores provider routing on
+    /// its transcription endpoint, so a slug there cannot express "use Groq".
+    case groqDirect
 
     /// UserDefaults serialization ("local" | "localWhisper" | "localApple" |
     /// "cloud:<slug>"); non-secret.
@@ -19,6 +24,7 @@ public enum STTChoice: Sendable, Equatable, Hashable {
         case .localWhisper: return "localWhisper"
         case .localApple: return "localApple"
         case .cloud(let slug): return "cloud:\(slug)"
+        case .groqDirect: return "groqDirect"
         }
     }
 
@@ -30,6 +36,8 @@ public enum STTChoice: Sendable, Equatable, Hashable {
             self = .localWhisper
         } else if value == "localApple" {
             self = .localApple
+        } else if value == "groqDirect" {
+            self = .groqDirect
         } else {
             self = .localParakeet
         }
@@ -39,7 +47,7 @@ public enum STTChoice: Sendable, Equatable, Hashable {
     public var isLocal: Bool {
         switch self {
         case .localParakeet, .localWhisper, .localApple: return true
-        case .cloud: return false
+        case .cloud, .groqDirect: return false
         }
     }
 }

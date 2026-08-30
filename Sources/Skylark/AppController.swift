@@ -708,6 +708,7 @@ final class AppController {
         case .localWhisper: return "Whisper (local)"
         case .localApple: return "Apple Speech (local)"
         case .cloud(let slug): return "Cloud: \(slug)"
+        case .groqDirect: return "Groq direct: \(GroqCloud.defaultModel)"
         }
     }
 
@@ -1881,6 +1882,13 @@ final class AppController {
         switch choice {
         case .localParakeet, .localWhisper, .localApple:
             switchLocalEngine(to: choice, token: token)
+        case .groqDirect:
+            // Same off-main-actor keychain discipline as the OpenRouter branch
+            // below, over the SEPARATE Groq key item.
+            Task { [weak self] in
+                let hasKey = await Self.reloadGroqKeyOffMainActor()
+                self?.finishGroqRebuild(hasKey: hasKey, token: token)
+            }
         case .cloud(let slug):
             // Read the key OFF the main actor: with a self-signed dev build,
             // `SecItemCopyMatching` can raise a keychain authorization prompt
@@ -1906,6 +1914,41 @@ final class AppController {
     /// while the potentially-blocking keychain read does not.
     private nonisolated static func reloadAPIKeyOffMainActor() async -> Bool {
         await Task.detached(priority: .userInitiated) { APIKeyCache.shared.reload() != nil }.value
+    }
+
+    /// The Groq-key counterpart of `reloadAPIKeyOffMainActor`.
+    private nonisolated static func reloadGroqKeyOffMainActor() async -> Bool {
+        await Task.detached(priority: .userInitiated) { APIKeyCache.groq.reload() != nil }.value
+    }
+
+    /// Install the direct-Groq engine behind the same local fallback the
+    /// OpenRouter path uses. Mirrors `finishCloudRebuild`, including its
+    /// re-check of the rebuild token before anything is built or installed —
+    /// the keychain read that got here is unbounded, and installing a cloud
+    /// engine after the user moved to a local one would upload audio they
+    /// asked to keep on the machine.
+    private func finishGroqRebuild(hasKey: Bool, token: STTRebuildGate.Token) {
+        guard isCurrentRebuild(token) else { return }
+        guard hasKey else {
+            showNote("No Groq API key — using local engine")
+            switchLocalEngine(to: activeLocal, token: token)
+            return
+        }
+        let cloud = GroqCloud(client: GroqSpeechClient(keyProvider: { APIKeyCache.groq.current() }))
+        let notice: @Sendable (String) -> Void = { [weak self] message in
+            Task { @MainActor in self?.showNote(message) }
+        }
+        let localFallback = localEngine(for: activeLocal)
+        let idle: [any Transcriber] = [parakeet, whisper, appleSpeech].filter { $0.id != localFallback.id }
+        let fallback = FallbackTranscriber(primary: cloud, fallback: localFallback, notice: notice)
+        Task { [orchestrator, idle, weak self] in
+            guard let self, await self.waitForIdleSession(token) else { return }
+            try? await fallback.warmUp()
+            guard self.isCurrentRebuild(token) else { return }
+            await orchestrator.setTranscriber(fallback)
+            await orchestrator.setTranscriberReady(true)
+            for engine in idle { await Self.shutdownEngine(engine) }
+        }
     }
 
     private func finishCloudRebuild(slug: String, hasKey: Bool, token: STTRebuildGate.Token) {

@@ -21,7 +21,15 @@ public struct KeychainStore: Sendable {
     /// Defaults address the real API-key item. Tests MUST pass a dedicated
     /// service/account — the defaults would read/overwrite/delete the user's
     /// actual stored key.
-    public init(service: String = "com.jjromano.skylark", account: String = "openrouter-api-key") {
+    /// Keychain account for the OpenRouter key (the original, default item).
+    public static let openRouterAccount = "openrouter-api-key"
+    /// Keychain account for the direct Groq key. A SEPARATE item, not a second
+    /// use of the OpenRouter one: they are different credentials for different
+    /// services, and storing one under the other's name would silently send a
+    /// user's OpenRouter key to Groq the first time they switch engines.
+    public static let groqAccount = "groq-api-key"
+
+    public init(service: String = "com.jjromano.skylark", account: String = KeychainStore.openRouterAccount) {
         self.service = service
         self.account = account
     }

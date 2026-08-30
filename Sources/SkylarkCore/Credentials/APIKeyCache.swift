@@ -24,6 +24,12 @@ public final class APIKeyCache: @unchecked Sendable {
     /// Tests construct their own instance with an injected reader.
     public static let shared = APIKeyCache()
 
+    /// Cache for the DIRECT Groq key. Separate instance over a separate Keychain
+    /// item, for the same reason `KeychainStore.groqAccount` is separate: two
+    /// services, two credentials, and no path by which one is ever sent to the
+    /// other.
+    public static let groq = APIKeyCache(read: { KeychainStore(account: KeychainStore.groqAccount).get() })
+
     private let lock = NSLock()
     /// `nil` = never loaded; `.some(nil)` = loaded, no key stored.
     private var cached: String??

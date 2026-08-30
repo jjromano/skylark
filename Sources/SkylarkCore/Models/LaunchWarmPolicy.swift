@@ -18,7 +18,9 @@ public extension STTChoice {
         case .localParakeet: return .localParakeet
         case .localWhisper: return .localWhisper
         case .localApple: return .localApple
-        case .cloud: return cloudFallback.isLocal ? cloudFallback : .localParakeet
+        // Groq-direct is a cloud engine like any other: it runs behind the same
+        // FallbackTranscriber, so its local fallback must stay warm too.
+        case .cloud, .groqDirect: return cloudFallback.isLocal ? cloudFallback : .localParakeet
         }
     }
 }
