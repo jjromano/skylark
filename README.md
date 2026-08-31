@@ -99,7 +99,7 @@ download progress in the meantime.
 - **Say a snippet trigger** (Settings → Snippets) — saying a saved trigger
   phrase by itself ("my email address") types its replacement instead.
 
-The menu-bar icon (a feather) opens a dropdown with:
+The menu-bar icon (a bird) opens a dropdown with:
 
 - **Status line** — Idle / Listening / Processing, the last dictation's
   end-to-end latency in ms, and today's dictated word count.
