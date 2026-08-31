@@ -15,7 +15,9 @@ watch for.
 - **`make test`, never `swift test`.** `swift test` is a silent no-op on this
   CLT-only box: it builds and exits 0 having run nothing. `make test` runs
   the real swift-testing runner (`swift run SkylarkTestRunner --testing-library
-  swift-testing`); pass `--filter <name>` to scope it.
+  swift-testing`); scope it with `make test TESTFLAGS='--filter <name>'` — a
+  bare `make test --filter <name>` is parsed by make itself, prints make's
+  help and exits 2 without running the test.
 - **The live cleanup eval now fails below baseline**, it doesn't just print:
   `SKYLARK_LIVE_CLEANUP_EVAL=1 make test`. A pass means Skylark's score met or
   beat the recorded baseline, not merely that it ran.

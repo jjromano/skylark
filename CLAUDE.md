@@ -32,7 +32,8 @@ make run                    # build app bundle and launch it
   host, so `swift test` builds the bundle and exits 0 having executed nothing —
   a silent no-op that looks green. Use `make test`, which runs the standalone
   swift-testing runner (`swift run SkylarkTestRunner --testing-library
-  swift-testing`); pass `--filter <name>` to it to run a subset.
+  swift-testing`); scope a run with `make test TESTFLAGS='--filter <name>'`
+  (a bare `make test --filter <name>` is eaten by make itself and runs nothing).
 - Toolchain: Swift 6.2.x via Command Line Tools, macOS 26. Do NOT introduce
   anything requiring xcodebuild or an .xcodeproj.
 - Signing uses the local self-signed "Skylark Dev" cert (`Scripts/make-cert.sh`

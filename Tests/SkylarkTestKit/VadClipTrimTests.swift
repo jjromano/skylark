@@ -342,7 +342,7 @@ struct VadTrimOrchestratorTests {
     /// default-ON decision rests on. Needs the downloaded VAD model; off by
     /// default. Enable with:
     ///
-    ///     SKYLARK_LIVE_VAD_TRIM=1 make test --filter liveScanLatency
+    ///     SKYLARK_LIVE_VAD_TRIM=1 make test TESTFLAGS='--filter liveScanLatency'
     ///
     /// Point `SKYLARK_LIVE_VAD_CLIP` at a 16 kHz WAV to scan real speech instead
     /// of the synthetic burst (region counts are only meaningful then; the latency

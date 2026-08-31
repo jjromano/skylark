@@ -1,5 +1,12 @@
 # Skylark privacy audit — Sources sweep
 
+*Re-verified 2026-08-31 against v0.19.1 (`7ac15c5`) during a full QA pass on the
+Mac mini. That pass found the network inventory below had gone stale by six
+releases: **`api.groq.com` and `api.github.com` were both missing**, and the
+deep-vocabulary row stated the wrong default. All three are corrected in place
+and marked. The §2 log sweep was re-run over the now-116 call sites and still
+holds — see the note at the head of §2.*
+
 *Revised 2026-07-31 against v0.13.0 (this revision corrects the network
 inventory below, which undercounted; see the corresponding CHANGELOG entries
 for the shipped behavior these citations describe). Same-day follow-up pass,
@@ -35,9 +42,17 @@ found anywhere in the tree — re-confirmed by grepping every `URLSession`/
 | Key validation | `OpenRouterClient.validateKey` (`OpenRouterClient.swift:191`), invoked from `APIKeyCard.save()` (`Sources/Skylark/APIKeyEntry.swift:83`) | User saves a key in onboarding or Settings | Only the Bearer key in the request header, to `GET /api/v1/key` |
 | Model download (Parakeet) | `AsrModels.downloadAndLoad` (`Sources/SkylarkCore/Transcription/FluidAudioParakeet.swift:83`) | First local-engine warm-up if the Parakeet model isn't already on disk (`AppController.swift:1156,1960`) | Model weight files from Hugging Face only — no audio, no transcript |
 | Model download (Whisper) | `WhisperKit.download` (`Sources/SkylarkCore/Transcription/WhisperKitWhisper.swift:88`) | First WhisperKit warm-up if the large-v3-turbo checkpoint isn't already on disk (`AppController.swift:1966`) | Model checkpoint files only. `downloadBase` is overridden to `ModelPaths.whisperKitBase` (`ModelPaths.swift:69-71`) instead of WhisperKit's default `Documents/huggingface`, per the ARCHITECTURE §6 note |
-| Model download (deep-vocabulary CTC) | `ModelHub.download` via `FluidAudioDeepVocabularyRescorer.prepareModel` (`Sources/SkylarkCore/Transcription/FluidAudioDeepVocabularyRescorer.swift:73-95`) | User opts into Deep Vocabulary matching (Settings → Dictionary/Models) and the ~98 MB Parakeet CTC-110M helper model isn't already on disk (`AppController.swift:260-267`) | Model weight files (`ctc110m.repo`) from Hugging Face only — no audio, no transcript. Off by default (`AppController.deepVocabKey`) |
+| Model download (deep-vocabulary CTC) | `ModelHub.download` via `FluidAudioDeepVocabularyRescorer.prepareModel` (`Sources/SkylarkCore/Transcription/FluidAudioDeepVocabularyRescorer.swift:73-95`) | User opts into Deep Vocabulary matching (Settings → Dictionary/Models) and the ~98 MB Parakeet CTC-110M helper model isn't already on disk (`AppController.swift:260-267`) | Model weight files (`ctc110m.repo`) from Hugging Face only — no audio, no transcript. **ON by default** (`AppController.swift:252-255` — absent key reads `true`, the
+v0.12.3 re-enable), so on a **fresh install this fetch happens at first launch
+with no user action**; a prior revision of this row said "off by default" and
+described the trigger as a user opt-in, which was wrong. Verified live on
+2026-08-31: a clean launch logged `deep-vocabulary CTC model downloaded` ~11 s
+in, unprompted. A note is shown while it downloads, and a failure disables the
+feature rather than retrying |
 | Model download (Qwen cleanup GGUF) | `URLSession` download task in `CleanupModelDownloader.start` (`Sources/SkylarkCore/Cleanup/Llama/CleanupModelDownloader.swift:46-67`) | User downloads a local Qwen cleanup model from Settings → Models | GGUF weight file only, from a **pinned immutable Hugging Face revision** (not `resolve/main` — `LocalCleanupModel.swift:123,139`), staged and **SHA-256-verified** before an atomic swap-in (`CleanupModelInstaller.swift:79,112-116`); a corrupt or tampered download never replaces a working model |
 | Apple Speech assets (system) | `AssetInventory.assetInstallationRequest`/`.reserve` (`Sources/SkylarkCore/Transcription/SpeechAnalyzerTranscriber.swift:99,110`) | User selects Apple Speech as the STT engine and the on-device language assets aren't yet installed | Handled entirely by the OS's own asset-management daemon, not by any `URLSession` in `Sources/` — Skylark only asks `AssetInventory` to reserve/install; it never sees or controls the transfer. Listed for completeness, not because Skylark code originates the request |
+| **Cloud STT (Groq direct)** | `GroqSpeechClient.transcribe` (`Sources/SkylarkCore/Network/GroqSpeechClient.swift`), invoked from `GroqCloud` (`Sources/SkylarkCore/Transcription/GroqCloud.swift`) | User selects the "Groq direct — Whisper large-v3-turbo" speech engine (Settings → General) and dictates | The recorded audio clip, as raw bytes in a **multipart** body (not base64 in JSON, unlike the OpenRouter path), to `POST https://api.groq.com/openai/v1/audio/transcriptions`. **Added v0.19.0; this row was missing from the inventory until 2026-08-31.** A second cloud vendor and a second destination for user audio. Its key is a **separate Keychain item** (`KeychainStore.groqAccount = "groq-api-key"`), deliberately not shared with the OpenRouter key |
+| **Update check** | `UpdateChecker.check` (`Sources/SkylarkCore/Update/UpdateChecker.swift:81`), invoked from `AppController.checkForUpdates` (`AppController.swift:650`) | **User-initiated only** — the "Check for Updates" button in Settings → Account (`SettingsView.swift:1213`). Nothing calls it at launch or on a timer; grepped for every call site to confirm | `GET https://api.github.com/repos/{owner}/{repo}/commits/{branch}` — an unauthenticated read. No request body, no user data; the local commit SHA is compared client-side and never uploaded. **This row was missing from the inventory until 2026-08-31.** Because it is button-only, it does not breach the PRD §12 "no network in local mode" promise |
 
 Every OpenRouter request also carries a static `HTTP-Referer:
 https://github.com/jjromano/skylark` and `X-OpenRouter-Title: Skylark` header
@@ -68,7 +83,11 @@ no "dictionary" to filter, only the highlighted text itself).
 
 ## 2. Disk/log writes of audio or transcript content
 
-**Re-swept 2026-07-31** (this document's prior "28 call sites" figure was
+**Re-swept 2026-07-31**, and **re-verified 2026-08-31 at v0.19.1**: the count has
+grown from 111 to 116 `logger.`/`Logger(` matches, and the new sites (Groq, the
+v0.17.0 per-stage latency lines) are metadata-only — `GroqSpeechClient.swift:106`
+logs an HTTP status and nothing else. The verdict below still holds. (This
+document's prior "28 call sites" figure was
 stale — it undercounted by 4x). Method: `grep -rn 'logger\.\|Logger('
 Sources/` finds every `Logger(...)` instantiation and every `logger.<level>`
 call; each of the **111 matches, across 20 files**, was read in place with

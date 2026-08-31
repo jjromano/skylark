@@ -11,7 +11,7 @@ import SkylarkCore
 ///
 /// Off by default (it allocates ~100 MB and RSS is machine-noisy):
 ///
-///     SKYLARK_MEM_PROBE=1 make test --filter longCaptureFinalizeFootprint
+///     SKYLARK_MEM_PROBE=1 make test TESTFLAGS='--filter longCaptureFinalizeFootprint'
 @Suite("Long-capture memory probe")
 struct LongCaptureMemoryProbe {
     private func residentMB() -> Double {

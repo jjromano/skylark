@@ -6,6 +6,44 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.19.2 - 2026-08-31
+
+**Skylark no longer crashes when you start a dictation with no microphone
+connected.**
+
+- On a Mac with no usable audio input — a mini or Studio with nothing plugged
+  in, or any Mac whose only mic (AirPods, a USB interface) was unplugged since
+  the last dictation — pressing the key **quit the app instantly**. Not an error
+  message, not a failed dictation: the process died and the menu bar icon
+  vanished, every single time, until you relaunched. Now you get the note you
+  should always have got ("No microphone is available. Connect one, or pick a
+  different input in Settings → Audio") and the app stays running.
+
+  Counter-intuitively, **granting microphone permission is what exposed this** —
+  a denied mic never got far enough to trigger it, so the crash only found users
+  who had already said yes.
+
+- **Scoping a test run works again.** `make test --filter <name>` never ran the
+  filtered test: `make` parsed the flag as its own, printed its help and exited.
+  Three docs and two test files recommended that exact command. Use
+  `make test TESTFLAGS='--filter <name>'`.
+
+- **The on-device cleanup eval no longer reports "regressed" when Apple
+  Intelligence is simply switched off.** It scored 0/29 against a floor of 13
+  and called that a quality regression, sending the reader hunting a prompt
+  change that never happened. It now says the model is unavailable and that no
+  score was produced.
+
+- The Qwen cleanup eval floors were re-based against the 29-example corpus from
+  a live run (4B measured 25/29, 1.7B 14/29); they had been left at counts
+  measured against the old 17-example corpus.
+
+- The privacy audit's network inventory was six releases stale: it was missing
+  **Groq** (`api.groq.com`, which receives your audio when the Groq engine is
+  selected) and the GitHub update check, and it described deep-vocabulary
+  matching as off by default when it ships on and fetches its model on first
+  launch.
+
 ## 0.19.1 - 2026-08-30
 
 **Cleanup now gets 5 seconds by default instead of 2.**

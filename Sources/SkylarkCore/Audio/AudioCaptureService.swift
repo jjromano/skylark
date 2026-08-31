@@ -20,6 +20,24 @@ import os
 /// (`prepare`/`start`/`stop`) are serialized by the owning orchestrator actor
 /// and, since the configuration-change observer can also drive them from an
 /// arbitrary thread, by `lifecycle` (never taken on the audio thread).
+/// Why a `start()` was refused before the engine was ever touched.
+///
+/// Exists so the unrecoverable case is a THROWN Swift error the orchestrator can
+/// turn into a note, rather than the `NSException` AVFAudio would otherwise
+/// raise (which aborts the process — see `installTapAndStart`).
+public enum CaptureStartError: Error, Sendable, Equatable, LocalizedError {
+    /// CoreAudio reports no usable input format: no microphone is connected, or
+    /// the selected one was unplugged.
+    case noInputDevice
+
+    public var errorDescription: String? {
+        switch self {
+        case .noInputDevice:
+            return "No microphone is available. Connect one, or pick a different input in Settings → Audio."
+        }
+    }
+}
+
 public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     public static let targetSampleRate: Double = 16_000
     /// Hard cap on one recording. Kept deliberately (a 2-minute utterance is
@@ -498,6 +516,11 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
 
     // MARK: - Engine wiring
 
+    /// Note the `sampleRate > 0` check below: this path ALREADY knew a
+    /// degenerate input format was reachable and bailed out quietly. What it
+    /// could not do is stop `installTapAndStart` from handing that same
+    /// format to `installTap` a moment later, which is what crashed the app
+    /// until 2026-08-31 — hence the explicit refusal there.
     private func configureConverterIfNeeded() {
         let inputFormat = engine.inputNode.inputFormat(forBus: 0)
         guard inputFormat.sampleRate > 0,
@@ -524,6 +547,32 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         configureConverterIfNeeded()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
+
+        // GUARD THE TAP, NOT JUST THE START. `installTap` validates the format
+        // in Objective-C and raises an **NSException** on a bad one — and a
+        // Swift `do/catch` cannot catch that. It reaches the C++ terminate
+        // handler and calls `abort()`, so the whole app dies instead of
+        // surfacing a note, defeating `start()`'s "degrades gracefully"
+        // contract and the PRD §12 reliability bar. `engine.start()` below is
+        // carefully wrapped; this line was not, and it is the one that raises.
+        //
+        // The trigger is a degenerate input format — sample rate or channel
+        // count of zero — which is what CoreAudio reports when there is no
+        // usable input device: a Mac mini or Studio with nothing plugged in, or
+        // any Mac whose only mic (AirPods, a USB interface) was unplugged since
+        // the last dictation. Microphone permission being GRANTED is what
+        // exposes it, because a denied mic never reaches this line. Found on
+        // 2026-08-31 by driving `skylark://record/start` on a mic-less Mini with
+        // the grant in place: every attempt aborted the process (SIGABRT in
+        // `AVAudioNode installTapOnBus:`).
+        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
+            logger.error("""
+                capture start refused: no usable audio input \
+                (sampleRate \(inputFormat.sampleRate, format: .fixed(precision: 0), privacy: .public), \
+                channels \(inputFormat.channelCount, privacy: .public))
+                """)
+            throw CaptureStartError.noInputDevice
+        }
 
         inputNode.installTap(onBus: 0, bufferSize: 4_096, format: inputFormat) { [weak self] buffer, _ in
             self?.handleTap(buffer)

@@ -33,14 +33,24 @@ struct QwenCleanupEvalTests {
     /// eval must clear, not targets — raise one deliberately when a genuine
     /// quality improvement lifts the bar, never to silence a regression.
     ///
-    /// The corpus grew from 17 to 29 examples at v0.16.0 (pausePunctuation +
-    /// spokenPunctuation categories). These counts (15/17, 7/17) were measured
-    /// against the OLD 17-example corpus and have NOT been re-based against
-    /// the new 29 — they stay as-is (out of the now-larger `examples.count`)
-    /// until measured fresh on the Air; do not edit them to "fix" the ratio.
+    /// RE-BASED 2026-08-31 against the 29-example corpus (the v0.16.0 growth
+    /// from 17 added the pausePunctuation + spokenPunctuation categories).
+    /// Measured live at v0.19.1 on the Mac mini (M4, macOS 26.5, CLT 6.2):
+    ///
+    ///     qwen3-4b-instruct  25/29 exact, avg 535 ms/cleanup
+    ///     qwen3-1.7b         14/29 exact, avg 265 ms/cleanup
+    ///
+    /// The floors sit ONE case below each measured score, not at it. The prior
+    /// floors were set at their measured value, but those were measured on the
+    /// same machine that ran them; these come from the Mini while the numbers
+    /// that matter are the Air's, and llama.cpp's Metal backend can flip a
+    /// borderline example across hardware. One case of slack absorbs that
+    /// without weakening the gate meaningfully — a real cleanup regression
+    /// moves several cases, not one. Tighten to the measured value once an Air
+    /// run confirms it; never lower one to silence a regression.
     private static let baselines: [String: Int] = [
-        "qwen3-4b-instruct": 15,
-        "qwen3-1.7b": 7,
+        "qwen3-4b-instruct": 24,
+        "qwen3-1.7b": 13,
     ]
 
     @Test("LIVE Qwen on-device cleanup eval over the corpus", .enabled(if: Self.enabled))

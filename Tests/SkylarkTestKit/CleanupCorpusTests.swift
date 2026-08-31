@@ -15,7 +15,10 @@ struct CleanupCorpusTests {
     /// spokenPunctuation categories). This count (13) was measured against the
     /// OLD 17-example corpus and has NOT been re-based against the new 29 —
     /// it stays as-is (out of the now-larger `examples.count`) until measured
-    /// fresh on the Air; do not edit it to "fix" the ratio.
+    /// fresh on the Air; do not edit it to "fix" the ratio. (The 2026-08-31 QA
+    /// pass re-based both Qwen floors in `QwenCleanupEvalTests` from a live
+    /// run, but could not touch this one: it needs Apple Intelligence, which
+    /// is off on the Mini build box.)
     private static let appleIntelligenceBaseline = 13
 
     // MARK: - Model-free gate (runs on every change)
@@ -56,11 +59,17 @@ struct CleanupCorpusTests {
         let cleaner = LocalCleaner()
         let ctx = CleanupContext(intensity: .standard)
         var matches = 0
+        var unavailableReason: String?
         var report = "\n===== LOCAL on-device cleanup eval (standard intensity) =====\n"
         for ex in CleanupCorpus.examples {
             let got: String
             do { got = try await cleaner.clean(ex.raw, context: ctx) }
-            catch { got = "<threw: \(error)>" }
+            catch {
+                if case let CleanerError.unavailable(reason) = error {
+                    unavailableReason = reason
+                }
+                got = "<threw: \(error)>"
+            }
             let ok = got == ex.expected
             if ok { matches += 1 }
             report += """
@@ -74,6 +83,19 @@ struct CleanupCorpusTests {
         let count = CleanupCorpus.examples.count
         report += "----- \(matches)/\(count) exact matches -----\n"
         print(report)
+
+        // An unavailable model is an ENVIRONMENT state, not a cleanup
+        // regression, and the two must not produce the same verdict.
+        // Asserting the floor unconditionally reported "regressed: 0/29" on
+        // every Mac with Apple Intelligence switched off, which reads as a
+        // code defect and sends the reader hunting a prompt change that never
+        // happened. Say what is actually true, and do not pretend it ran.
+        if matches == 0, let reason = unavailableReason {
+            print("[cleanup-eval] NOT RUN — the on-device model is unavailable here: \(reason).")
+            print("[cleanup-eval] This is not a quality result. Enable Apple Intelligence and")
+            print("[cleanup-eval] re-run for a real score against the \(Self.appleIntelligenceBaseline)/\(count) floor.")
+            return
+        }
 
         #expect(
             matches >= Self.appleIntelligenceBaseline,
