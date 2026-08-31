@@ -479,6 +479,19 @@ final class AppController {
     /// Settings → General. Stored (not computed) so `@Observable` tracks changes
     /// made via `setCleanupTimeout` — see the hard rule on settings bindings.
     static let cleanupTimeoutKey = "cleanup.timeoutSeconds"
+    /// Default wait before a paste gives up on cleanup.
+    ///
+    /// Raised 2 → 5 at 0.19.1. Two seconds was chosen when cleanup meant the
+    /// on-device model on a fast machine; it is not enough for either a cloud
+    /// round trip or a slower Mac, so in the field it timed out on roughly half
+    /// of one user's dictations. Each of those cost the full two seconds AND
+    /// pasted raw text, which is the worst of both outcomes: the user waited
+    /// and got nothing for it.
+    ///
+    /// Only the DEFAULT moves. The value is written to UserDefaults solely by
+    /// `setCleanupTimeout`, so anyone who deliberately picked 2 s keeps it, and
+    /// only installs that never touched the setting are migrated.
+    static let defaultCleanupTimeoutSeconds = 5
     private(set) var cleanupTimeoutSeconds: Int
     /// Map the seconds setting to the orchestrator's optional cap (0 → nil).
     static func cleanupTimeoutDuration(_ seconds: Int) -> Duration? {
@@ -894,7 +907,8 @@ final class AppController {
             ?? Self.translateDefaultLanguage
         cleanupOverride = UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto"
         cleanupIntensity = CleanupIntensity.persisted()
-        cleanupTimeoutSeconds = (UserDefaults.standard.object(forKey: Self.cleanupTimeoutKey) as? Int) ?? 2
+        cleanupTimeoutSeconds = (UserDefaults.standard.object(forKey: Self.cleanupTimeoutKey) as? Int)
+            ?? Self.defaultCleanupTimeoutSeconds
         vadClipTrimEnabled = VadClipTrimmer.persistedEnabled()
         let storedSilenceSeconds = UserDefaults.standard.object(forKey: Self.handsFreeSilenceSecondsKey) as? Int
         handsFreeSilenceSeconds = FluidAudioVAD.clampedSilenceSeconds(storedSilenceSeconds ?? 2)

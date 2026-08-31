@@ -6,6 +6,19 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.19.1 - 2026-08-30
+
+**Cleanup now gets 5 seconds by default instead of 2.**
+
+- Two seconds was set when cleanup meant the on-device model on a fast Mac. It
+  is not enough for a cloud cleanup round trip, or for a slower machine, and in
+  practice it was timing out on about half of one user's dictations. Every one
+  of those cost the full two seconds and then pasted the raw text anyway, which
+  is the worst of both: you wait, and you get nothing for waiting.
+
+  If you ever picked a timeout yourself, yours is kept. Only installs that never
+  touched the setting move to 5 seconds.
+
 ## 0.19.0 - 2026-08-30
 
 **Cloud dictation can now go straight to Groq, instead of taking whichever
