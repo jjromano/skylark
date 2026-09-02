@@ -7,12 +7,16 @@ struct SkylarkApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        // The user's preferred mark — the stock SF Symbols bird, rendered by
-        // MenuBarExtra itself so it templates correctly in every menu-bar
-        // appearance. (A custom feather and a custom bird silhouette were both
-        // tried and rejected.)
-        MenuBarExtra("Skylark", systemImage: "bird.fill") {
+        // Skylark's own mark, the same artwork the app icon is cut from, so
+        // the Dock and the menu bar show one bird. It is a template image, so
+        // macOS tints it for every menu-bar appearance the way the stock
+        // symbol used to. `SkylarkMark` falls back to `bird.fill` if the asset
+        // is ever missing — a label that fails to draw would look exactly like
+        // a failed launch.
+        MenuBarExtra {
             MenuContent(controller: appDelegate.controller)
+        } label: {
+            Image(nsImage: SkylarkMark.menuBar)
         }
     }
 }

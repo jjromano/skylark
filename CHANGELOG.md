@@ -6,6 +6,25 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.20.0 - 2026-09-02
+
+**Skylark has a real icon.** The Dock and the menu bar now show the same
+bird — a faceted lark, from artwork you supplied — instead of a hand-drawn
+feather in one place and Apple's stock `bird.fill` symbol in the other. They
+had never matched.
+
+- App icon: the mark on a warm paper squircle, rendered at all ten iconset
+  sizes. It still reads as a bird at 16 px in Finder.
+- Menu bar: the same mark as an AppKit template image, so macOS tints it for
+  light and dark menu bars and for the highlighted state exactly like a native
+  status item. Settings' sidebar footer uses it too.
+- Both assets are generated from one source file, `Resources/skylark-mark.png`,
+  by `swift Scripts/make-icon.swift`. There is no longer a way for the two to
+  drift apart.
+- If the bundled glyph is ever missing, the menu bar falls back to `bird.fill`
+  rather than rendering nothing — an undrawable label looks identical to a
+  failed launch.
+
 ## 0.19.2 - 2026-08-31
 
 **Skylark no longer crashes when you start a dictation with no microphone

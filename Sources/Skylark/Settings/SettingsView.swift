@@ -93,7 +93,9 @@ struct SettingsView: View {
 
     private var sidebarFooter: some View {
         HStack(spacing: 6) {
-            Image(systemName: "bird.fill").foregroundStyle(.secondary)
+            Image(nsImage: SkylarkMark.sized(height: 13))
+                .renderingMode(.template)
+                .foregroundStyle(.secondary)
             Text("Skylark \(Bundle.main.shortVersion)")
                 .font(.caption)
                 .foregroundStyle(.secondary)

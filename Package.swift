@@ -73,6 +73,7 @@ let package = Package(
         .executableTarget(
             name: "Skylark",
             dependencies: ["SkylarkCore"],
+            resources: [.process("Resources")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .executableTarget(
