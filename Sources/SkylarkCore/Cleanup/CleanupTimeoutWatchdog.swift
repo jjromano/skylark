@@ -1,20 +1,23 @@
 import Foundation
 
 /// Watches paste-path cleanup outcomes and speaks up when cleanup is timing out
-/// often enough that the timeout setting is costing the user real time for
-/// nothing.
+/// often enough that the wait is costing the user real time for nothing.
 ///
-/// The failure this exists to prevent, observed in the field: a user picked a
-/// 2 s cleanup timeout on a machine where the on-device model needed longer.
-/// Every second dictation then waited the full 2 s and pasted the RAW text
+/// The failure this exists to prevent, observed in the field: on a machine
+/// where the cleanup model needed longer than the pre-paste bound, every second
+/// dictation into a pasting app waited the full bound and pasted the RAW text
 /// anyway — the worst of both worlds, and completely invisible. The per-
 /// dictation "Cleanup didn't finish in time" note is easy to miss and says
-/// nothing about the pattern, so the setting that caused it never got changed.
+/// nothing about the pattern, so the cause never got addressed.
 ///
-/// This deliberately RECOMMENDS rather than acts. Silently raising a latency
-/// setting behind the user's back is the same class of invisible behaviour the
-/// watchdog exists to expose, and the right answer depends on what they want:
-/// a longer wait for cleaned text, or no wait and raw text.
+/// The advice is deliberately about the MODEL, not a timeout setting: the
+/// pre-paste wait is a fixed internal bound (nothing is on screen yet, so it
+/// cannot be stretched to taste), and the user's cleanup timeout governs only
+/// the detached path, which never records here. Telling them to raise a setting
+/// that has no effect on this path would be worse than silence.
+///
+/// This deliberately RECOMMENDS rather than acts: the right answer depends on
+/// what the user wants, a faster model or no wait at all.
 ///
 /// Pure and deterministic — no I/O, no clock, no shared state — so the trigger
 /// rule is unit-testable. The caller owns when to show the recommendation.
@@ -77,22 +80,34 @@ public struct CleanupTimeoutWatchdog: Sendable, Equatable {
     /// Returns a user-facing recommendation the FIRST time the window justifies
     /// one, then nil until `reset()`. `nil` means say nothing.
     ///
-    /// `wastedMs` is the timeout budget, i.e. what each timed-out dictation cost
-    /// for no benefit; naming it is what makes the message actionable rather
-    /// than another vague "cleanup was slow" note.
-    public mutating func recommendationIfNeeded(timeoutSeconds: Int) -> String? {
+    /// `bound` is the pre-paste wait budget, i.e. what each timed-out dictation
+    /// cost for no benefit; naming it is what makes the message actionable
+    /// rather than another vague "cleanup was slow" note.
+    public mutating func recommendationIfNeeded(bound: Duration) -> String? {
         guard !recommended, isTimingOutPersistently else { return nil }
         recommended = true
-        return Self.message(
-            timeouts: timeoutCount, attempts: attemptCount, timeoutSeconds: timeoutSeconds
-        )
+        return Self.message(timeouts: timeoutCount, attempts: attemptCount, bound: bound)
     }
 
-    /// The recommendation text. Names the pattern, the cost, and the two ways
-    /// out — never transcript content.
-    static func message(timeouts: Int, attempts: Int, timeoutSeconds: Int) -> String {
-        "Cleanup timed out on \(timeouts) of your last \(attempts) dictations, "
-            + "costing about \(timeoutSeconds)s each and pasting raw text anyway. "
-            + "Raise the cleanup timeout in Settings, or set cleanup to Raw to stop waiting."
+    /// The recommendation text for the PASTE path. Names the pattern, the cost,
+    /// and the two ways out — never transcript content. There is no detached
+    /// variant because the detached path never records an outcome here: its
+    /// cleanup lands after the text is on screen, so a slow one costs nothing.
+    static func message(timeouts: Int, attempts: Int, bound: Duration) -> String {
+        "Cleanup couldn't finish within \(boundLabel(bound)) on \(timeouts) of your last "
+            + "\(attempts) dictations into apps that paste, so raw text was kept. "
+            + "Pick a faster cleanup model, or set cleanup to Raw for those apps."
+    }
+
+    /// A human label for the bound. Sub-second bounds print as "0.6 s", not the
+    /// "1s" a whole-second rounding would have produced.
+    static func boundLabel(_ bound: Duration) -> String {
+        let ms = Double(bound.components.seconds) * 1000
+            + Double(bound.components.attoseconds) / 1e15
+        let seconds = ms / 1000
+        if seconds >= 1, seconds.rounded() == seconds {
+            return "\(Int(seconds)) s"
+        }
+        return String(format: "%.1f s", seconds)
     }
 }

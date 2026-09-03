@@ -7,8 +7,12 @@ import Testing
 // transcribe/clean/inject window was dropped with no log and no UI, and the
 // text landed anyway. These drive a cancel into each processing stage.
 //
-// P1-10: the pre-paste cleanup ceiling (nothing on screen ⇒ always bounded,
-// even with the Settings timeout set to "Off").
+// P1-10 / D9: the pre-paste cleanup bound (nothing on screen ⇒ always bounded,
+// independent of the Settings cleanup timeout, which governs only the detached
+// path).
+//
+// D8: a cancel that arrives after a fast dictation has already finished lands in
+// `.idle` and must still be answered, not silently dropped.
 
 // MARK: - Doubles
 
@@ -68,13 +72,30 @@ private struct GatedCleaner: Cleaner {
     }
 }
 
-/// Never returns — for the pre-paste ceiling tests.
+/// Never returns — for the pre-paste bound tests.
 private struct HangingCleaner: Cleaner {
-    let tier: CleanupTier = .local
+    var tier: CleanupTier = .local
     func clean(_ transcript: String, context: CleanupContext) async throws -> String {
         try await Task.sleep(for: .seconds(60))
         return transcript
     }
+}
+
+/// Returns cleaned text, but only after `delay` — a cleanup slower than the
+/// pre-paste bound.
+private struct SlowCleaner: Cleaner {
+    var tier: CleanupTier = .local
+    let delay: Duration
+    func clean(_ transcript: String, context: CleanupContext) async throws -> String {
+        try await Task.sleep(for: delay)
+        return "CLEANED"
+    }
+}
+
+/// Cleans instantly — stands in for the local engine the cloud tier degrades to.
+private struct FastCleaner: Cleaner {
+    var tier: CleanupTier = .local
+    func clean(_ transcript: String, context: CleanupContext) async throws -> String { "CLEANED" }
 }
 
 private actor SpyInjector: TextInjecting {
@@ -141,6 +162,24 @@ private func firstNote(
         group.cancelAll()
         return first
     }
+}
+
+/// Every status note yielded within `window`. Notes buffer newest-4, so ones
+/// yielded before collection starts are still delivered.
+private func notes(
+    _ orchestrator: DictationOrchestrator, window: Duration = .milliseconds(200)
+) async -> [String] {
+    let box = NoteBox()
+    let collector = Task { for await note in orchestrator.statusNotes { await box.add(note) } }
+    try? await Task.sleep(for: window)
+    collector.cancel()
+    return await box.all()
+}
+
+private actor NoteBox {
+    private var seen: [String] = []
+    func add(_ note: String) { seen.append(note) }
+    func all() -> [String] { seen }
 }
 
 /// Let detached work (the AX cleanup+replace task) run.
@@ -227,8 +266,8 @@ struct DictationCancelTests {
     @Test("Cancel once the text has landed cannot undo it, and never derails cleanup")
     func cancelAfterInsertionCannotUndo() async {
         // The AX path returns to idle as soon as raw is on screen (the latency
-        // story) and finishes cleanup detached. A cancel arriving here is a
-        // stray Esc against a finished session: silent, and harmless.
+        // story) and finishes cleanup detached. A cancel arriving here is
+        // answered "too late" (D8) and is otherwise harmless.
         let entered = Latch()
         let release = Latch()
         let spy = SpyInjector(direct: true)
@@ -305,6 +344,51 @@ struct DictationCancelTests {
         #expect(await firstNote(orchestrator, timeout: .milliseconds(100)) == nil)
     }
 
+    // D8: `open skylark://record/cancel` takes ~300 ms to be delivered, while a
+    // local dictation finishes in ~180 ms. The cancel therefore lands in `.idle`
+    // routinely — and used to hit a bare `return`: no log, no note, nothing.
+    @Test("A cancel that just missed the finished dictation is answered, once")
+    func lateCancelAfterCompletedDictationIsAnswered() async {
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy
+        )
+
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        await #expect(spy.count() == 1)
+        await #expect(orchestrator.phase == .idle)
+
+        await orchestrator.handle(.cancel)
+
+        let seen = await notes(orchestrator)
+        #expect(seen == [DictationOrchestrator.cancelTooLateNote])
+    }
+
+    @Test("A cancel long after the text landed says nothing")
+    func staleCancelOutsideTheWindowIsSilent() async {
+        // A note about text inserted a minute ago would only confuse, so the
+        // "too late" answer expires.
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            lateCancelWindow: .milliseconds(20)
+        )
+
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        await #expect(spy.count() == 1)
+        try? await Task.sleep(for: .milliseconds(60))
+
+        await orchestrator.handle(.cancel)
+
+        #expect(await notes(orchestrator, window: .milliseconds(100)).isEmpty)
+    }
+
     @Test("The next dictation after a cancelled one works normally")
     func sessionAfterCancelIsClean() async {
         let spy = SpyInjector()
@@ -379,21 +463,24 @@ struct CommandCancelTests {
     }
 }
 
-// MARK: - Pre-paste cleanup ceiling (P1-10)
+// MARK: - Pre-paste cleanup bound (P1-10, D9)
 
-@Suite("Pre-paste cleanup ceiling")
-struct PrePasteCeilingTests {
-    @Test("The cap is the configured timeout, bounded by the ceiling, and never nil")
+@Suite("Pre-paste cleanup bound")
+struct PrePasteBoundTests {
+    @Test("The bound always wins: the cleanup timeout can only shorten the pre-paste wait")
     func capIsAlwaysBounded() async {
         let orchestrator = DictationOrchestrator(
             capture: FakeCapture(clip: makeClip()),
             transcriber: StubTranscriber(),
             injector: SpyInjector(),
-            prePasteCeiling: .seconds(10)
+            prePasteBound: .milliseconds(600)
         )
-        await #expect(orchestrator.prePasteCap(nil) == .seconds(10))         // "Off"
-        await #expect(orchestrator.prePasteCap(.seconds(2)) == .seconds(2))
-        await #expect(orchestrator.prePasteCap(.seconds(30)) == .seconds(10)) // clamped
+        await #expect(orchestrator.prePasteCap(nil) == .milliseconds(600))   // "Off"
+        // The v0.19.1 5 s cleanup timeout must NOT stretch the blank-screen wait.
+        await #expect(orchestrator.prePasteCap(.seconds(2)) == .milliseconds(600))
+        await #expect(orchestrator.prePasteCap(.seconds(5)) == .milliseconds(600))
+        // A shorter setting still shortens it.
+        await #expect(orchestrator.prePasteCap(.milliseconds(100)) == .milliseconds(100))
     }
 
     @Test("Timeout 'Off' no longer blocks the first paste indefinitely")
@@ -405,7 +492,7 @@ struct PrePasteCeilingTests {
             injector: spy,
             cleaners: CleanerRegistry(local: HangingCleaner()),
             modeProvider: modes(defaultTier: .local),
-            prePasteCeiling: .milliseconds(80)
+            prePasteBound: .milliseconds(80)
         )
         await orchestrator.setCleanupTimeout(nil) // Settings → "Off — wait for cleanup"
 
@@ -427,7 +514,7 @@ struct PrePasteCeilingTests {
             injector: spy,
             cleaners: CleanerRegistry(local: HangingCleaner()),
             modeProvider: modes(defaultTier: .local),
-            prePasteCeiling: .milliseconds(10)
+            prePasteBound: .milliseconds(10)
         )
         await orchestrator.setCleanupTimeout(nil)
 
@@ -436,8 +523,78 @@ struct PrePasteCeilingTests {
         await settle()
 
         // Raw is on screen and the detached cleanup is still waiting — the
-        // ceiling must NOT have cut it short into a "raw kept" degrade.
+        // bound must NOT have cut it short into a "raw kept" degrade.
         await #expect(spy.count() == 1)
         await #expect(spy.replaceCount() == 0)
+    }
+
+    @Test("A slow cleaner cannot hold the paste past the bound")
+    func slowCleanerCannotHoldThePaste() async {
+        let spy = SpyInjector() // paste target ⇒ wait-for-clean before inserting
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: SlowCleaner(delay: .seconds(5))),
+            modeProvider: modes(defaultTier: .local),
+            prePasteBound: .milliseconds(80)
+        )
+        // The user's cleanup timeout is generous; the bound must ignore it.
+        await orchestrator.setCleanupTimeout(.seconds(5))
+
+        let start = ContinuousClock.now
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        let elapsed = start.duration(to: ContinuousClock.now)
+
+        await #expect(spy.count() == 1)
+        await #expect(spy.first() == StubTranscriber.output) // raw, not "CLEANED"
+        // Without the bound this would have taken the cleaner's full 5 s. The
+        // slack is generous on purpose: the suite runs highly parallel, so a
+        // tight wall-clock assertion here would be flaky rather than strict.
+        #expect(elapsed < .seconds(1))
+    }
+
+    @Test("The cloud→local fallback still runs while the bound has room left")
+    func localFallbackRunsWithBudgetLeft() async {
+        // Control for the test below: same wedged cloud tier, but the primary
+        // burns only 30 ms of a 1 s bound, so the local rescue gets its turn.
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: FastCleaner(), cloud: ["slow": HangingCleaner(tier: .cloud(slug: "slow"))]),
+            modeProvider: modes(defaultTier: .cloud(slug: "slow")),
+            prePasteBound: .seconds(1)
+        )
+        await orchestrator.setCleanupTimeout(.milliseconds(30))
+
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+
+        await #expect(spy.first() == "CLEANED")
+    }
+
+    @Test("The local fallback is skipped once the bound is spent")
+    func localFallbackSkippedWhenBoundIsSpent() async {
+        // Identical setup, except the primary burns the WHOLE bound. Starting a
+        // second generation now would push the blank-screen wait past it, so the
+        // fallback must not run — raw stands instead of the "CLEANED" the
+        // control above proves the local engine would have produced.
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: FastCleaner(), cloud: ["slow": HangingCleaner(tier: .cloud(slug: "slow"))]),
+            modeProvider: modes(defaultTier: .cloud(slug: "slow")),
+            prePasteBound: .milliseconds(40)
+        )
+
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+
+        await #expect(spy.first() == StubTranscriber.output)
     }
 }

@@ -41,6 +41,10 @@ watch for.
   --level debug` — use the full path; plain `log` is a zsh builtin on this
   shell and resolves to the wrong thing.
 - **History:** `sqlite3 ~/Library/Application\ Support/Skylark/skylark.sqlite`.
+- **Status notes are visible in the HUD pill (the floating capsule under the
+  notch) for 5 s, as well as in the menu-bar dropdown.** When a step below
+  says "the note reads …", read it off the pill with the dropdown closed —
+  don't open the dropdown to find it, that isn't the surface most users see.
 
 ## 0. Onboarding + permissions (the most important section — read this first)
 
@@ -133,16 +137,28 @@ that recorded until manually stopped. A single test cannot catch this.
 
 - [ ] Esc while the key is still held / during active recording → cancels
       immediately, nothing pastes, nothing saved to History.
-- [ ] **Cancel during processing.** Release the hotkey to enter Processing,
-      then immediately fire `open skylark://record/cancel`. Pass: no History
-      row is created, log shows "dictation cancelled during <stage>" (stage
-      being whatever pipeline step was in flight — transcription or
-      cleanup), and nothing is typed anywhere.
-- [ ] **Too-late cancel.** Fire the same cancel deep link deliberately late —
-      after text has already landed at the cursor. Pass: nothing is undone
-      (text stays as pasted) and the note reads "Too late to cancel — text
-      already inserted". Fail: silence (no note) or the already-pasted text
-      gets clobbered.
+- [ ] **Cancel during processing (deep link).** Release the hotkey to enter
+      Processing, then immediately fire `open skylark://record/cancel`. The
+      local pipeline finishes in ~180 ms while the deep link takes ~300 ms to
+      arrive, so on a fast local engine the cancel will usually land AFTER
+      the write — that's expected, not a bug. Pass: EITHER no History row +
+      log shows "dictation cancelled during <stage>" (stage being whatever
+      pipeline step was in flight — transcription or cleanup) + nothing
+      typed anywhere, OR the text stays as pasted and the note "Too late to
+      cancel — text already inserted" appears in the pill and the dropdown.
+      Fail: silence — text landed and no note at all — which means neither
+      path fired.
+- [ ] **Esc during processing needs a human.** Esc is a much lower-latency
+      path than the deep link and can land inside the ~100 ms cancel window
+      where a deep link cannot; the deep-link test above can't prove this
+      case, so also fire Esc immediately on release and confirm it cancels
+      (no History row, "dictation cancelled during <stage>" in the log,
+      nothing typed).
+- [ ] **Too-late cancel (well past the write).** Fire the cancel deep link
+      more than 2 s after the text has already landed at the cursor. Pass:
+      nothing is undone (text stays as pasted), nothing is shown by design,
+      and the log reads "cancel ignored — nothing in progress". Fail: a note
+      appears, or the already-pasted text gets clobbered.
 
 ## 4. Focus guard + press-Enter safety
 
@@ -169,10 +185,16 @@ that recorded until manually stopped. A single test cannot catch this.
 
 ## 5. Clipboard restore (PRD §10)
 
-- [ ] Copy an image or rich text (e.g. from Preview/Safari). Dictate into a
-      paste-fallback app (Terminal is a good candidate). After the paste,
-      paste again manually (Cmd-V) somewhere → your ORIGINAL clipboard
-      content must come back intact.
+- [ ] Copy an image or rich text (e.g. from Preview/Safari). Dictate into
+      **Terminal running `cat > /tmp/skylark-paste.txt`** — a bare shell
+      prompt can itself accept AX insertion, so `cat >` waiting on stdin is
+      the target that actually forces the clipboard path to run. TextEdit is
+      NOT a valid target for this step: it takes AX insertion and the
+      clipboard path never runs there. Check the log for that dictation: it
+      must show `inject: paste` and `clipboard restored:` — if it shows
+      `inject: ax`, the step tested nothing and must be redone. After the
+      paste, paste again manually (Cmd-V) somewhere → your ORIGINAL
+      clipboard content must come back intact.
 - [ ] **Restore-vs-new-copy race (the v0.13.0 fix).** Dictate into a paste
       target (Terminal works), and the INSTANT the paste lands, copy
       something new (Cmd-C a different piece of text) before Skylark's

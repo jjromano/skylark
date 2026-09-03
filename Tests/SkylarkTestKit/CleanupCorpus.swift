@@ -126,5 +126,16 @@ public enum CleanupCorpus {
         .init("spokenPunctuation/semicolon",
               raw: "the tests pass semicolon the build is green",
               expected: "The tests pass; the build is green."),
+
+        // Added for D12: the speech engine's own inverse-text-normalization
+        // already turns spoken "dot" into ".", but leaves "slash" and "at" as
+        // words — a half-formatted address that looks converted and isn't.
+        // `SpokenAddresses.format` closes the gap; see `SpokenAddressesTests`.
+        .init("spokenAddress/url",
+              raw: "you can find the source code on github.com slash jjromano slash skylark",
+              expected: "You can find the source code on github.com/jjromano/skylark."),
+        .init("spokenAddress/email",
+              raw: "please send the invoice to jjromano at example.com",
+              expected: "Please send the invoice to jjromano@example.com."),
     ]
 }

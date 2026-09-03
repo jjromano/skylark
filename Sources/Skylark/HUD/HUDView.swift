@@ -10,7 +10,14 @@ struct HUDView: View {
     var onOpenSettings: () -> Void
 
     private var size: CGSize {
-        HUDMetrics.size(for: model.state, hovering: model.isHovering, style: model.style)
+        HUDMetrics.size(for: model.state, hovering: model.isHovering, style: model.style, note: model.note != nil)
+    }
+
+    /// The note to render in place of the state content, if one is pending and
+    /// this state lets it through (never while the mic is open).
+    private var visibleNote: String? {
+        guard let note = model.note, HUDMetrics.showsNote(in: model.state) else { return nil }
+        return note
     }
 
     private var isMinimal: Bool { model.style == .minimal }
@@ -29,6 +36,7 @@ struct HUDView: View {
             )
             .animation(.easeInOut(duration: 0.12), value: model.state)
             .animation(.easeInOut(duration: 0.12), value: model.isHovering)
+            .animation(.easeInOut(duration: 0.12), value: model.note)
             .onHover { hovering in
                 // Don't collapse the expanded controls while recording.
                 if !model.isRecording { model.isHovering = hovering }
@@ -43,6 +51,34 @@ struct HUDView: View {
 
     @ViewBuilder
     private var content: some View {
+        if let note = visibleNote {
+            noteContent(note)
+        } else {
+            stateContent
+        }
+    }
+
+    /// Status note inside the fixed `HUDMetrics.noteSize` box: two lines at
+    /// most, tail-truncated. The frame never follows the text.
+    private func noteContent(_ note: String) -> some View {
+        HStack(alignment: .center, spacing: 8) {
+            Image(systemName: "exclamationmark.circle.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.orange)
+            Text(note)
+                .font(.system(size: 11))
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 12)
+        .clipped()
+    }
+
+    @ViewBuilder
+    private var stateContent: some View {
         switch model.state {
         case .idle:
             if model.isHovering {

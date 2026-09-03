@@ -147,6 +147,25 @@ struct CleanupHygieneTests {
             retentionFloor: 0.55, contentLossFloor: 0.60) == "$1.99")
     }
 
+    // The mirror image of the test above, and the v0.20.x defect: the on-device
+    // tier returned "$1.09" for "one dollar and ninety nine cents" — a DIFFERENT
+    // amount, which no other guard can see (every word survives, the number-unit
+    // count is unchanged, and numbers are excluded from the ratios). A changed
+    // figure is worse than an unformatted one, so raw must stand. Full coverage
+    // lives in `NumericFaithfulnessTests`.
+    @Test("A changed figure is rejected (formatting is allowed, altering an amount is not)")
+    func changedFigureRejected() {
+        #expect(throws: CleanerError.self) {
+            try CleanupHygiene.validate("It costs $1.09.", transcript: "it costs one dollar and ninety nine cents")
+        }
+        #expect(throws: CleanerError.self) {
+            try CleanupHygiene.validate("The fee is $21.00.", transcript: "the fee is twenty dollars and ten cents")
+        }
+        #expect(throws: CleanerError.self) {
+            try CleanupHygiene.validate("We have 24 open tickets.", transcript: "we have twenty three open tickets")
+        }
+    }
+
     @Test("A spoken number fused into a word (A ten G → A10G) must not be rejected")
     func digitFusedIntoWordPasses() throws {
         let raw = "i need to reserve an a ten g gpu"

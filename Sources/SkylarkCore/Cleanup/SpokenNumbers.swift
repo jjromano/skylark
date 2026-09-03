@@ -269,6 +269,122 @@ public enum SpokenNumbers {
         return String(v)
     }
 
+    // MARK: - Licensing (numeric-faithfulness guard)
+
+    /// Every figure the *content* of `text` licenses, as digit strings, in the
+    /// order they appear: one entry per spoken cardinal ("twenty three" → "23"),
+    /// one per spoken ordinal ("fifth" → "5", "twenty first" → "21"), and one per
+    /// digit literal already written in the text ("4521"). A run of number words
+    /// contributes each unit it parses as, so "one dollar and ninety nine cents"
+    /// yields ["1", "99"] — the pieces a cleanup may legitimately recombine into
+    /// "$1.99".
+    ///
+    /// Read by `CleanupHygiene`'s numeric-faithfulness guard only, and
+    /// deliberately GENEROUS (it ignores the connector-gap rule `format` obeys and
+    /// treats ordinals as numbers): over-licensing merely lets an odd-but-honest
+    /// formatting through, while under-licensing would throw a good cleanup away.
+    /// `format` is untouched by any of this.
+    static func licensedNumberStrings(in text: String) -> [String] {
+        var out: [String] = []
+        var run: [String] = []
+        func flushWords() {
+            guard !run.isEmpty else { return }
+            out.append(contentsOf: numberStrings(inWordRun: run))
+            run.removeAll(keepingCapacity: true)
+        }
+        for token in tokenize(text) {
+            if token.isWord {
+                run.append(token.text.lowercased())
+            } else {
+                let literals = digitLiterals(in: token.text)
+                if !literals.isEmpty {
+                    flushWords()
+                    out.append(contentsOf: literals)
+                } else if token.text.contains(where: { Self.clauseBreak.contains($0) }) {
+                    // A sentence or clause boundary ends the number run, so
+                    // "down to twenty. One item failed" licenses 20 and 1, never
+                    // 21 — otherwise a hallucinated figure could be licensed by
+                    // words that were never spoken together.
+                    flushWords()
+                }
+            }
+        }
+        flushWords()
+        return out
+    }
+
+    /// Punctuation that separates clauses for `licensedNumberStrings`. Commas
+    /// are deliberately absent: STT occasionally drops one inside a spoken
+    /// figure, and under-licensing throws a correct cleanup away.
+    private static let clauseBreak: Set<Character> = [".", "?", "!", ";", ":", "\n"]
+
+    /// The numeric literals written in `text`, as normalized digit strings:
+    /// maximal digit runs, keeping a decimal point that sits between digits and
+    /// dropping thousands commas ("$1,250.30." → ["1250.30"], "3:30" → ["3",
+    /// "30"], "A10G" → ["10"], "v1.2.3" → ["1.2.3"]).
+    static func digitLiterals(in text: String) -> [String] {
+        var out: [String] = []
+        var current = ""
+        var pendingDot = false
+        for ch in text {
+            if ch.isASCII, ch.isNumber {
+                if pendingDot { current.append("."); pendingDot = false }
+                current.append(ch)
+            } else if ch == ",", !current.isEmpty, !pendingDot {
+                continue // thousands separator between digits: join across it
+            } else if ch == ".", !current.isEmpty, !pendingDot {
+                pendingDot = true // decimal point, but only if a digit follows
+            } else {
+                if !current.isEmpty { out.append(current); current = "" }
+                pendingDot = false
+            }
+        }
+        if !current.isEmpty { out.append(current) }
+        return out
+    }
+
+    /// Parse a whole run of words left to right, emitting one digit string per
+    /// number (cardinal or ordinal) found and skipping everything else.
+    private static func numberStrings(inWordRun words: [String]) -> [String] {
+        var out: [String] = []
+        var k = 0
+        while k < words.count {
+            // Ordinals first, so "twenty first" reads as 21 rather than 20 + 1.
+            if let (value, consumed) = parseOrdinal(words, k), consumed > 0 {
+                out.append(String(value))
+                k += consumed
+            } else if let (value, consumed) = parseCardinal(words, k), consumed > 0 {
+                out.append(String(value))
+                k += consumed
+            } else {
+                k += 1
+            }
+        }
+        return out
+    }
+
+    /// Parse a spoken ordinal ("third", "twenty first") from `w[start...]`.
+    private static func parseOrdinal(_ w: [String], _ start: Int) -> (value: Int, consumed: Int)? {
+        guard start < w.count else { return nil }
+        if let tens = tensMap[w[start]], start + 1 < w.count,
+           let unit = ordinalsMap[w[start + 1]], unit >= 1, unit <= 9 {
+            return (tens + unit, 2)
+        }
+        if let value = ordinalsMap[w[start]] { return (value, 1) }
+        return nil
+    }
+
+    /// Spoken ordinals. Licensing-only: `format` never rewrites an ordinal.
+    private static let ordinalsMap: [String: Int] = [
+        "zeroth": 0, "first": 1, "second": 2, "third": 3, "fourth": 4,
+        "fifth": 5, "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9,
+        "tenth": 10, "eleventh": 11, "twelfth": 12, "thirteenth": 13,
+        "fourteenth": 14, "fifteenth": 15, "sixteenth": 16, "seventeenth": 17,
+        "eighteenth": 18, "nineteenth": 19, "twentieth": 20, "thirtieth": 30,
+        "fortieth": 40, "fiftieth": 50, "sixtieth": 60, "seventieth": 70,
+        "eightieth": 80, "ninetieth": 90, "hundredth": 100, "thousandth": 1_000,
+    ]
+
     // MARK: - Tokenization helpers
 
     /// Split into maximal runs of letters (words) alternating with maximal runs

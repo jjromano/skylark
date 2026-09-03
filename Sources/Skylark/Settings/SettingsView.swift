@@ -9,7 +9,11 @@ import SwiftUI
 struct SettingsView: View {
     @Bindable var controller: AppController
     let client: OpenRouterClient
-    @State private var selection: Pane? = .general
+    /// Opens on General, unless headless QA asks for a specific pane by name
+    /// (`SKYLARK_SETTINGS_PANE=models`, set via `open --env`) — a machine
+    /// without Accessibility access cannot click the sidebar.
+    @State private var selection: Pane? =
+        Pane(rawValue: ProcessInfo.processInfo.environment["SKYLARK_SETTINGS_PANE"] ?? "") ?? .general
 
     enum Pane: String, Hashable, Identifiable, CaseIterable {
         case general, insights, models, audio, dictionary, snippets, modes, history, account
@@ -776,6 +780,7 @@ private struct ModelsPane: View {
                 ForEach(LocalCleanupModel.all) { model in
                     QwenCleanupModelRow(controller: controller, model: model)
                 }
+                LocalCleanupComparisonGrid()
             } header: {
                 Text("Cleanup · on device")
             } footer: {
@@ -1035,6 +1040,44 @@ private struct QwenCleanupModelRow: View {
     }
 }
 
+/// Compact quality/latency/footprint table for the three local cleanup
+/// tiers, shown under the "Cleanup · on device" rows so a user can see why
+/// they might opt up to Qwen3 4B despite the bigger download. Numbers come
+/// from `ModelInfo.LocalCleanupComparison` (measured, not guessed).
+private struct LocalCleanupComparisonGrid: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
+                GridRow {
+                    Text("Model").font(.caption).foregroundStyle(.secondary)
+                    Text("Accuracy").font(.caption).foregroundStyle(.secondary)
+                    Text("Speed").font(.caption).foregroundStyle(.secondary)
+                    Text("Download").font(.caption).foregroundStyle(.secondary)
+                    Text("Memory").font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(ModelInfo.LocalCleanupComparison.rows, id: \.name) { row in
+                    GridRow {
+                        Text(row.name).font(.caption)
+                        Text("\(row.exactMatches) / \(ModelInfo.LocalCleanupComparison.corpusSize)")
+                            .font(.caption).monospacedDigit()
+                        Text("~\(row.avgLatencySeconds, specifier: "%.1f") s")
+                            .font(.caption).monospacedDigit()
+                        Text(row.downloadBytes.map(SettingsFormat.bytes) ?? "none")
+                            .font(.caption).monospacedDigit()
+                        Text(row.residentMemoryGB > 0 ? "~\(row.residentMemoryGB, specifier: "%.1f") GB" : "shared")
+                            .font(.caption).monospacedDigit()
+                    }
+                }
+            }
+            Text("Accuracy is exact matches on Skylark's 29-case cleanup test set; speed is the average per cleanup. Apple Intelligence needs no download and is the default; Qwen3 4B is faster and more accurate but uses about 3 GB of memory while loaded.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 /// Read-only informational row for a model that isn't downloadable/deletable
 /// here — either a cloud (OpenRouter) model or an OS-provided one like Apple
 /// Intelligence. No download/delete affordances.
@@ -1122,6 +1165,16 @@ private struct AudioPane: View {
         controller.inputDevices.first { $0.uid == controller.selectedDeviceUID }
     }
 
+    /// UID of a chosen-but-missing mic. The Picker needs an explicit row for it:
+    /// a selection matching no tag renders BLANK, which would silently erase the
+    /// user's choice from the UI while we're still holding on to it.
+    private var missingDeviceUID: String? {
+        guard let uid = controller.selectedDeviceUID, !uid.isEmpty,
+              !controller.selectedDeviceAvailable
+        else { return nil }
+        return uid
+    }
+
     var body: some View {
         Form {
             Section("Input device") {
@@ -1134,6 +1187,19 @@ private struct AudioPane: View {
                         Text(device.isBluetooth ? "\(device.name) (Bluetooth)" : device.name)
                             .tag(device.uid)
                     }
+                    if let uid = missingDeviceUID {
+                        Text("\(controller.selectedDeviceName ?? uid) (unavailable)")
+                            .tag(uid)
+                    }
+                }
+
+                if missingDeviceUID != nil {
+                    Label(
+                        "This microphone is not connected. Skylark is recording from the system default until it returns.",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.orange)
                 }
 
                 if let device = selectedDevice, device.isBluetooth {

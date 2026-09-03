@@ -418,6 +418,66 @@ struct PersistenceTests {
         #expect(refreshedRow.providerPin == seedEntry.providerPin)
     }
 
+    @Test("Registry syncSeed adopts a pre-`seeded`-column row via its legacy label")
+    func registrySyncSeedAdoptsLegacyLabeledRow() async throws {
+        let db = try makeDB()
+        let store = RegistryStore(db: db)
+        // Ensure the `seeded` column exists (as it would on a real, already-
+        // migrated install) without inserting any seed rows yet, so the raw
+        // insert below doesn't collide with a primary key.
+        _ = try await store.all(kind: .stt)
+
+        // Simulate a REAL install whose whisper row predates the `seeded`
+        // column (added later, DEFAULT 0): seeded=0 even though it's a
+        // genuine seed row, still carrying the label the seed shipped before
+        // 0.19.0 renamed it (`ModelRegistryEntry.legacyLabels`).
+        try await db.dbQueue.write { conn in
+            try conn.execute(
+                sql: """
+                INSERT INTO model_registry (slug, label, provider_pin, kind, sort, seeded)
+                VALUES ('openai/whisper-large-v3-turbo', 'Groq Fast Whisper', NULL, 'stt', 0, 0)
+                """
+            )
+        }
+
+        try await store.syncSeed()
+
+        let stt = try await store.all(kind: .stt)
+        let whisper = try #require(stt.first { $0.slug == "openai/whisper-large-v3-turbo" })
+        #expect(whisper.label == "Whisper large-v3-turbo")
+    }
+
+    @Test("Registry syncSeed leaves a genuinely user-created row alone even if unseeded")
+    func registrySyncSeedDoesNotAdoptNonLegacyLabel() async throws {
+        let db = try makeDB()
+        let store = RegistryStore(db: db)
+        let seedSlug = try #require(ModelRegistryEntry.seed.first {
+            $0.kind == .cleanup && ModelRegistryEntry.legacyLabels[$0.slug] == nil
+        }).slug
+        // Ensure the `seeded` column exists without inserting any seed rows
+        // yet, so the raw insert below doesn't collide with a primary key.
+        _ = try await store.all(kind: .cleanup)
+
+        // A seed slug carrying a label that was NEVER one of that slug's seed
+        // labels — indistinguishable from a genuine user edit, so it must
+        // never be adopted/overwritten even though `seeded == 0`.
+        try await db.dbQueue.write { conn in
+            try conn.execute(
+                sql: """
+                INSERT INTO model_registry (slug, label, provider_pin, kind, sort, seeded)
+                VALUES (?, 'My Custom Label', NULL, 'cleanup', 42, 0)
+                """,
+                arguments: [seedSlug]
+            )
+        }
+
+        try await store.syncSeed()
+
+        let cleanup = try await store.all(kind: .cleanup)
+        let row = try #require(cleanup.first { $0.slug == seedSlug })
+        #expect(row.label == "My Custom Label")
+    }
+
     // MARK: - ModeStore
 
     @Test("Mode seedIfEmpty seeds Default (local, isDefault) and Raw; idempotent")

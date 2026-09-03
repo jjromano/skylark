@@ -430,13 +430,15 @@ do not need it.
 
 ## 8. Then go past the checklist
 
-`docs/validation-checklist.md` covers the happy paths. **Run it as the floor**,
-with one caveat: it was last updated 2026-07-05 and covers none of Command Mode,
-the focus guard, press-Enter, Qwen cleanup, translation, snippets, deep
-vocabulary, diagnostics export, or update checking. Note any step that is now
-wrong, ambiguous, or that you could check off without verifying the thing it
-claims to verify. Its §2 clipboard step is a known example: if the target accepts
-AX insertion, the clipboard path never runs and the box still gets checked.
+`docs/validation-checklist.md` covers the happy paths. **Run it as the floor.**
+It has grown since 2026-07-05 and now has sections for Command Mode (§13), the
+focus guard and press-Enter (§4), Qwen cleanup (§12), translation (§15),
+snippets (§14), deep vocabulary (§9), diagnostics export (§17), and update
+checking (§18); the cloud dictionary filter lives under §8. Note any step that
+is still wrong, ambiguous, or that you could check off without verifying the
+thing it claims to verify. Its §5 clipboard step is a known example: if the
+target accepts AX insertion, the clipboard path never runs and the box still
+gets checked.
 
 Beyond that:
 

@@ -78,22 +78,60 @@ final class HUDPanelController {
     /// Re-fit the panel to its content, re-clamp its position, and apply the
     /// style-driven visibility (hidden style / hidden idle pill order out).
     func refreshLayout() {
+        let hasNote = model.note != nil
         let visible = HUDMetrics.isVisible(
             state: model.state,
             hovering: model.isHovering,
             style: model.style,
             showIdlePill: model.showIdlePill,
-            isPreparing: model.isPreparing
+            isPreparing: model.isPreparing,
+            note: hasNote
         )
         guard visible else {
             panel.orderOut(nil)
             return
         }
-        let size = HUDMetrics.size(for: model.state, hovering: model.isHovering, style: model.style)
+        let size = HUDMetrics.size(for: model.state, hovering: model.isHovering, style: model.style, note: hasNote)
         // +4 accounts for the 2pt padding around the pill in HUDView.
         panel.setContentSize(CGSize(width: size.width + 4, height: size.height + 4))
         reposition()
         panel.orderFrontRegardless()
+        snapshotIfRequested()
+    }
+
+    // MARK: - Diagnostics snapshot (opt-in, headless QA)
+
+    /// `SKYLARK_HUD_SNAPSHOT_DIR=<dir>` in the app's environment (`open --env`)
+    /// writes a PNG of the pill's hosting view after every layout, named with
+    /// the panel's frame size, so a machine without Screen Recording access
+    /// can still prove what the pill rendered and that its frame never
+    /// followed a note's length. Off unless the variable is set; never runs
+    /// on the audio or paste path.
+    private static let snapshotDirectory: URL? = {
+        guard let dir = ProcessInfo.processInfo.environment["SKYLARK_HUD_SNAPSHOT_DIR"], !dir.isEmpty else { return nil }
+        return URL(fileURLWithPath: dir, isDirectory: true)
+    }()
+    private var snapshotCounter = 0
+
+    private func snapshotIfRequested() {
+        guard let dir = Self.snapshotDirectory else { return }
+        snapshotCounter += 1
+        let index = snapshotCounter
+        // Let SwiftUI lay the new content out before reading pixels.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            guard let self else { return }
+            let view = self.hosting.view
+            let frame = self.panel.frame
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            guard let png = rep.representation(using: .png, properties: [:]) else { return }
+            let name = String(format: "hud-%03d-%dx%d.png", index, Int(frame.width), Int(frame.height))
+            do {
+                try png.write(to: dir.appendingPathComponent(name))
+            } catch {
+                NSLog("HUD snapshot write failed: %@", error.localizedDescription)
+            }
+        }
     }
 
     @objc private func screenParametersChanged() {

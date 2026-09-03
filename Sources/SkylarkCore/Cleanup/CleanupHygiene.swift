@@ -96,6 +96,12 @@ public enum CleanupHygiene {
             if dropsNumberUnit(from: transcript, to: cleaned) {
                 throw CleanerError.unusableOutput
             }
+            // A figure the raw doesn't license means the model CHANGED an amount
+            // ("one dollar and ninety nine cents" → "$1.09"). Silently wrong
+            // numbers are worse than an uncleaned transcript, so raw stands.
+            if fabricatesFigure(in: cleaned, from: transcript) {
+                throw CleanerError.unusableOutput
+            }
             if divergesFrom(transcript, cleaned: cleaned, retentionFloor: retentionFloor) {
                 throw CleanerError.unusableOutput
             }
@@ -128,7 +134,14 @@ public enum CleanupHygiene {
         // unreliable here). Runs only on already-trusted output, and is
         // idempotent, so digits the model formatted correctly are untouched.
         // (English number words don't appear in a translated result either.)
-        return SpokenNumbers.format(repaired)
+        // Same treatment for spoken URLs/emails ("slash", "at", and "dot" as a
+        // safety net) — D12: models convert "dot" via their own ITN but leave
+        // "slash"/"at" as words, producing a half-formatted address that looks
+        // done and isn't. Runs after `SpokenNumbers` so an address containing
+        // digits ("user2@example.com") is joined from already-trusted digits,
+        // not re-examined by any guard above (guards run once, before both
+        // repairs).
+        return SpokenAddresses.format(SpokenNumbers.format(repaired))
     }
 
     // MARK: - Guards
@@ -272,6 +285,121 @@ public enum CleanupHygiene {
         if token.contains(where: { $0.isNumber }) { return true }
         let letters = token.filter { $0.isLetter }
         return !letters.isEmpty && numberWords.contains(letters)
+    }
+
+    // MARK: - Numeric faithfulness
+
+    /// True when the cleaned text states a figure the raw transcript does not
+    /// license — the model silently CHANGED an amount rather than formatting it
+    /// ("it costs one dollar and ninety nine cents" → "It costs $1.09.", observed
+    /// on the on-device tier). The other guards can't see this: the words are all
+    /// there, the number-unit count is unchanged, and numbers are excluded from
+    /// the vocabulary/count ratios. A wrong figure is worse than an unformatted
+    /// one, so a fabricated number sends the whole cleanup back to raw.
+    ///
+    /// Deliberately biased toward ACCEPTING: every digit-bearing literal in the
+    /// cleaned text passes if it matches, verbatim or by value, something the raw
+    /// licenses (a digit already written there, `SpokenNumbers.format(raw)`, any
+    /// number the raw's spoken words parse to, or several consecutive such units
+    /// read as one figure — "twenty twenty six" → "2026"). List markers at the
+    /// start of a line are exempt, digits fused into words ("A10G", "3rd") and
+    /// component-separated figures ("3:30") are checked component-by-component.
+    static func fabricatesFigure(in cleaned: String, from raw: String) -> Bool {
+        // No digits at all: nothing to check, and the common case — stay cheap.
+        guard cleaned.contains(where: { $0.isASCII && $0.isNumber }) else { return false }
+        let license = numericLicense(for: raw)
+        for line in cleaned.split(separator: "\n", omittingEmptySubsequences: false) {
+            let body = droppingListMarker(line)
+            for literal in SpokenNumbers.digitLiterals(in: String(body)) where !license.allows(literal) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// The figures a transcript licenses: exact digit strings plus their numeric
+    /// values (so "1250.30" also licenses "1,250.3").
+    private struct NumericLicense {
+        var strings: Set<String> = []
+        var values: Set<Double> = []
+
+        mutating func license(_ s: String) {
+            guard !s.isEmpty else { return }
+            strings.insert(s)
+            if let v = Double(s) { values.insert(v) }
+        }
+
+        func allows(_ literal: String) -> Bool {
+            if strings.contains(literal) { return true }
+            if let value = Double(literal) { return values.contains(value) }
+            // Not a single number ("1.2.3"): every component must be licensed.
+            let parts = literal.split(separator: ".")
+            guard parts.count > 1 else { return false }
+            return parts.allSatisfy { part in
+                strings.contains(String(part))
+                    || (Double(part).map { values.contains($0) } ?? false)
+            }
+        }
+    }
+
+    /// Longest run of consecutive number units that may be read as one figure —
+    /// covers a spoken phone number ("five five five one two one two").
+    private static let maxLicensedUnitRun = 8
+
+    private static func numericLicense(for raw: String) -> NumericLicense {
+        var license = NumericLicense()
+        // Units the raw's own words and digits license, in spoken order, plus the
+        // figures the deterministic formatter would produce from the same raw.
+        let spoken = SpokenNumbers.licensedNumberStrings(in: raw)
+        let formatted = SpokenNumbers.digitLiterals(in: SpokenNumbers.format(raw))
+        for s in spoken { license.license(s) }
+        for s in formatted { license.license(s) }
+        // Consecutive units read as one figure: "twenty twenty six" → "2026",
+        // "five five five one two one two" → "5551212".
+        for sequence in [spoken, formatted] {
+            for i in sequence.indices where isPureDigits(sequence[i]) {
+                var accumulated = sequence[i]
+                var j = i + 1
+                while j < sequence.count, j - i < maxLicensedUnitRun, isPureDigits(sequence[j]) {
+                    accumulated += sequence[j]
+                    license.license(accumulated)
+                    j += 1
+                }
+            }
+        }
+        // A spoken scale word licenses the scaled figure too, since the model may
+        // write it out in full ("one point five million" → "1,500,000").
+        var multipliers: [Double] = []
+        let lower = raw.lowercased()
+        if lower.contains("thousand") { multipliers.append(1_000) }
+        if lower.contains("million") { multipliers.append(1_000_000) }
+        if lower.contains("billion") { multipliers.append(1_000_000_000) }
+        if !multipliers.isEmpty {
+            let base = license.values
+            for value in base {
+                for m in multipliers { license.values.insert(value * m) }
+            }
+        }
+        return license
+    }
+
+    private static func isPureDigits(_ s: String) -> Bool {
+        !s.isEmpty && s.allSatisfy { $0.isASCII && $0.isNumber }
+    }
+
+    /// Drop a leading list marker ("1. ", "2) ") so a model that legitimately
+    /// numbers a spoken list isn't accused of inventing the numbers. Only a
+    /// marker followed by whitespace or end-of-line counts, so "1.99 is the
+    /// price" keeps its figure under the guard.
+    private static func droppingListMarker(_ line: Substring) -> Substring {
+        var start = line.startIndex
+        while start < line.endIndex, line[start].isWhitespace { start = line.index(after: start) }
+        var end = start
+        while end < line.endIndex, line[end].isASCII, line[end].isNumber { end = line.index(after: end) }
+        guard end > start, end < line.endIndex, line[end] == "." || line[end] == ")" else { return line }
+        let after = line.index(after: end)
+        guard after == line.endIndex || line[after].isWhitespace else { return line }
+        return line[after...]
     }
 
     /// Length (UTF-16-agnostic Character count) of a verbatim run of surrounding

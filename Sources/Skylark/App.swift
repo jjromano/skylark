@@ -165,6 +165,16 @@ private struct SpeechEngineMenu: View {
                     Text("Local (Whisper large-v3-turbo)")
                 }
             }
+            Divider()
+            Button {
+                controller.selectSTT(.groqDirect)
+            } label: {
+                if controller.currentSTT == .groqDirect {
+                    Label("Groq direct — Whisper large-v3-turbo", systemImage: "checkmark")
+                } else {
+                    Text("Groq direct — Whisper large-v3-turbo")
+                }
+            }
             ForEach(controller.sttModels) { entry in
                 Button {
                     controller.selectSTT(.cloud(slug: entry.slug))

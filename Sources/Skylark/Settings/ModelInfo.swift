@@ -57,8 +57,10 @@ enum ModelInfo {
     /// Not downloadable and not in the model registry, so it's a standalone
     /// entry rather than a dictionary keyed by model/slug.
     static let appleIntelligence = Entry(
-        "macOS Apple Intelligence (Foundation Models) — on-device, private, free. Used when cleanup tier is Local. Needs Apple Intelligence enabled in System Settings.",
-        primary: 4, primaryLabel: "Quality", secondary: 3.5, secondaryLabel: "Speed"
+        "macOS Apple Intelligence (Foundation Models) — on-device, private, free, no download. Used when cleanup tier is Local. Needs Apple Intelligence enabled in System Settings.",
+        // Stars track the measured comparison below (17/29 at ~1.2 s), so this
+        // row and the table cannot disagree on the same screen.
+        primary: 3.5, primaryLabel: "Quality", secondary: 3, secondaryLabel: "Speed"
     )
 
     /// Downloadable Qwen3 GGUF models run locally through llama.cpp (keyed by
@@ -67,14 +69,40 @@ enum ModelInfo {
     /// use it.
     static let qwenLocal: [String: Entry] = [
         "qwen3-1.7b": Entry(
-            "Qwen3 1.7B, quantized (Q4_K_M) — small and fast, runs fully offline through llama.cpp. Good default local alternative to Apple Intelligence.",
-            primary: 3.5, primaryLabel: "Quality", secondary: 4.5, secondaryLabel: "Speed"
+            "Qwen3 1.7B, quantized (Q4_K_M) — small and fast, runs fully offline through llama.cpp. Fastest local option; a little less accurate than Apple Intelligence.",
+            primary: 3, primaryLabel: "Quality", secondary: 4.5, secondaryLabel: "Speed"
         ),
         "qwen3-4b-instruct": Entry(
-            "Qwen3 4B Instruct, quantized (Q4_K_M) — better cleanup quality than the 1.7B at roughly double the latency and memory.",
-            primary: 4, primaryLabel: "Quality", secondary: 3.5, secondaryLabel: "Speed"
+            "Qwen3 4B Instruct, quantized (Q4_K_M) — the most accurate local cleanup, and faster than Apple Intelligence, at the cost of a 2.5 GB download and ~3 GB of memory while loaded.",
+            primary: 4.5, primaryLabel: "Quality", secondary: 4, secondaryLabel: "Speed"
         ),
     ]
+
+    /// Measured comparison of the three local cleanup tiers on Skylark's
+    /// 29-case cleanup test set, for the small table in the Models pane.
+    /// Measured 2026-08-31 / 2026-09-02 on an M3 MacBook Air (Apple
+    /// Intelligence) and an M4 Mac mini (Qwen3 1.7B / Qwen3 4B Instruct).
+    /// Re-measure and update these rows in one place when the corpus or
+    /// models change; download sizes come from `LocalCleanupModel` itself
+    /// rather than being restated here.
+    enum LocalCleanupComparison {
+        struct Row {
+            let name: String
+            let exactMatches: Int
+            let avgLatencySeconds: Double
+            /// nil for Apple Intelligence, which ships with macOS.
+            let downloadBytes: Int64?
+            let residentMemoryGB: Double
+        }
+
+        static let corpusSize = 29
+
+        static let rows: [Row] = [
+            Row(name: "Apple Intelligence", exactMatches: 17, avgLatencySeconds: 1.2, downloadBytes: nil, residentMemoryGB: 0),
+            Row(name: "Qwen3 1.7B", exactMatches: 14, avgLatencySeconds: 0.3, downloadBytes: LocalCleanupModel.qwen3_1_7B.downloadBytes, residentMemoryGB: 1.5),
+            Row(name: "Qwen3 4B Instruct", exactMatches: 25, avgLatencySeconds: 0.5, downloadBytes: LocalCleanupModel.qwen3_4BInstruct.downloadBytes, residentMemoryGB: 3),
+        ]
+    }
 
     // MARK: Speech · on device (system-managed, not a downloadable `ManagedModel` dir)
 
@@ -90,7 +118,7 @@ enum ModelInfo {
 
     static let cloudSTT: [String: Entry] = [
         "openai/whisper-large-v3-turbo": Entry(
-            "Whisper large-v3-turbo served on Groq — cloud-grade accuracy, very fast.",
+            "Whisper large-v3-turbo through OpenRouter, which routes each request to Groq or DeepInfra by price — accurate, but speed varies by seconds. For consistently fast Groq speed, pick Groq direct with a Groq key.",
             primary: 4.5, secondary: 4.5, costPerMonth: "≈ $0.20/mo"
         ),
         "openai/gpt-4o-transcribe": Entry(

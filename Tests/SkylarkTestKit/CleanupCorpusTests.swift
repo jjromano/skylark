@@ -6,20 +6,18 @@ import SkylarkCore
 @Suite("Cleanup corpus")
 struct CleanupCorpusTests {
     /// Known-good exact-match rate (out of `CleanupCorpus.examples.count`) for
-    /// the real Apple on-device model, from the 2026-07-24 eval (see
-    /// `cleanup-eval-and-open-items` memory). This is a FLOOR the live eval
-    /// must clear, not a target — raise it deliberately when a genuine
-    /// quality improvement lifts the bar, never to silence a regression.
+    /// the real Apple on-device model. This is a FLOOR the live eval must
+    /// clear, not a target — raise it deliberately when a genuine quality
+    /// improvement lifts the bar, never to silence a regression.
     ///
-    /// The corpus grew from 17 to 29 examples at v0.16.0 (pausePunctuation +
-    /// spokenPunctuation categories). This count (13) was measured against the
-    /// OLD 17-example corpus and has NOT been re-based against the new 29 —
-    /// it stays as-is (out of the now-larger `examples.count`) until measured
-    /// fresh on the Air; do not edit it to "fix" the ratio. (The 2026-08-31 QA
-    /// pass re-based both Qwen floors in `QwenCleanupEvalTests` from a live
-    /// run, but could not touch this one: it needs Apple Intelligence, which
-    /// is off on the Mini build box.)
-    private static let appleIntelligenceBaseline = 13
+    /// Measured 17/29 on 2026-09-02 on an M3 Air, macOS 26.2, Apple
+    /// Intelligence available. Floor set to 16, one case of slack, consistent
+    /// with how the Qwen floors in `QwenCleanupEvalTests` were set. The
+    /// corpus also gained two `spokenAddress/*` examples this sprint (another
+    /// agent is adding them to `CleanupCorpus.swift`); the floor is an
+    /// absolute count out of `examples.count`, not a ratio, so those
+    /// additions cannot lower a real score below it.
+    private static let appleIntelligenceBaseline = 16
 
     // MARK: - Model-free gate (runs on every change)
 

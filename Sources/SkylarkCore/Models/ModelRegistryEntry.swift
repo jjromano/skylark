@@ -58,4 +58,19 @@ public struct ModelRegistryEntry: Sendable, Equatable, Codable, Identifiable {
         .init(slug: "microsoft/mai-transcribe-1.5", label: "MAI Transcribe 1.5", providerPin: nil, kind: .stt, sort: 4),
         .init(slug: "mistralai/voxtral-mini-transcribe", label: "Voxtral Mini Transcribe", providerPin: nil, kind: .stt, sort: 5),
     ]
+
+    /// Labels a seed slug shipped in a PAST seed, keyed by slug, other than its
+    /// current `seed` label. Sourced from `git log -p` on this file.
+    ///
+    /// `RegistryStore.syncSeed()` uses this to adopt (mark `seeded`) a row that
+    /// predates the `seeded` column (added later, `DEFAULT 0`): such a row is
+    /// otherwise indistinguishable from a genuine user-created row and never
+    /// gets refreshed, so a real install can be stuck showing "Groq Fast
+    /// Whisper" for `openai/whisper-large-v3-turbo` forever even though 0.19.0
+    /// renamed it (see the seed comment above — that slug is no longer
+    /// Groq-only, so the old label promised speed the transport can't keep).
+    public static let legacyLabels: [String: [String]] = [
+        "openai/whisper-large-v3-turbo": ["Groq Fast Whisper"],
+        "meta-llama/llama-3.1-8b-instruct": ["Llama 3.1 8B (Groq)"],
+    ]
 }

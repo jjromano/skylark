@@ -8,13 +8,35 @@ import os
 /// clipboard can be restored after a synthesized paste (privacy invariant:
 /// clipboard preserved byte-for-byte across paste fallback, PRD §10).
 public struct PasteboardSnapshot: Sendable, Equatable {
-    /// One dictionary per pasteboard item: raw type string → data.
-    public let items: [[String: Data]]
+    /// One (type, data) pair captured from a pasteboard item, in the order the
+    /// item declared its types. Order matters: a receiving app that supports
+    /// several of the declared types picks its preferred representation by
+    /// declaration order (`NSPasteboardItem.types` / `setData(_:forType:)`
+    /// docs), so a restore must reproduce it exactly, not just the byte content.
+    public struct Entry: Sendable, Equatable {
+        public let type: String
+        public let data: Data
+
+        public init(type: String, data: Data) {
+            self.type = type
+            self.data = data
+        }
+    }
+
+    /// One ordered list of entries per pasteboard item, in `item.types` order.
+    public let items: [[Entry]]
 
     private static let logger = Logger(subsystem: "com.jjromano.skylark", category: "pasteboard")
 
-    public init(items: [[String: Data]]) {
+    public init(items: [[Entry]]) {
         self.items = items
+    }
+
+    /// Convenience initializer from unordered dictionaries — dictionary
+    /// iteration order is not the original declaration order, so this exists
+    /// only for callers (tests) that don't care about order preservation.
+    public init(items: [[String: Data]]) {
+        self.items = items.map { dict in dict.map { Entry(type: $0.key, data: $0.value) } }
     }
 
     /// `NSPasteboard.accessBehavior` (macOS 15.4+, always present at our
@@ -37,15 +59,15 @@ public struct PasteboardSnapshot: Sendable, Equatable {
             items = []
             return
         }
-        var saved: [[String: Data]] = []
+        var saved: [[Entry]] = []
         for item in pasteboard.pasteboardItems ?? [] {
-            var itemDict: [String: Data] = [:]
+            var entries: [Entry] = []
             for type in item.types {
                 if let data = item.data(forType: type) {
-                    itemDict[type.rawValue] = data
+                    entries.append(Entry(type: type.rawValue, data: data))
                 }
             }
-            saved.append(itemDict)
+            saved.append(entries)
         }
         items = saved
     }
@@ -55,10 +77,10 @@ public struct PasteboardSnapshot: Sendable, Equatable {
         pasteboard.clearContents()
         guard !items.isEmpty else { return }
         var pbItems: [NSPasteboardItem] = []
-        for itemDict in items {
+        for entries in items {
             let item = NSPasteboardItem()
-            for (type, data) in itemDict {
-                item.setData(data, forType: NSPasteboard.PasteboardType(rawValue: type))
+            for entry in entries {
+                item.setData(entry.data, forType: NSPasteboard.PasteboardType(rawValue: entry.type))
             }
             pbItems.append(item)
         }

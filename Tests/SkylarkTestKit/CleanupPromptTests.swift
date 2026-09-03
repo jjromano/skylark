@@ -43,7 +43,7 @@ private let goldenCompactStandardText = """
     - Collapse an accidentally repeated word ("the the" becomes "the").
     - Keep the speaker's own phrasing, including polite framing and hedges — "please", "can you", "could you", "I think", "we should", "I was thinking" are NOT filler, so never drop them.
     - Keep the speaker's sentence type and pronouns: a question stays a question (keep its "?"), a statement stays a statement, and never swap "I"/"you"/"we" or rephrase so the meaning changes.
-    - Write spoken numbers as digits and symbols: "twenty three" → "23", "ninety nine point nine percent" → "99.9%", "twenty dollars" → "$20". Keep the words around the number intact.
+    - Write spoken numbers as digits and symbols: "twenty three" → "23", "ninety nine point nine percent" → "99.9%", "twenty dollars" → "$20", "one dollar and ninety nine cents" → "$1.99". Never change the amount: every digit must come from what was actually said.
     - Re-punctuate, don't trust what's already there: the transcript's periods came from the speech recognizer guessing at pauses, not grammar. A pause is not a sentence boundary: when a period splits a sentence that isn't finished yet, or the next words continue the same thought, delete it and join the pieces. Fix capitalization (sentence starts, "I", proper nouns).
     - Vocal stress is not typography: never add an exclamation mark, ALL-CAPS, bold/italic, or repeated punctuation for a stressed word. Use ordinary punctuation. Add "!" only when the speaker says "exclamation mark" or "exclamation point".
     - "new line" becomes a line break; "new paragraph" becomes a blank line — delete those command words.
@@ -167,6 +167,28 @@ struct CleanupPromptTests {
         #expect(text.contains("Fix capitalization"))
         #expect(text.contains("Write spoken numbers as digits and symbols"))
         #expect(text.contains("Collapse an accidentally repeated word"))
+    }
+
+    // MARK: - Numbers: a worked cents example in every prompt that formats numbers
+
+    /// The on-device tier turned "one dollar and ninety nine cents" into "$1.09"
+    /// — a silently WRONG amount. Every prompt variant that tells the model to
+    /// format numbers now carries the worked cents example (and the whole-dollar
+    /// one it already had), so the cents case is never left to inference.
+    @Test("Every number-formatting rule carries the cents example and the no-invention rule")
+    func numberRulesCarryCentsExample() {
+        let compactVariants = CleanupIntensity.allCases.map {
+            CleanupPrompt.compactInstructions(context: CleanupContext(intensity: $0))
+        }
+        let cloudLight = CleanupPrompt.instructions(context: CleanupContext(intensity: .light))
+        for text in compactVariants + [cloudLight] {
+            #expect(text.contains(#""one dollar and ninety nine cents" → "$1.99""#))
+            #expect(text.contains("Never change the amount"))
+        }
+        // The whole-dollar example the compact prompts already had is still there.
+        for text in compactVariants {
+            #expect(text.contains(#""twenty dollars" → "$20""#))
+        }
     }
 
     // MARK: - High: standard repairs + light grammatical smoothing (both builders)

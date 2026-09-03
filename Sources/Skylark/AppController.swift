@@ -420,13 +420,16 @@ final class AppController {
         localCleanupBackend = next
         Task { [orchestrator, next] in await orchestrator.setLocalCleaner(LocalCleaner(backend: next)) }
         let intensity = cleanupIntensity
+        let retiring = previous as? QwenCleanupBackend
+        if let retiring { retiringQwenBackends.append(retiring) }
         Task { [weak self] in
             if let qwen = next as? QwenCleanupBackend {
                 let instructions = CleanupPrompt.compactInstructions(context: CleanupContext(intensity: intensity))
                 await qwen.preload(instructions: instructions)
             }
-            if let qwen = previous as? QwenCleanupBackend {
-                await qwen.unload()
+            if let retiring {
+                await retiring.unload()
+                self?.retiringQwenBackends.removeAll { $0 === retiring }
             }
             self?.refreshCleanupModelStates()
         }
@@ -443,22 +446,55 @@ final class AppController {
     /// still protects against a genuinely wedged unload. No-op when the active
     /// engine is Apple Foundation Models (nothing to unload).
     func blockingUnloadLocalCleanupBackendBeforeQuit() {
-        guard let qwen = localCleanupBackend as? QwenCleanupBackend else { return }
-        let semaphore = DispatchSemaphore(value: 0)
-        Task {
-            await qwen.unload()
-            semaphore.signal()
+        // The active backend plus any it replaced whose unload is still in
+        // flight (a quit right after switching engines).
+        var backends = retiringQwenBackends
+        if let qwen = localCleanupBackend as? QwenCleanupBackend { backends.append(qwen) }
+        guard !backends.isEmpty else { return }
+        // `QuitUnload` runs the unload DETACHED. The 0.20.x version of this hook
+        // used `Task { await qwen.unload() }`, which inherits this method's
+        // main-actor isolation and therefore could never start while the main
+        // thread sat on the semaphore below: every real quit waited the full
+        // 3 s and then exited with the model resident, and llama.cpp's Metal
+        // teardown aborted (C1). `QuitUnloadTests` pins both halves of that.
+        switch QuitUnload.blockingUnload(backends, timeout: .seconds(3)) {
+        case .unloaded:
+            Self.quitLogger.notice("quit: local cleanup model unloaded before exit")
+        case .nothingToUnload:
+            break
+        case .timedOut:
+            // A model may still be resident. Static destructors would abort the
+            // process (and land an .ips in the user's diagnostics), so skip them:
+            // everything Skylark needed to persist is already on disk by now.
+            Self.quitLogger.error("quit: local cleanup model did not unload in time — exiting without static destructors")
+            _exit(0)
         }
-        _ = semaphore.wait(timeout: .now() + 3)
     }
+
+    private static let quitLogger = Logger(subsystem: "com.jjromano.skylark", category: "cleanup.llama")
+
+    /// Qwen backends replaced by `swapLocalCleanupBackend` whose unload has not
+    /// completed yet, so the quit hook can still reach them.
+    @ObservationIgnored private var retiringQwenBackends: [QwenCleanupBackend] = []
 
     // MARK: - Audio devices (Settings → Audio)
 
     static let inputDeviceKey = "audio.inputDeviceUID"
+    static let inputDeviceNameKey = "audio.inputDeviceName"
     let audioDevices = AudioDeviceManager()
     private(set) var inputDevices: [AudioInputDevice] = []
     /// Selected input-device UID (nil = system default).
     private(set) var selectedDeviceUID: String?
+    /// Last-known display name of the selected device, persisted alongside the
+    /// UID so Settings → Audio can still name the mic while it is unplugged.
+    private(set) var selectedDeviceName: String?
+    /// Whether the selected device is in the current device list. STORED (not
+    /// computed off `inputDevices`) so `@Observable` re-renders the Audio pane
+    /// the moment a mic vanishes or returns — see the CLAUDE.md rule.
+    private(set) var selectedDeviceAvailable = true
+    /// What the previous reconcile concluded; nil = no list seen yet, or the
+    /// selection just changed. Drives once-only transition notes.
+    private var lastDeviceAvailability: Bool?
 
     /// Global cleanup override backing the menu "Cleanup" submenu. "auto" = use
     /// the resolved mode's tier; "raw"/"local"/"cloud" force that tier.
@@ -880,6 +916,7 @@ final class AppController {
         soundVolume = volume
         sounds = SoundEffects(enabled: soundsEnabled, startID: startID, stopID: stopID, volume: volume)
         selectedDeviceUID = UserDefaults.standard.string(forKey: Self.inputDeviceKey)
+        selectedDeviceName = UserDefaults.standard.string(forKey: Self.inputDeviceNameKey)
 
         // Hotkey bindings (default: Fn, no mouse trigger).
         hotkeyKeyboard = UserDefaults.standard.string(forKey: HotkeyBinding.defaultsKeyKeyboard)
@@ -1123,6 +1160,9 @@ final class AppController {
                     sounds.playStop()
                     // Resume unconditionally: no-op unless we paused something.
                     Task { await mediaPause.resumeIfPaused() }
+                    // A note raised while the mic was open was held back by the
+                    // listening pill; give it its full time now that it shows.
+                    if hud.note != nil { self?.armNoteClear() }
                 }
                 if isIdle, !wasIdle { self?.refreshStats() }
                 wasListening = isListening
@@ -1503,12 +1543,42 @@ final class AppController {
         }
     }
 
+    /// How long a note stays up, in the dropdown and in the pill. Two lines of
+    /// text at reading speed; the previous 4 s was set for a surface nobody was
+    /// looking at.
+    static let noteDuration: Duration = .seconds(5)
+
+    /// Show a transient status note in BOTH surfaces: the menu-bar dropdown
+    /// (`statusNote`) and the HUD pill (`hud.note`, rendered inside a fixed
+    /// `HUDMetrics.noteSize` box). The pill is re-laid out here, from the
+    /// controller, never from inside a view update — see `HUDMetrics.noteSize`
+    /// for why that ordering is the whole design.
     func showNote(_ note: String) {
         statusNote = note
+        hud.note = note
+        hudPanel.refreshLayout()
+        if hud.isRecording {
+            // The listening pill holds the note back; its clock starts when
+            // the recording ends (see the HUD state loop), so a warning raised
+            // during a long utterance is not cleared before it was ever seen.
+            noteClearTask?.cancel()
+        } else {
+            armNoteClear()
+        }
+    }
+
+    /// (Re)start the clock that takes the current note down. Also called when a
+    /// recording ends with a note still pending, so a note raised mid-utterance
+    /// (which the listening pill deliberately does not show) gets its full
+    /// on-screen time once the waveform is gone.
+    private func armNoteClear() {
         noteClearTask?.cancel()
         noteClearTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(4))
-            if !Task.isCancelled { self?.statusNote = nil }
+            try? await Task.sleep(for: Self.noteDuration)
+            guard !Task.isCancelled, let self else { return }
+            self.statusNote = nil
+            self.hud.note = nil
+            self.hudPanel.refreshLayout()
         }
     }
 
@@ -1566,7 +1636,7 @@ final class AppController {
     private var hudPanelIsVisible: Bool {
         HUDMetrics.isVisible(
             state: hud.state, hovering: hud.isHovering, style: hud.style,
-            showIdlePill: hud.showIdlePill, isPreparing: hud.isPreparing
+            showIdlePill: hud.showIdlePill, isPreparing: hud.isPreparing, note: hud.note != nil
         )
     }
 
@@ -1883,6 +1953,13 @@ final class AppController {
     /// reads "Local". See `STTRebuildGate`.
     @ObservationIgnored private var rebuildGate = STTRebuildGate()
 
+    /// Set once `finishGroqRebuild` shows its "Groq key missing" note, so a
+    /// later automatic rebuild this launch (e.g. `apiKeyDidChange()` firing
+    /// for the OpenRouter key while Groq direct is still keyless) doesn't
+    /// renotify every time. Reset to `false` the moment a Groq key is present
+    /// again, so removing the key later re-notifies once.
+    @ObservationIgnored private var groqMissingKeyNoteShown = false
+
     /// Build the transcriber for the current STT choice and swap it into the
     /// orchestrator, honouring the memory policy: only the active local engine
     /// stays warm. Cloud wraps the active local engine in a `FallbackTranscriber`;
@@ -1944,10 +2021,18 @@ final class AppController {
     private func finishGroqRebuild(hasKey: Bool, token: STTRebuildGate.Token) {
         guard isCurrentRebuild(token) else { return }
         guard hasKey else {
-            showNote("No Groq API key — using local engine")
+            // Content-free — no key value, no transcript, just the fact of
+            // the fallback — logged on every occurrence for diagnostics even
+            // though the user-facing note below is shown at most once.
+            Self.engineLogger.notice("groq stt selected with no key — falling back to local engine")
+            if !groqMissingKeyNoteShown {
+                groqMissingKeyNoteShown = true
+                showNote("Groq key missing — transcribing with local Parakeet. Add a key in Settings → Account.")
+            }
             switchLocalEngine(to: activeLocal, token: token)
             return
         }
+        groqMissingKeyNoteShown = false
         let cloud = GroqCloud(client: GroqSpeechClient(keyProvider: { APIKeyCache.groq.current() }))
         let notice: @Sendable (String) -> Void = { [weak self] message in
             Task { @MainActor in self?.showNote(message) }
@@ -2333,13 +2418,19 @@ final class AppController {
     private func startAudioDevices() {
         audioDevices.onChange = { [weak self] in self?.handleDeviceListChanged() }
         audioDevices.start()
+        // The first enumeration runs OFF the main actor (blocking HAL reads), so
+        // `devices` is still empty right here — reconciling now would claim every
+        // persisted mic is missing. Apply the persisted UID optimistically (the
+        // capture service re-resolves it at every start anyway) and let the first
+        // `onChange` do the real reconcile, which is where a launch-time
+        // "unavailable" note comes from.
         inputDevices = audioDevices.devices
-        applySelectedDevice(note: false)
+        capture.setPreferredDeviceUID(selectedDeviceUID?.isEmpty == false ? selectedDeviceUID : nil)
     }
 
     private func handleDeviceListChanged() {
         inputDevices = audioDevices.devices
-        applySelectedDevice(note: false)
+        applySelectedDevice(userPicked: false)
     }
 
     /// Select an input device by UID (nil = system default). Persists and applies.
@@ -2347,28 +2438,75 @@ final class AppController {
         selectedDeviceUID = uid
         if let uid {
             UserDefaults.standard.set(uid, forKey: Self.inputDeviceKey)
-        } else {
-            UserDefaults.standard.removeObject(forKey: Self.inputDeviceKey)
-        }
-        applySelectedDevice(note: true)
-    }
-
-    private func applySelectedDevice(note: Bool) {
-        guard let uid = selectedDeviceUID, !uid.isEmpty else {
-            capture.setPreferredDeviceUID(nil)
-            return
-        }
-        if let device = inputDevices.first(where: { $0.uid == uid }) {
-            capture.setPreferredDeviceUID(uid)
-            if note, device.isBluetooth {
-                showNote("Bluetooth mics reduce recognition quality (HFP). Consider the built-in mic.")
+            // Remember the name too, so the picker can still say which mic the
+            // user chose after it's unplugged. An unavailable-row pick resolves
+            // to no live device: keep the name we already had.
+            if let name = inputDevices.first(where: { $0.uid == uid })?.name {
+                selectedDeviceName = name
+                UserDefaults.standard.set(name, forKey: Self.inputDeviceNameKey)
             }
         } else {
-            // Persisted device is gone — fall back to the system default.
+            selectedDeviceName = nil
+            UserDefaults.standard.removeObject(forKey: Self.inputDeviceKey)
+            UserDefaults.standard.removeObject(forKey: Self.inputDeviceNameKey)
+        }
+        // A new selection has no history: don't let the OLD device's availability
+        // turn this pick into a spurious "your mic is back".
+        lastDeviceAvailability = nil
+        applySelectedDevice(userPicked: true)
+    }
+
+    /// Reconcile the selected device against the current list, applying it (or
+    /// falling back) and noting only the transitions. `userPicked` gates the
+    /// Bluetooth quality advisory, which is only ever shown when the user picks.
+    private func applySelectedDevice(userPicked: Bool) {
+        let action = SelectedDeviceReconciler.reconcile(
+            previouslyAvailable: lastDeviceAvailability,
+            selectedUID: selectedDeviceUID,
+            devices: inputDevices
+        )
+        switch action {
+        case .noSelection:
             capture.setPreferredDeviceUID(nil)
-            if note { showNote("Selected mic unavailable — using the system default") }
+            selectedDeviceAvailable = true
+            lastDeviceAvailability = nil
+        case let .adopted(name):
+            capture.setPreferredDeviceUID(selectedDeviceUID)
+            selectedDeviceAvailable = true
+            lastDeviceAvailability = true
+            rememberDeviceName(name)
+            if userPicked, inputDevices.first(where: { $0.uid == selectedDeviceUID })?.isBluetooth == true {
+                showNote("Bluetooth mics reduce recognition quality (HFP). Consider the built-in mic.")
+            }
+        case .fellBackToDefault:
+            capture.setPreferredDeviceUID(nil)
+            selectedDeviceAvailable = false
+            lastDeviceAvailability = false
+            Self.audioDeviceLogger.notice("selected input device absent; falling back to system default")
+            showNote(SelectedDeviceReconciler.unavailableNote)
+        case let .readopted(name):
+            capture.setPreferredDeviceUID(selectedDeviceUID)
+            selectedDeviceAvailable = true
+            lastDeviceAvailability = true
+            rememberDeviceName(name)
+            Self.audioDeviceLogger.notice("selected input device returned; re-adopting it")
+            showNote(SelectedDeviceReconciler.readoptedNote(name: name))
+        case .stillAbsent:
+            capture.setPreferredDeviceUID(nil)
+            selectedDeviceAvailable = false
+            lastDeviceAvailability = false
         }
     }
+
+    /// Keep the last-known display name for the selected mic fresh, so Settings
+    /// can still name it once it's unplugged (and after a relaunch).
+    private func rememberDeviceName(_ name: String) {
+        guard selectedDeviceName != name else { return }
+        selectedDeviceName = name
+        UserDefaults.standard.set(name, forKey: Self.inputDeviceNameKey)
+    }
+
+    private static let audioDeviceLogger = Logger(subsystem: "com.jjromano.skylark", category: "audio-devices")
 
     /// Prompt for a custom cleanup model slug, then select it.
     func promptCustomCleanupSlug() {
@@ -2453,6 +2591,43 @@ final class AppController {
         settingsWindow = window
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        Self.snapshotWindowIfRequested(window, name: "settings")
+    }
+
+    /// Headless-QA companion to `HUDPanelController`'s snapshot: with
+    /// `SKYLARK_HUD_SNAPSHOT_DIR` set, write a PNG of a window's content once
+    /// SwiftUI has laid it out. Off unless the variable is set.
+    private static func snapshotWindowIfRequested(_ window: NSWindow, name: String) {
+        guard let dir = ProcessInfo.processInfo.environment["SKYLARK_HUD_SNAPSHOT_DIR"], !dir.isEmpty else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak window] in
+            guard let content = window?.contentView else { return }
+            // Render the scrolled document in full (a Form is an NSScrollView
+            // underneath), so the whole pane is on the image, not just the fold.
+            @MainActor func firstScrollView(_ v: NSView) -> NSScrollView? {
+                if let s = v as? NSScrollView { return s }
+                for sub in v.subviews { if let s = firstScrollView(sub) { return s } }
+                return nil
+            }
+            // Off-screen rows of a Form do not render into a cache, so scroll
+            // the viewport to the requested fraction of the document first
+            // (`SKYLARK_SETTINGS_SCROLL=0.5`) and capture what is visible.
+            if let scroll = firstScrollView(content), let doc = scroll.documentView,
+               let fraction = ProcessInfo.processInfo.environment["SKYLARK_SETTINGS_SCROLL"].flatMap(Double.init) {
+                let y = max(0, (doc.bounds.height - scroll.contentView.bounds.height) * fraction)
+                scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
+                scroll.reflectScrolledClipView(scroll.contentView)
+                content.layoutSubtreeIfNeeded()
+            }
+            let view = content
+            guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+            view.cacheDisplay(in: view.bounds, to: rep)
+            guard let png = rep.representation(using: .png, properties: [:]) else { return }
+            do {
+                try png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+            } catch {
+                NSLog("window snapshot write failed: %@", error.localizedDescription)
+            }
+        }
     }
 
     @ObservationIgnored private var historyWindow: NSWindow?

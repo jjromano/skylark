@@ -51,8 +51,44 @@ struct PasteboardSnapshotTests {
 
         let snapshot = PasteboardSnapshot(pasteboard: pb)
         #expect(snapshot.items.count == 1)
-        let types = Set(snapshot.items[0].keys)
+        let types = Set(snapshot.items[0].map(\.type))
         #expect(types.contains(NSPasteboard.PasteboardType.string.rawValue))
         #expect(types.contains(NSPasteboard.PasteboardType.html.rawValue))
+    }
+
+    /// D7: restore must reproduce the exact type DECLARATION ORDER, not just
+    /// the bytes — a receiving app picks its preferred representation by
+    /// `NSPasteboardItem.types` order, so a shuffled order (e.g. dictionary
+    /// iteration order) is a real behavior difference even when bytes match.
+    @Test("Restore preserves declared type order")
+    func restorePreservesTypeOrder() {
+        let pb = NSPasteboard(name: NSPasteboard.Name("test-\(UUID())"))
+        defer { pb.releaseGlobally() }
+
+        let typeA = NSPasteboard.PasteboardType("com.jjromano.skylark.test.a")
+        let typeB = NSPasteboard.PasteboardType("com.jjromano.skylark.test.b")
+        let typeC = NSPasteboard.PasteboardType("com.jjromano.skylark.test.c")
+        let dataA = Data([0x01])
+        let dataB = Data([0x02])
+        let dataC = Data([0x03])
+
+        let item = NSPasteboardItem()
+        item.setData(dataA, forType: typeA)
+        item.setData(dataB, forType: typeB)
+        item.setData(dataC, forType: typeC)
+        pb.clearContents()
+        pb.writeObjects([item])
+
+        let snapshot = PasteboardSnapshot(pasteboard: pb)
+
+        let fresh = NSPasteboard(name: NSPasteboard.Name("test-\(UUID())"))
+        defer { fresh.releaseGlobally() }
+        snapshot.restore(to: fresh)
+
+        let restoredItem = fresh.pasteboardItems?[0]
+        #expect(restoredItem?.types == [typeA, typeB, typeC])
+        #expect(restoredItem?.data(forType: typeA) == dataA)
+        #expect(restoredItem?.data(forType: typeB) == dataB)
+        #expect(restoredItem?.data(forType: typeC) == dataC)
     }
 }

@@ -177,16 +177,24 @@ public actor DictationOrchestrator {
     /// (P1-10): paste targets, and the "press enter" path that must know the
     /// final text before it can synthesize Return.
     ///
-    /// The Settings cleanup timeout may be set to "Off", meaning "wait for
-    /// cleanup however long it takes". That is a sane choice on the DETACHED AX
-    /// path — raw text is already visible there and only gets better. Ahead of
-    /// the FIRST insertion it is a hang: the user held a key, released it, and
-    /// stares at an empty field for as long as a wedged model feels like taking,
-    /// while PRD §12 budgets the whole path in hundreds of ms. So the pre-paste
-    /// stage is capped regardless of the setting — deliberately generous (a cold
-    /// on-device model load is seconds) but finite. Injected only so tests need
-    /// not wait it out.
-    private let prePasteCeiling: Duration
+    /// The hard bound on the WHOLE pre-paste cleanup stage, primary cleaner and
+    /// local fallback together.
+    ///
+    /// This is a safety bound, not a preference, and it is deliberately NOT the
+    /// user's cleanup timeout. That setting governs the DETACHED AX path, where
+    /// raw text is already on screen and a long cleanup costs nothing visible.
+    /// Ahead of the FIRST insertion the user has released the key and is staring
+    /// at an empty cursor, and PRD §12 budgets that whole path in hundreds of
+    /// ms — so raising the cleanup timeout must never lengthen it. 600 ms keeps
+    /// local Qwen (~535 ms) and most cloud cleanups landing; a slower engine
+    /// loses the race and raw text is pasted, which is the right trade here.
+    /// Injected only so tests need not wait it out.
+    private let prePasteBound: Duration
+
+    /// Below this much of `prePasteBound` left, the local fallback is not even
+    /// started: it cannot finish, and the user would pay the remainder for
+    /// nothing.
+    private static let minimumFallbackRemainder: Duration = .milliseconds(100)
 
     public private(set) var phase: Phase = .idle
 
@@ -245,6 +253,18 @@ public actor DictationOrchestrator {
     /// too late instead of quietly tearing down a session whose text is on
     /// screen. Reset at every start.
     private var writeCommitted = false
+    /// When the most recent write landed, across sessions. A deep-link cancel
+    /// (`open skylark://record/cancel` costs ~300 ms to arrive) routinely lands
+    /// after a ~180 ms local dictation has already finished and reset `phase`
+    /// to `.idle`; without this the request hit a silent `return` and the user
+    /// got no answer at all. Deliberately NOT cleared at session start — the
+    /// window is purely time-based, and a new session beginning does not make
+    /// the previous one's cancel any less late.
+    private var lastWriteCommittedAt: ContinuousClock.Instant?
+    /// How long after a write a cancel is still treated as "you just missed it".
+    /// Beyond it a stray cancel is inert: a note about text inserted a minute
+    /// ago would only confuse.
+    private let lateCancelWindow: Duration
     /// Cancel arrived after the text had already landed — say so rather than
     /// leave the user believing the dictation was dropped.
     static let cancelTooLateNote = "Too late to cancel — text already inserted"
@@ -303,7 +323,8 @@ public actor DictationOrchestrator {
         historyUpdate: (@Sendable (HistoryRecord) -> Void)? = nil,
         replaceTimeout: Duration = .seconds(5),
         waitForCleanTimeout: Duration = .seconds(2),
-        prePasteCeiling: Duration = .seconds(10)
+        prePasteBound: Duration = .milliseconds(600),
+        lateCancelWindow: Duration = .seconds(2)
     ) {
         self.capture = capture
         self.transcriber = transcriber
@@ -323,7 +344,8 @@ public actor DictationOrchestrator {
         self.historyUpdate = historyUpdate
         self.replaceTimeout = replaceTimeout
         self.cleanupTimeout = waitForCleanTimeout
-        self.prePasteCeiling = prePasteCeiling
+        self.prePasteBound = prePasteBound
+        self.lateCancelWindow = lateCancelWindow
         let (stream, continuation) = AsyncStream<HUDState>.makeStream(bufferingPolicy: .bufferingNewest(1))
         hudStates = stream
         hudContinuation = continuation
@@ -1716,9 +1738,19 @@ public actor DictationOrchestrator {
     ///   and no history row.
     /// - after the text has landed (`writeCommitted`) — nothing to undo: report
     ///   it instead of pretending, and let the session finish normally.
+    /// - `.idle` with a write inside `lateCancelWindow` — the session already
+    ///   finished; same honest answer rather than a silent drop.
     private func cancelRecording() {
         switch phase {
         case .idle:
+            guard let landed = lastWriteCommittedAt,
+                  landed.duration(to: ContinuousClock.now) <= lateCancelWindow
+            else {
+                logger.notice("cancel ignored — nothing in progress")
+                return
+            }
+            logger.notice("cancel arrived after the dictation finished — text already inserted")
+            noteContinuation.yield(Self.cancelTooLateNote)
             return
         case .recording:
             cancelDuringRecording()
@@ -1805,6 +1837,7 @@ public actor DictationOrchestrator {
     /// rather than tearing down a session whose text the user can see.
     private func commitWrite() {
         writeCommitted = true
+        lastWriteCommittedAt = ContinuousClock.now
         guard cancelRequested else { return }
         cancelRequested = false
         logger.notice("cancel arrived during the write — text already inserted")
@@ -1938,10 +1971,10 @@ public actor DictationOrchestrator {
         // Too short to be worth a generation — the deterministic result is both
         // faster and safer than letting a model invent structure around it.
         var outcome = shortTranscriptOutcome(sourceText, context: contexts.primary)
-        // The DETACHED path is the one place "Off" still means unbounded: the raw
-        // text is already on screen, so a long cleanup delays nothing the user is
-        // waiting for. (Contrast `cleanForPaste`, which is capped — see
-        // `prePasteCleanupCeiling`.)
+        // The DETACHED path is the one place "Off" still means unbounded, and the
+        // one place the user's cleanup timeout applies as written: the raw text
+        // is already on screen, so a long cleanup delays nothing the user is
+        // waiting for. (Contrast `cleanForPaste`, bounded by `prePasteBound`.)
         if outcome == nil {
             outcome = await cleanWithTimeout(cleaner, sourceText, context: contexts.primary, cap: cleanupTimeout)
         }
@@ -2025,12 +2058,17 @@ public actor DictationOrchestrator {
     /// the timed-out tier already WAS local, or local is unavailable / a no-op /
     /// also times out. Emits a status note on success so the switch is never
     /// silent (the invisible-degrade complaint).
+    ///
+    /// `cap` defaults to the detached path's generous budget. The paste path
+    /// passes what is LEFT of `prePasteBound` instead: nothing is on screen
+    /// there, so the fallback may not push the total wait past the bound.
     private func localFallbackAfterTimeout(
-        _ text: String, context: CleanupContext, timedOutTier: CleanupTier
+        _ text: String, context: CleanupContext, timedOutTier: CleanupTier,
+        cap: Duration? = nil
     ) async -> CleanOutcome? {
         guard timedOutTier != .local else { return nil }
         let local = cleaners.cleaner(for: .local)
-        guard let outcome = await cleanWithTimeout(local, text, context: context, cap: localFallbackTimeout),
+        guard let outcome = await cleanWithTimeout(local, text, context: context, cap: cap ?? localFallbackTimeout),
               outcome.text != text
         else { return nil }
         logger.notice("cleanup degraded: cloud→local after timeout (from tier \(Self.tierString(timedOutTier), privacy: .public))")
@@ -2045,23 +2083,19 @@ public actor DictationOrchestrator {
     /// "hola", which only the model can do.
     private func shortTranscriptOutcome(_ text: String, context: CleanupContext) -> CleanOutcome? {
         guard context.translateTo == nil, ShortTranscript.isShort(text) else { return nil }
-        return CleanOutcome(text: ShortTranscript.format(text), engine: ShortTranscript.engineLabel)
+        // Same D12 safety net as the hygiene repair path, though a transcript
+        // short enough to skip the model (< 3 words) can't actually contain a
+        // "word dot word" address — kept for defense in depth if the threshold
+        // ever changes.
+        return CleanOutcome(text: SpokenAddresses.format(ShortTranscript.format(text)), engine: ShortTranscript.engineLabel)
     }
 
-    /// The cap for a pre-paste cleanup: the configured timeout, never above the
-    /// ceiling, and the ceiling itself when the setting is "Off".
-    /// Whole seconds of the cap the user actually waited, for the watchdog's
-    /// message. Uses the EFFECTIVE cap (`prePasteCap`), not the configured
-    /// value, so "Off" — which is still ceilinged on the paste path — reports
-    /// the ceiling it really waited rather than a meaningless 0.
-    private func timeoutSecondsLabel(_ configured: Duration?) -> Int {
-        let effective = prePasteCap(configured)
-        return max(1, Int((effective.milliseconds / 1000).rounded()))
-    }
-
+    /// The cap for the PRIMARY pre-paste cleaner: the configured timeout when
+    /// it is shorter than the bound, and the bound itself otherwise (including
+    /// when the setting is "Off"). The bound always wins — see `prePasteBound`.
     func prePasteCap(_ configured: Duration?) -> Duration {
-        guard let configured else { return prePasteCeiling }
-        return min(configured, prePasteCeiling)
+        guard let configured else { return prePasteBound }
+        return min(configured, prePasteBound)
     }
 
     /// Wait-for-clean for a paste target: run `cleaner` under the pre-paste cap,
@@ -2085,7 +2119,14 @@ public actor DictationOrchestrator {
             cleanupWatchdog.record(.completed)
             return outcome
         }
-        if let local = await localFallbackAfterTimeout(text, context: contexts.local, timedOutTier: tier) {
+        // The primary burned some of the bound; the fallback may only have what
+        // is left of it. Below `minimumFallbackRemainder` there is no point
+        // starting a generation that cannot finish.
+        let remaining = prePasteBound - cleanupStart.duration(to: ContinuousClock.now)
+        if remaining >= Self.minimumFallbackRemainder,
+           let local = await localFallbackAfterTimeout(
+               text, context: contexts.local, timedOutTier: tier, cap: remaining
+           ) {
             // The cloud tier timed out but local rescued it, so the user still
             // got cleaned text. Not a wasted wait.
             cleanupWatchdog.record(.completed)
@@ -2096,9 +2137,7 @@ public actor DictationOrchestrator {
         noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
         // Once the pattern is established, say what to actually DO about it —
         // the per-dictation note above never explains that a setting is wrong.
-        if let advice = cleanupWatchdog.recommendationIfNeeded(
-            timeoutSeconds: timeoutSecondsLabel(cleanupTimeout)
-        ) {
+        if let advice = cleanupWatchdog.recommendationIfNeeded(bound: prePasteBound) {
             logger.notice("cleanup timeout watchdog: recommending a settings change")
             noteContinuation.yield(advice)
         }

@@ -125,7 +125,7 @@ public enum CleanupPrompt {
         - Vocal stress is not typography. Never add an exclamation mark, ALL-CAPS word, bold or italic marker, or repeated punctuation to convey that the speaker stressed a word. A stressed word gets ordinary punctuation. An exclamation mark is added only when the speaker actually says "exclamation mark" or "exclamation point" (the spoken punctuation rule below).
         - Fix capitalization (sentence starts, "I", proper nouns).
         - Recognize spoken punctuation commands and convert them to the mark, deleting the command word: "period"/"full stop" → ".", "comma" → ",", "question mark" → "?", "exclamation mark"/"exclamation point" → "!", "colon" → ":", "semicolon" → ";", "dash" → "-", "open quote"/"close quote" → a quotation mark, "open paren"/"close paren" → "(" / ")". Treat the word as a command only where punctuation would naturally go: at the end of a clause, with the sentence still grammatical once the word is deleted ("I love that exclamation mark" → "I love that!", "we need to ship this week question mark" → "We need to ship this week?"). Otherwise it is an ordinary noun and stays a word ("I need a period of rest before the next sprint" keeps "period" as a word).
-        - Format spoken numbers as digits when it reads naturally ("twenty three" → "23"); leave a number spelled out where digits would read oddly.
+        - Format spoken numbers as digits when it reads naturally ("twenty three" → "23", "one dollar and ninety nine cents" → "$1.99"); leave a number spelled out where digits would read oddly. Never change the amount: every digit must come from what was actually said.
         - Collapse accidentally repeated words ("the the" becomes "the").
         """
 
@@ -174,7 +174,7 @@ public enum CleanupPrompt {
         - Collapse an accidentally repeated word ("the the" becomes "the").
         - Keep the speaker's own phrasing, including polite framing and hedges — "please", "can you", "could you", "I think", "we should", "I was thinking" are NOT filler, so never drop them.
         - Keep the speaker's sentence type and pronouns: a question stays a question (keep its "?"), a statement stays a statement, and never swap "I"/"you"/"we" or rephrase so the meaning changes.
-        - Write spoken numbers as digits and symbols: "twenty three" → "23", "ninety nine point nine percent" → "99.9%", "twenty dollars" → "$20". Keep the words around the number intact.
+        - Write spoken numbers as digits and symbols: "twenty three" → "23", "ninety nine point nine percent" → "99.9%", "twenty dollars" → "$20", "one dollar and ninety nine cents" → "$1.99". Never change the amount: every digit must come from what was actually said.
         - Re-punctuate, don't trust what's already there: the transcript's periods came from the speech recognizer guessing at pauses, not grammar. A pause is not a sentence boundary: when a period splits a sentence that isn't finished yet, or the next words continue the same thought, delete it and join the pieces. Fix capitalization (sentence starts, "I", proper nouns).
         - Vocal stress is not typography: never add an exclamation mark, ALL-CAPS, bold/italic, or repeated punctuation for a stressed word. Use ordinary punctuation. Add "!" only when the speaker says "exclamation mark" or "exclamation point".
         - "new line" becomes a line break; "new paragraph" becomes a blank line — delete those command words.
@@ -244,7 +244,7 @@ public enum CleanupPrompt {
         - Re-punctuate, don't trust what's already there: the transcript's periods came from the speech recognizer guessing at pauses, not grammar. A pause is not a sentence boundary: when a period splits a sentence that isn't finished yet, or the next words continue the same thought, delete it and join the pieces. Fix capitalization (sentence starts, "I", proper nouns).
         - Vocal stress is not typography: never add an exclamation mark, ALL-CAPS, bold/italic, or repeated punctuation for a stressed word. Use ordinary punctuation. Add "!" only when the speaker says "exclamation mark" or "exclamation point".
         - Spoken punctuation commands become marks, deleting the command word: "period"/"full stop" → ".", "comma" → ",", "question mark" → "?", "exclamation mark"/"exclamation point" → "!", "colon" → ":", "semicolon" → ";", "dash" → "-", "open quote"/"close quote" → a quotation mark, "open paren"/"close paren" → "(" / ")". Only when it sits where punctuation would go and the sentence is still grammatical without it; an ordinary noun use (e.g. "a period of rest") stays a word.
-        - Write spoken numbers as digits and symbols: "twenty three" → "23", "ninety nine point nine percent" → "99.9%", "twenty dollars" → "$20". Keep the words around the number intact.
+        - Write spoken numbers as digits and symbols: "twenty three" → "23", "ninety nine point nine percent" → "99.9%", "twenty dollars" → "$20", "one dollar and ninety nine cents" → "$1.99". Never change the amount: every digit must come from what was actually said.
         - Collapse an accidentally repeated word ("the the" becomes "the").
         """
 

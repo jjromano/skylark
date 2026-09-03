@@ -7,7 +7,30 @@ enum HUDMetrics {
     /// Gap below the notch / menu bar.
     static let topGap: CGFloat = 6
 
-    static func size(for state: HUDState, hovering: Bool, style: HUDStyle = .standard) -> CGSize {
+    /// The fixed footprint of the pill while a status note is showing. A
+    /// CONSTANT on purpose: the note is rendered inside it with truncation,
+    /// never by growing the panel. Resizing a hosting panel from inside a view
+    /// update recursed through `NSHostingView.windowDidLayout` →
+    /// `updateAnimatedWindowSize` and blew the main thread's stack (13 SIGSEGVs
+    /// in a 25-note stress run, the reverted 0.20.1 attempt), so the size is
+    /// decided here, before the note is shown, exactly like every other state.
+    /// Two lines of 11 pt text fit; anything longer is clipped.
+    static func noteSize(style: HUDStyle) -> CGSize {
+        style == .minimal ? CGSize(width: 300, height: 34) : CGSize(width: 340, height: 40)
+    }
+
+    /// Whether a pending note takes over the pill in `state`. While the mic is
+    /// open the waveform must stay (the user is watching it to know they are
+    /// being recorded); the note waits for the recording to end.
+    static func showsNote(in state: HUDState) -> Bool {
+        switch state {
+        case .listening, .commandListening: return false
+        case .idle, .processing: return true
+        }
+    }
+
+    static func size(for state: HUDState, hovering: Bool, style: HUDStyle = .standard, note: Bool = false) -> CGSize {
+        if note, showsNote(in: state) { return noteSize(style: style) }
         switch state {
         case .idle:
             // Idle-ready is a deliberately small, minimal black pill (no dot).
@@ -36,8 +59,13 @@ enum HUDMetrics {
     /// Whether the panel should be on screen at all for this combination.
     /// `.hidden` removes the indicator entirely; hiding the idle pill keeps the
     /// preparing dot visible so model loading still has a cue.
-    static func isVisible(state: HUDState, hovering: Bool, style: HUDStyle, showIdlePill: Bool, isPreparing: Bool) -> Bool {
+    static func isVisible(
+        state: HUDState, hovering: Bool, style: HUDStyle, showIdlePill: Bool, isPreparing: Bool, note: Bool = false
+    ) -> Bool {
         guard style != .hidden else { return false }
+        // A note brings the pill on screen even when the idle pill is off —
+        // it is the one place a user typing in another app can see it.
+        if note, showsNote(in: state) { return true }
         if case .idle = state {
             return showIdlePill || hovering || isPreparing
         }

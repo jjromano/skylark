@@ -42,6 +42,13 @@ final class HUDModel {
     /// the `.listening` HUD state; cleared when a recording ends.
     var preview: TranscriptPreview?
 
+    /// The transient status note ("Mic interrupted — text may be incomplete",
+    /// "No speech detected", …) mirrored from `AppController.statusNote` so the
+    /// pill can show it where the user is actually looking. The menu-bar
+    /// dropdown keeps rendering the same string; this is an additional surface.
+    /// Rendered inside `HUDMetrics.noteSize`, never by growing the panel.
+    var note: String?
+
     /// Whether the listening pill should render its preview text region.
     var hasPreview: Bool {
         if let preview, !preview.isEmpty { return true }

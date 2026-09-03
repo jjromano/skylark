@@ -149,6 +149,10 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     // Preferred input-device UID (nil = system default). Read off the audio path
     // in `start()`; guarded by the orchestrator's serialization of lifecycle.
     private let uidLock = Mutex<String?>(nil)
+    /// Device id handed to the audio unit at the last `applyPreferredDevice()`.
+    /// Only touched from `installTapAndStart`, which runs under `lifecycle` —
+    /// same guarantee as `tapInstalled`, never the audio thread.
+    private var lastAppliedDeviceID: AudioDeviceID?
 
     private let signposter = OSSignposter(subsystem: "com.jjromano.skylark", category: "audio")
     private let logger = Logger(subsystem: "com.jjromano.skylark", category: "audio")
@@ -623,11 +627,23 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     /// still present. Must run while the engine is stopped (before `start`). A
     /// missing UID or resolution failure leaves the system default in place.
     private func applyPreferredDevice() {
-        guard let uid = uidLock.withLock({ $0 }), !uid.isEmpty else { return }
-        guard let deviceID = AudioDeviceManager.deviceID(forUID: uid) else {
-            logger.notice("preferred input device not found; using system default")
+        guard let uid = uidLock.withLock({ $0 }), !uid.isEmpty else {
+            lastAppliedDeviceID = nil
             return
         }
+        guard let deviceID = AudioDeviceManager.deviceID(forUID: uid) else {
+            logger.notice("preferred input device not found; using system default")
+            lastAppliedDeviceID = nil
+            return
+        }
+        // Re-plugging a mic keeps its UID but hands out a NEW AudioDeviceID, so
+        // "same UID, different id" is exactly the case D1 is about. Log the id
+        // whenever it's new — that's the line that proves re-adoption on real
+        // hardware.
+        if lastAppliedDeviceID != deviceID {
+            logger.notice("input device resolved: \(deviceID, privacy: .public) (was \(self.lastAppliedDeviceID.map(String.init) ?? "none", privacy: .public))")
+        }
+        lastAppliedDeviceID = deviceID
         guard let audioUnit = engine.inputNode.audioUnit else { return }
         var device = deviceID
         let status = AudioUnitSetProperty(
@@ -640,6 +656,27 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         )
         if status != noErr {
             logger.notice("failed to set input device (osstatus \(status, privacy: .public)); using default")
+            return
+        }
+        // Read it back: `AudioUnitSetProperty` returning noErr does not prove the
+        // unit took the device (it can be silently overridden when the HAL
+        // reconfigures). Ids only — never device content.
+        var current: AudioDeviceID = 0
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        let readBack = AudioUnitGetProperty(
+            audioUnit,
+            kAudioOutputUnitProperty_CurrentDevice,
+            kAudioUnitScope_Global,
+            0,
+            &current,
+            &size
+        )
+        if readBack != noErr {
+            logger.notice("input device applied: requested \(deviceID, privacy: .public) but read-back failed (osstatus \(readBack, privacy: .public))")
+        } else if current == deviceID {
+            logger.notice("input device applied: requested \(deviceID, privacy: .public) engine now \(current, privacy: .public)")
+        } else {
+            logger.notice("input device MISMATCH: requested \(deviceID, privacy: .public) engine now \(current, privacy: .public)")
         }
     }
 

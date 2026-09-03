@@ -6,6 +6,85 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.21.0 - 2026-09-03
+
+**The app now tells you what went wrong, on the screen you are looking at.**
+Remediation of the 2026-09-02 live QA pass on the Air.
+
+- **Status notes appear in the HUD pill.** "Mic interrupted", "No speech
+  detected", "No microphone is available", "Selected mic unavailable",
+  "Reached the 2-minute recording limit", the deep-link refusals and every
+  other note used to render only inside the menu-bar dropdown, which is
+  closed while you dictate, so the product's entire error surface was
+  invisible. Notes now show for 5 s inside the pill under the notch (and
+  still in the dropdown). The note area is a fixed-size box, two lines,
+  truncated rather than grown: the earlier attempt that let the panel resize
+  from inside a view update recursed through AppKit layout and crashed 13
+  times in one stress run. This one survived a 25-note back-to-back run with
+  no crash report. While the mic is open the waveform keeps the pill; a note
+  raised mid-utterance shows once the recording ends.
+- **Quitting after a Qwen model has loaded no longer aborts.** The quit hook
+  that was supposed to unload llama.cpp ran its unload as a main-actor task,
+  then blocked the main thread waiting for it, so it could never run; every
+  real Quit waited 3 s and exited with the model resident, and llama.cpp's
+  Metal teardown aborted in a static destructor (a crash report on every
+  upgrade, since `install.sh` quits the app first). The unload now runs
+  detached, covers a backend you just switched away from, and if it ever
+  fails to finish the app exits without running static destructors at all.
+- **A microphone that disappears is no longer abandoned in silence.** When
+  your chosen mic unplugs you get "Selected mic unavailable — using the
+  system default"; when it returns you get "Selected mic is back — using
+  <name>" and Skylark re-applies it; and Settings → Audio shows the missing
+  mic as "(unavailable)" with a caption instead of claiming it is in use.
+  The engine now logs which input device it actually applied.
+- **Cleanup can no longer change a figure.** Apple Intelligence turned "one
+  dollar and ninety nine cents" into `1.09`. A new faithfulness guard
+  rejects any cleanup that states a number the transcript does not license
+  (spoken numbers, digits, their concatenations, ordinals, list markers and
+  times are all licensed), so raw text stands instead of a wrong amount; and
+  every tier's prompt gained a worked cents example ("$1.99").
+- **Cancel after the text landed says so.** A cancel that arrives within 2 s
+  of the write now shows "Too late to cancel — text already inserted"
+  instead of doing nothing; a later one logs "cancel ignored — nothing in
+  progress".
+- **Terminal and VS Code wait at most 0.6 s for cleanup.** In apps that need
+  the clipboard paste path the pre-paste wait used to inherit the cleanup
+  timeout setting, so the v0.19.1 change from 2 s to 5 s silently lengthened
+  the time you stared at an empty cursor. That path now has its own 0.6 s
+  bound, independent of the setting (which still governs the in-place
+  replace path). Local Qwen and most cloud cleanups land inside it; Apple
+  Intelligence (~1.2 s) usually pastes raw there, by design. The timeout
+  advice note now names this bound instead of pointing at the setting.
+- **Groq direct.** Selecting it with no key stored now shows "Groq key
+  missing — transcribing with local Parakeet. Add a key in Settings →
+  Account." once, instead of silently transcribing locally; it is selectable
+  from the menu bar's Speech Engine submenu and shows its checkmark; existing
+  installs' registry rows still labelled "Groq Fast Whisper" migrate to
+  "Whisper large-v3-turbo"; and the Models pane no longer promises Groq-only
+  speed for a slug OpenRouter load-balances across providers.
+- **Settings → Models compares the local cleanup tiers** (accuracy on the
+  29-case corpus, average speed, download, memory) so opting up to Qwen3 4B
+  is an informed choice. Apple Intelligence stays the default.
+- **Spoken URLs and email addresses are formatted whole.** "github dot com
+  slash jjromano slash skylark" becomes `github.com/jjromano/skylark` and
+  "jjromano at example dot com" becomes `jjromano@example.com`; "slash" and
+  "at" are only converted next to a domain, so prose is untouched.
+- **Clipboard restore keeps the declared type order** after a paste-fallback
+  dictation (a file copied in Finder came back byte-identical but with its
+  types reordered).
+- A pre-paste timeout that cancelled a cloud cleanup no longer starts a
+  discarded local generation behind it.
+- The menu-bar icon no longer depends on the build directory existing at its
+  original absolute path: inside the app bundle, `Bundle.module` was falling
+  back to that path, and when it lived on an external volume the first file
+  access blocked on a permission prompt before the menu bar item existed.
+- Validation checklist: the clipboard step names Terminal running `cat >` as
+  its target (TextEdit takes AX insertion and never runs the clipboard path),
+  the cancel step is rewritten against real behaviour, and the QA handoff no
+  longer claims the checklist skips Command Mode, the focus guard,
+  press-Enter or the cloud dictionary filter. The Apple Intelligence cleanup
+  floor is re-based to 16/29 from the Air measurement of 17/29.
+
 ## 0.20.1 - 2026-09-03
 
 **Two things that were telling you the wrong story**, both found by a live QA

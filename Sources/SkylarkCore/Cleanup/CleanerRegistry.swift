@@ -79,12 +79,21 @@ struct DegradingCleaner: Cleaner {
     func cleanTracked(_ transcript: String, context: CleanupContext) async throws -> CleanOutcome {
         var firstError: (any Error)?
         for (index, cleaner) in chain.enumerated() {
+            // A cancelled task (e.g. the pre-paste timeout racing this call)
+            // must not fall through to the next tier: that would start a local
+            // generation — possibly a multi-GB model load — whose result is
+            // guaranteed to be discarded. Bail before touching the next cleaner.
+            try Task.checkCancellation()
             do {
                 let output = try await cleaner.clean(transcript, context: context)
                 if index > 0 {
                     notice?("Cloud cleanup failed — used local instead (\(Self.reason(firstError)))")
                 }
                 return CleanOutcome(text: output, engine: cleaner.engineID)
+            } catch is CancellationError {
+                // Same reasoning: the caller no longer wants any result, so
+                // degrade no further and propagate the cancellation.
+                throw CancellationError()
             } catch {
                 if firstError == nil { firstError = error }
             }

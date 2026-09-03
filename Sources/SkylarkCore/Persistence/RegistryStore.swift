@@ -100,6 +100,22 @@ public actor RegistryStore {
     public func syncSeed() async throws {
         try await ensureSeededColumn()
         try await db.dbQueue.write { db in
+            // One-time adoption for installs that already had the `seeded`
+            // column (so `ensureSeededColumn()`'s own bulk-mark below never
+            // ran for them): a row seeded before that column existed defaults
+            // to `seeded == false`, making it indistinguishable from a
+            // genuinely user-created row, so the refresh loop below skips it
+            // forever. Adopt only rows whose slug is still seeded AND whose
+            // label matches a label that slug's seed row carried in the past
+            // — a real seed row unlucky enough to predate the column, not a
+            // user's own entry that happens to reuse the slug.
+            for entry in ModelRegistryEntry.seed {
+                guard let legacyLabels = ModelRegistryEntry.legacyLabels[entry.slug] else { continue }
+                guard var existing = try RegistryRecord.fetchOne(db, key: entry.slug),
+                      !existing.seeded, legacyLabels.contains(existing.label) else { continue }
+                existing.seeded = true
+                try existing.update(db)
+            }
             for entry in ModelRegistryEntry.seed {
                 var record = RegistryRecord(entry: entry)
                 record.seeded = true
@@ -137,6 +153,21 @@ public actor RegistryStore {
             let hasColumn = try db.columns(in: "model_registry").contains { $0.name == "seeded" }
             guard !hasColumn else { return }
             try db.execute(sql: "ALTER TABLE model_registry ADD COLUMN seeded BOOLEAN NOT NULL DEFAULT 0")
+            // Adding the column for the first time: every existing row
+            // defaults to `seeded == false`, including rows that ARE genuine
+            // seed rows from before this column existed. No UI path upserts a
+            // user row whose slug collides with one already in the known
+            // registry list (`ModelSelection.setSTT`/`setCleanupSlug` skip the
+            // upsert when the slug is already known), so a fresh install has
+            // never had a user-created row collide with a seed slug — mark
+            // every seed-slug row seeded so `syncSeed()` refreshes it below.
+            let seedSlugs = ModelRegistryEntry.seed.map(\.slug)
+            guard !seedSlugs.isEmpty else { return }
+            let placeholders = seedSlugs.map { _ in "?" }.joined(separator: ", ")
+            try db.execute(
+                sql: "UPDATE model_registry SET seeded = 1 WHERE slug IN (\(placeholders))",
+                arguments: StatementArguments(seedSlugs)
+            )
         }
         didEnsureSeededColumn = true
     }
