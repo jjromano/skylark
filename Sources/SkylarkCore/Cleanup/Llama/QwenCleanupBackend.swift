@@ -43,6 +43,10 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
 
     public var displayName: String { model.displayName }
 
+    /// History provenance, so a row cleaned by this model is not labelled
+    /// "Apple Intelligence" (see `LocalCleanupBackend.engineID`).
+    public nonisolated var engineID: String { "local:\(model.id)" }
+
     // MARK: - LocalCleanupBackend
 
     public func unavailability() async -> String? {

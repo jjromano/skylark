@@ -710,12 +710,21 @@ private struct RecentDictationRow: View {
         }
     }
 
-    /// Friendly label for the cleanup engine ("raw"/"local"/slug/"snippet").
+    /// Friendly label for the cleanup engine ("raw"/"local[:engine]"/slug/"snippet").
     static func cleanupLabel(_ engine: String?) -> String {
         switch engine {
         case nil: return "no cleanup"
         case "raw": return "raw"
-        case "local": return "Apple Intelligence"
+        // Rows written before per-engine provenance existed only say "local".
+        // They genuinely could have been any on-device engine, so name the tier
+        // rather than guessing Apple Intelligence and telling the reader — under
+        // a caption that says a fallback means the selected model didn't run —
+        // that their Qwen model was skipped when it wasn't.
+        case "local": return "on-device"
+        case "local:apple": return "Apple Intelligence"
+        case let .some(id) where id.hasPrefix("local:"):
+            let modelID = String(id.dropFirst("local:".count))
+            return LocalCleanupModel.model(id: modelID)?.displayName ?? modelID
         case "snippet": return "snippet"
         case let .some(slug): return shortSlug(slug) + " · cloud"
         }

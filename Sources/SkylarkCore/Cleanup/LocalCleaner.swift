@@ -19,6 +19,20 @@ public protocol LocalCleanupBackend: Sendable {
     /// Warm the next session so a subsequent request is low-latency. Called off
     /// the paste path after each use.
     func prewarm(instructions: String) async
+    /// Which on-device engine this is, for history provenance: `"local:apple"`
+    /// or `"local:<LocalCleanupModel.id>"`.
+    ///
+    /// Without this every local cleanup was recorded as the bare string
+    /// `"local"`, and History rendered that as "Apple Intelligence" — so a user
+    /// running a downloaded Qwen model saw "Apple Intelligence" on every row,
+    /// under a caption reading "a fallback here means the selected model
+    /// didn't [run]". The model had run fine; only the label was wrong.
+    var engineID: String { get }
+}
+
+public extension LocalCleanupBackend {
+    /// Backends that predate per-engine provenance keep the old label.
+    var engineID: String { "local" }
 }
 
 /// Tier 1 cleaner — Apple on-device Foundation Models (ARCHITECTURE §0).
@@ -29,6 +43,10 @@ public protocol LocalCleanupBackend: Sendable {
 /// so prompt/hygiene/unavailable paths are testable without real generation.
 public struct LocalCleaner: Cleaner {
     public let tier: CleanupTier = .local
+
+    /// Provenance for history rows: which on-device engine actually ran, not
+    /// just "the local tier". See `LocalCleanupBackend.engineID`.
+    public var engineID: String { backend.engineID }
 
     private let backend: any LocalCleanupBackend
 
@@ -381,6 +399,8 @@ struct UnavailableBackend: LocalCleanupBackend {
 /// common (repeat-context) case; a session that has already responded is never
 /// reused (fresh 4096-token context, no accumulation).
 actor FoundationModelBackend: LocalCleanupBackend {
+    nonisolated var engineID: String { "local:apple" }
+
     private var prewarmed: (instructions: String, session: LanguageModelSession)?
 
     func unavailability() async -> String? {

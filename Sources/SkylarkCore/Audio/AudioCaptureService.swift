@@ -465,8 +465,26 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     /// sample already captured, stamp the boundary, and restart the engine so the
     /// SAME recording continues appending after the gap. If the restart fails the
     /// utterance is over — the orchestrator finalizes on `.restartFailed`.
+    /// How much captured audio makes a configuration change "mid-utterance".
+    ///
+    /// `installTapAndStart` calls `applyPreferredDevice()`, which sets the
+    /// engine's input device whenever the user has picked a mic in Settings →
+    /// Audio. The first such call after launch actually changes the device, so
+    /// AVAudioEngine posts a configuration change against our own engine before
+    /// a single sample exists. That is Skylark setting itself up, not the
+    /// user's microphone being taken away — raising "Mic interrupted — text may
+    /// be incomplete" for it put a false warning on the FIRST dictation after
+    /// every launch for anyone who had chosen a microphone at all (including
+    /// the one already serving as the system default). Found in live QA on
+    /// 2026-09-03: 7/7 with a preference set, 0/2 without one.
+    ///
+    /// Below this much captured audio nothing the user said can be missing, so
+    /// the restart is still performed and logged — it just isn't reported as an
+    /// interruption.
+    private static let selfInflictedConfigChangeGrace: TimeInterval = 0.2
+
     private func handleConfigurationChange() {
-        let outcome = lifecycle.withLock { state -> (CaptureInterruption, Bool)? in
+        let outcome = lifecycle.withLock { state -> (CaptureInterruption, Bool, Bool)? in
             guard state.recording else { return nil }
             let at = Double(writeIndex.load(ordering: .acquiring)) / Self.targetSampleRate
             let restarted = restartPreservingRecordingLocked()
@@ -475,15 +493,23 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
             let marker = CaptureInterruption(
                 reason: restarted ? .configurationChange : .restartFailed, at: at
             )
-            if state.interruption == nil || !restarted { state.interruption = marker }
+            // A restart that succeeded before any audio existed cost the user
+            // nothing (see `selfInflictedConfigChangeGrace`). A FAILED restart
+            // still ends the utterance no matter how early it landed.
+            let selfInflicted = restarted && at < Self.selfInflictedConfigChangeGrace
+            if !selfInflicted, state.interruption == nil || !restarted {
+                state.interruption = marker
+            }
             if !restarted { state.recording = false }
-            return (marker, restarted)
+            return (marker, restarted, selfInflicted)
         }
-        guard let (marker, restarted) = outcome else { return }
+        guard let (marker, restarted, selfInflicted) = outcome else { return }
         logger.notice("""
             audio engine configuration changed \(marker.at ?? 0, format: .fixed(precision: 2), privacy: .public)s \
-            into capture — restart \(restarted ? "ok" : "FAILED", privacy: .public)
+            into capture — restart \(restarted ? "ok" : "FAILED", privacy: .public)\
+            \(selfInflicted ? " (own device switch — not reported as an interruption)" : "", privacy: .public)
             """)
+        guard !selfInflicted else { return }
         interruptionsContinuation.yield(marker)
     }
 

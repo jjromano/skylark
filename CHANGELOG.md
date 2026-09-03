@@ -6,6 +6,27 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.20.1 - 2026-09-03
+
+**Two things that were telling you the wrong story**, both found by a live QA
+pass on the Air.
+
+- **The first dictation after launch no longer claims your mic was
+  interrupted.** If you had picked a microphone in Settings → Audio — including
+  the one already serving as the system default — Skylark's own
+  `applyPreferredDevice` switched the engine's device at capture start,
+  AVAudioEngine posted a configuration change for it, and that was reported as
+  "Mic interrupted — text may be incomplete". The text was always complete. A
+  configuration change that restarts cleanly before any audio exists is now
+  logged and ignored; a real one mid-utterance still raises the note.
+
+- **History names the on-device model that actually ran.** Any local cleanup was
+  recorded as the bare string `local` and displayed as "Apple Intelligence" — so
+  running a downloaded Qwen model showed "Apple Intelligence" on every row,
+  under a caption saying a fallback there means your selected model didn't run.
+  It had run. Rows now carry `local:apple` or `local:<model id>`; older rows say
+  "on-device" rather than guessing.
+
 ## 0.20.0 - 2026-09-02
 
 **Skylark has a real icon.** The Dock and the menu bar now show the same

@@ -145,6 +145,14 @@ public struct CleanOutcome: Sendable, Equatable {
 /// `RawPassthrough`, `LocalCleaner` (FoundationModels), `OpenRouterCleaner`.
 public protocol Cleaner: Sendable {
     var tier: CleanupTier { get }
+    /// Stable engine label recorded in history. A protocol REQUIREMENT, not
+    /// just an extension member: the default below derives it from `tier`, and
+    /// conformers that know more (`LocalCleaner`, which knows whether Apple
+    /// Foundation Models or a Qwen GGUF is behind it) override it. Declared
+    /// here so that override is reached through `any Cleaner` — as an
+    /// extension-only member it was statically dispatched, so every local
+    /// cleanup was still recorded as the bare tier name.
+    var engineID: String { get }
     func clean(_ transcript: String, context: CleanupContext) async throws -> String
     /// `clean` plus engine provenance. Defaulted for simple cleaners (their
     /// engine IS their tier); `DegradingCleaner` overrides to report the chain
