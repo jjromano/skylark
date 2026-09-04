@@ -9,8 +9,8 @@ speech to raw text landing at the cursor.
 ![Skylark listening: the notch HUD pill with a live waveform, and the menu-bar mic active](docs/assets/hud-listening.png)
 
 Skylark is a personal, open-source project (MIT). It is not on the App
-Store; you build it from source and sign it with a certificate generated on
-your own Mac.
+Store; it is built from source on your own Mac and signed with a certificate
+generated there. Install it with Homebrew (below) or by cloning this repo.
 
 ## Requirements
 
@@ -22,7 +22,35 @@ your own Mac.
   (~483 MB, downloaded automatically on first launch) plus Whisper
   large-v3-turbo (~626 MB, optional — only downloaded if you switch to it).
 
-## Install (from source)
+## Install
+
+### Homebrew (recommended)
+
+```sh
+brew install --HEAD jjromano/skylark/skylark
+skylark-setup
+```
+
+`skylark-setup` is a deliberate second step. Skylark needs a code-signing
+certificate in the System keychain, which requires your password, and Homebrew
+must never run as root or prompt for one during an install. So `brew install`
+builds the app, and `skylark-setup` does the privileged half: create the
+certificate, sign the app with it, install into `/Applications`, and launch.
+
+Update with:
+
+```sh
+brew upgrade skylark && skylark-setup
+```
+
+There is no bottle and no cask, on purpose. Both mean downloading a prebuilt
+binary, and macOS Gatekeeper refuses those unless they are Developer ID signed
+and notarized by Apple, which needs a paid Apple Developer Program membership.
+An app compiled on your own Mac never gets a quarantine flag, so building from
+source is what makes a free install work at all. The first build takes a few
+minutes.
+
+### From source
 
 ```sh
 git clone https://github.com/jjromano/skylark.git
