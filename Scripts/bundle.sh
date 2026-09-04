@@ -15,10 +15,21 @@ DIST="dist"
 APP="$DIST/$APP_NAME.app"
 CONTENTS="$APP/Contents"
 
-echo "→ swift build -c release --product Skylark"
+# Extra flags for `swift build`, set by callers whose environment SwiftPM can't
+# cope with. The one real case is Homebrew: `brew install` already runs the
+# build inside its own sandbox, and SwiftPM's attempt to start a nested
+# sandbox-exec for manifest compilation fails there with
+# "sandbox_apply: Operation not permitted", so the formula passes
+# --disable-sandbox. Empty for a normal local build, which keeps SwiftPM's
+# sandbox on where it works.
+SWIFT_BUILD_FLAGS="${SKYLARK_SWIFT_BUILD_FLAGS:-}"
+# shellcheck disable=SC2206  # deliberate word splitting: this carries flags
+EXTRA_FLAGS=($SWIFT_BUILD_FLAGS)
+
+echo "→ swift build -c release --product Skylark ${SWIFT_BUILD_FLAGS}"
 # Build only the app product so the shipping bundle never pulls in the test
 # targets (and their swift-testing dependency).
-swift build -c release --product Skylark
+swift build -c release --product Skylark ${EXTRA_FLAGS[@]+"${EXTRA_FLAGS[@]}"}
 
 echo "→ Assembling $APP"
 # Keep dist/ out of the Spotlight index. This build artifact shares the installed
