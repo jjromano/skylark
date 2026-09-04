@@ -20,8 +20,16 @@ public enum CleanupHygiene {
     /// wrapping markdown code fence, echoed transcript fence tags, a leading
     /// "Output:"-style label, and a single layer of wrapping quotes. Every strip
     /// is conservative — it only removes a recognized wrapper, never speaker
-    /// content. (Adapted from VoiceInk's `AIEnhancementOutputFilter` and
-    /// OpenWhispr's `stripThinkingTags`, both MIT-adjacent references.)
+    /// content.
+    ///
+    /// Provenance, stated precisely because the previous wording was wrong: the
+    /// only code here adapted from another project is the thinking-tag strip,
+    /// which follows OpenWhispr's `stripThinkingTags` (MIT, adaptation
+    /// permitted with attribution). VoiceInk was read for the IDEA that a local
+    /// model's scaffolding needs filtering at all, and nothing else — it is
+    /// **GPL-3.0**, so no line of it may be copied into this MIT repo, and an
+    /// earlier version of this comment described it as "MIT-adjacent", which it
+    /// is not. The strips below are ordinary string trimming written here.
     public static func sanitize(_ output: String) -> String {
         var s = output.trimmingCharacters(in: .whitespacesAndNewlines)
         s = stripReasoningBlocks(s)
