@@ -1,4 +1,4 @@
-.PHONY: build test app run cert clean
+.PHONY: build test app run cert clean release
 
 build:
 	swift build
@@ -28,6 +28,9 @@ run: app
 
 cert:
 	./Scripts/make-cert.sh
+
+release:
+	./Scripts/release.sh
 
 clean:
 	rm -rf .build dist

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Skylark.entitlements — the hardened runtime exceptions Skylark needs to keep
+  working once it is signed for distribution.
+
+  WHY THIS FILE EXISTS AT ALL. Notarization requires the hardened runtime
+  (`codesign --options runtime`), and the hardened runtime revokes capabilities
+  that an unsigned local build simply has. Each one has to be asked for
+  explicitly here. Get this wrong and the failure is nasty: the app notarizes
+  successfully, installs cleanly, and then silently cannot hear you — which
+  looks like a dictation bug rather than a signing one.
+
+  Only add an entitlement with a reason written next to it. Every line here
+  widens what the process may do, and the notary service reviews the list.
+
+  NOT sandboxed: Skylark is Developer ID / direct distribution, not Mac App
+  Store. The App Sandbox would break Accessibility text injection into other
+  apps, which is the core of the product. `com.apple.security.app-sandbox` must
+  stay absent.
+-->
+<plist version="1.0">
+<dict>
+    <!--
+      Microphone. The whole product. Under the hardened runtime, audio input is
+      denied without this even when the user has granted the TCC prompt, and
+      `NSMicrophoneUsageDescription` in Info.plist is NOT a substitute — that
+      string only controls what the prompt says.
+    -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
+
+    <!--
+      Apple Events to other applications. `MediaPauseController` drives Music
+      and Spotify over NSAppleScript to pause them while you dictate and resume
+      afterwards (see NSAppleEventsUsageDescription in Info.plist). Without
+      this the scripts fail with errAEEventNotPermitted (-1743) and playback
+      keeps running over your dictation.
+    -->
+    <key>com.apple.security.automation.apple-events</key>
+    <true/>
+</dict>
+</plist>
