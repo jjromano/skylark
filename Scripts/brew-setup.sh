@@ -85,7 +85,7 @@ echo "  ✓ Signed"
 # somewhere a person should be pointed.
 echo ""
 if pgrep -f "$INSTALLED_APP/Contents/MacOS/$APP_NAME" >/dev/null 2>&1; then
-    echo "→ Quitting the running $APP_NAME…"
+    echo "→ Quitting the running ${APP_NAME}…"
     osascript -e "tell application \"$APP_NAME\" to quit" >/dev/null 2>&1 || true
     for _ in $(seq 1 25); do
         pgrep -f "$INSTALLED_APP/Contents/MacOS/$APP_NAME" >/dev/null 2>&1 || break
@@ -108,7 +108,7 @@ fi
 # --- 4. Launch -------------------------------------------------------------
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED_APP/Contents/Info.plist" 2>/dev/null || echo '?')"
 echo ""
-echo "→ Launching $APP_NAME $VERSION…"
+echo "→ Launching ${APP_NAME} ${VERSION}…"
 open "$INSTALLED_APP" 2>/dev/null || true
 
 for _ in $(seq 1 75); do

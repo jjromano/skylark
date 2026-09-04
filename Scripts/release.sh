@@ -317,7 +317,7 @@ else
 
     if xcrun "${NOTARIZE_ARGS[@]}"; then
         echo "  ✓ Notarization accepted"
-        echo "  → Stapling ticket to $DMG_PATH…"
+        echo "  → Stapling ticket to ${DMG_PATH}…"
         if xcrun stapler staple "$DMG_PATH"; then
             echo "  ✓ Stapled"
             echo "  → Verifying with spctl…"
