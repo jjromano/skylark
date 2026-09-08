@@ -38,9 +38,7 @@ struct CleanupTimeoutWatchdogTests {
         // Sub-second bounds must not round to "1s".
         #expect(advice?.contains("0.6 s") == true)
         #expect(advice?.contains("Raw") == true)
-        // The cleanup timeout setting does not govern the paste path any more,
-        // so the advice must not send the user to it.
-        #expect(advice?.contains("Settings") == false)
+        #expect(advice?.contains("Settings") == true)
         #expect(advice?.contains("faster cleanup model") == true)
     }
 
@@ -72,6 +70,15 @@ struct CleanupTimeoutWatchdogTests {
         #expect(CleanupTimeoutWatchdog.boundLabel(.milliseconds(600)) == "0.6 s")
         #expect(CleanupTimeoutWatchdog.boundLabel(.seconds(2)) == "2 s")
         #expect(CleanupTimeoutWatchdog.boundLabel(.milliseconds(1500)) == "1.5 s")
+    }
+
+    @Test("At the safety ceiling the advice does not recommend an impossible increase")
+    func ceilingAdviceDoesNotSuggestTimeoutIncrease() {
+        var w = CleanupTimeoutWatchdog()
+        feed(&w, timeouts: 5, completed: 0)
+        let advice = w.recommendationIfNeeded(bound: .seconds(10))
+        #expect(advice?.contains("Settings") == false)
+        #expect(advice?.contains("faster cleanup model") == true)
     }
 
     @Test("The window slides, so an old bad patch stops counting once behavior recovers")

@@ -98,6 +98,15 @@ public final class ModelSelection {
     /// so the user's deliberate switch silently lands somewhere else.
     public func setCleanupSlug(_ slug: String, known: [ModelRegistryEntry]) async {
         cleanupSlug = slug
+        await registerCleanupSlugIfNeeded(slug, known: known)
+    }
+
+    /// Persist an ad-hoc cleanup slug in the registry without changing the live
+    /// selection. The app sets `cleanupSlug` synchronously before launching this
+    /// work so a quick dictation cannot run the previously selected cloud model.
+    public func registerCleanupSlugIfNeeded(
+        _ slug: String, known: [ModelRegistryEntry]
+    ) async {
         guard !slug.isEmpty, !known.contains(where: { $0.slug == slug }) else { return }
         try? await registry?.upsert(entry: ModelRegistryEntry(
             slug: slug,

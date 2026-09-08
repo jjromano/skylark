@@ -418,7 +418,10 @@ final class AppController {
         let previous = localCleanupBackend
         let next = engine.makeBackend()
         localCleanupBackend = next
-        Task { [orchestrator, next] in await orchestrator.setLocalCleaner(LocalCleaner(backend: next)) }
+        let fallback: (any Cleaner)? = engine.model == nil ? nil : LocalCleaner()
+        Task { [orchestrator, next, fallback] in
+            await orchestrator.setLocalCleaner(LocalCleaner(backend: next), fallback: fallback)
+        }
         let intensity = cleanupIntensity
         let retiring = previous as? QwenCleanupBackend
         if let retiring { retiringQwenBackends.append(retiring) }
@@ -868,9 +871,6 @@ final class AppController {
     @ObservationIgnored private let correctionReader = AXCorrectionFieldReader()
     @ObservationIgnored private var correctionWatcher: CorrectionWatcher?
 
-    /// Bridges @Sendable notice callbacks built during init to `showNote`.
-    @ObservationIgnored private let noticeRelay = NoticeRelay()
-
     /// Registry-backed provider pins for cloud cleanup slugs. The cloud-cleaner
     /// factory runs off the main actor (one cleaner per dictation), so it reads
     /// pins from this lock-backed snapshot rather than the main-actor
@@ -1027,15 +1027,6 @@ final class AppController {
             snippetsProvider = nil
         }
 
-        // Degrades (cloud cleanup falling back to local/raw) surface as
-        // menu-bar notes — a tier the user picked failing must never be silent.
-        // The relay exists because `self` can't be captured in an escaping
-        // closure this early in init; `start()` points it back at us.
-        let relay = noticeRelay
-        let cleanupNotice: @Sendable (String) -> Void = { message in
-            Task { @MainActor in relay.post(message) }
-        }
-
         // Deep-vocabulary rescorer reads the same dictionary the pipeline uses;
         // its model prep reports through the shared prep stream like other models.
         deepVocabRescorer = FluidAudioDeepVocabularyRescorer(
@@ -1070,8 +1061,8 @@ final class AppController {
             endpointer: endpointer,
             cleaners: CleanerRegistry(
                 local: LocalCleaner(backend: localBackend),
-                cloudFactory: cloudFactory,
-                notice: cleanupNotice
+                localFallback: resolvedLocalEngine.model == nil ? nil : LocalCleaner(),
+                cloudFactory: cloudFactory
             ),
             modeProvider: modeProvider,
             dictionary: dictionaryProvider,
@@ -1118,7 +1109,6 @@ final class AppController {
         guard !started else { return }
         started = true
 
-        noticeRelay.controller = self
         permissions.refresh()
 
         // Restore persisted HUD appearance before the panel first shows.
@@ -1864,8 +1854,9 @@ final class AppController {
             setLocalCleanupEngine(engine)
             setCleanupOverride(option.tierOverride)
         case .cloud(let slug, _):
-            selectCleanupSlug(slug)
-            setCleanupOverride(option.tierOverride)
+            // Persist the slug before activating Cloud. Otherwise a dictation
+            // started while the async write is running uses the previous slug.
+            selectCleanupSlug(slug, forceCloud: true)
         }
     }
 
@@ -1911,15 +1902,54 @@ final class AppController {
     var currentCleanupSlug: String { modelSelection.cleanupSlug }
     var currentSTT: STTChoice { modelSelection.sttChoice }
 
+    /// One shared list for Settings and the menu bar: Apple Intelligence, each
+    /// downloaded Qwen model, then the cloud registry. The old surfaces read
+    /// only `cleanupModels`, which is cloud-only, so Qwen could be selected in
+    /// Models while both quick selectors falsely showed Apple or omitted it.
+    var cleanupModelOptions: [CleanupCycleOption] {
+        Array(CleanupCycle.options(
+            localModels: LocalCleanupModel.installed,
+            cloudModels: cleanupModels,
+            hasAPIKey: true
+        ).dropFirst(2))
+    }
+
+    /// The underlying selected model. Cloud displays its selected slug; Auto and
+    /// Raw display the retained on-device choice because their effective model
+    /// varies by mode or is intentionally disabled. Choosing an item forces its
+    /// corresponding tier.
+    var selectedCleanupModelOption: CleanupCycleOption {
+        if cleanupOverride != "cloud" { return .local(localCleanupEngine) }
+        let slug = currentCleanupSlug
+        let label = cleanupModels.first { $0.slug == slug }?.label ?? slug
+        return .cloud(slug: slug, label: label)
+    }
+
+    func selectCleanupModelOption(_ option: CleanupCycleOption) {
+        switch option {
+        case .local, .cloud:
+            applyCleanupCycleOption(option)
+        case .auto, .raw:
+            break
+        }
+    }
+
     /// Select the global cleanup model slug (upserts an ad-hoc registry entry for
     /// a free-text slug). Takes effect next dictation.
-    func selectCleanupSlug(_ slug: String) {
+    func selectCleanupSlug(_ slug: String, forceCloud: Bool = false) {
+        // The live slug and tier change synchronously as one main-actor action.
+        // Registry persistence can wait, but the next dictation cannot use the
+        // cloud model that was selected before this click.
+        modelSelection.cleanupSlug = slug
+        if forceCloud { setCleanupOverride("cloud") }
+        else if cleanupOverride == "cloud" { applyCleanupOverride("cloud") }
+
         Task { [weak self] in
             guard let self else { return }
-            await self.modelSelection.setCleanupSlug(slug, known: self.cleanupModels)
+            await self.modelSelection.registerCleanupSlugIfNeeded(
+                slug, known: self.cleanupModels
+            )
             await self.reloadRegistryLists()
-            // If the override forces Cloud, re-apply so it picks up the new slug.
-            if self.cleanupOverride == "cloud" { self.applyCleanupOverride("cloud") }
         }
     }
 
@@ -2514,7 +2544,7 @@ final class AppController {
             title: "Custom Cleanup Model",
             message: "Enter an OpenRouter model slug (e.g. openai/gpt-oss-120b)."
         ) else { return }
-        selectCleanupSlug(slug)
+        selectCleanupSlug(slug, forceCloud: true)
     }
 
     /// Prompt for a custom cloud STT model slug, then select it.
@@ -2741,12 +2771,4 @@ final class AppController {
         window.center()
         return window
     }
-}
-
-/// Bridges @Sendable notice callbacks created during `AppController.init`
-/// (before `self` is available to capture) back to `showNote`.
-@MainActor
-final class NoticeRelay {
-    weak var controller: AppController?
-    func post(_ message: String) { controller?.showNote(message) }
 }

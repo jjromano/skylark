@@ -98,6 +98,33 @@ private struct FastCleaner: Cleaner {
     func clean(_ transcript: String, context: CleanupContext) async throws -> String { "CLEANED" }
 }
 
+/// A successful cleaner is allowed to decide that the transcript needs no
+/// changes. That is still a completed fallback, not another timeout.
+private struct UnchangedCleaner: Cleaner {
+    var tier: CleanupTier = .local
+    func clean(_ transcript: String, context: CleanupContext) async throws -> String { transcript }
+}
+
+private struct FailingCleaner: Cleaner {
+    var tier: CleanupTier
+    func clean(_ transcript: String, context: CleanupContext) async throws -> String {
+        throw CleanerError.unusableOutput
+    }
+}
+
+private actor CountingHangingCleaner: Cleaner {
+    let tier: CleanupTier = .local
+    private(set) var callCount = 0
+
+    func clean(_ transcript: String, context: CleanupContext) async throws -> String {
+        callCount += 1
+        try await Task.sleep(for: .seconds(60))
+        return transcript
+    }
+
+    func calls() -> Int { callCount }
+}
+
 private actor SpyInjector: TextInjecting {
     private(set) var inserted: [String] = []
     private(set) var replaced: [String] = []
@@ -467,20 +494,39 @@ struct CommandCancelTests {
 
 @Suite("Pre-paste cleanup bound")
 struct PrePasteBoundTests {
-    @Test("The bound always wins: the cleanup timeout can only shorten the pre-paste wait")
-    func capIsAlwaysBounded() async {
+    @Test("The selected timeout governs paste cleanup up to the safety ceiling")
+    func selectedTimeoutIsHonored() async {
         let orchestrator = DictationOrchestrator(
             capture: FakeCapture(clip: makeClip()),
             transcriber: StubTranscriber(),
-            injector: SpyInjector(),
-            prePasteBound: .milliseconds(600)
+            injector: SpyInjector()
         )
-        await #expect(orchestrator.prePasteCap(nil) == .milliseconds(600))   // "Off"
-        // The v0.19.1 5 s cleanup timeout must NOT stretch the blank-screen wait.
-        await #expect(orchestrator.prePasteCap(.seconds(2)) == .milliseconds(600))
-        await #expect(orchestrator.prePasteCap(.seconds(5)) == .milliseconds(600))
+        await #expect(orchestrator.prePasteCap(nil) == .seconds(10))   // "Off"
+        await #expect(orchestrator.prePasteCap(.seconds(2)) == .seconds(2))
+        // Regression: Qwen3 4B took 624-785 ms on a supported work laptop, so
+        // silently replacing the visible 5 s choice with 600 ms made it fail
+        // every dictation into paste-only apps.
+        await #expect(orchestrator.prePasteCap(.seconds(5)) == .seconds(5))
         // A shorter setting still shortens it.
         await #expect(orchestrator.prePasteCap(.milliseconds(100)) == .milliseconds(100))
+    }
+
+    @Test("A Qwen 4B latency-class cleanup completes under the selected five seconds")
+    func qwenLatencyClassCompletes() async {
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: SlowCleaner(delay: .milliseconds(650))),
+            modeProvider: modes(defaultTier: .local)
+        )
+        await orchestrator.setCleanupTimeout(.seconds(5))
+
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+
+        await #expect(spy.first() == "CLEANED")
     }
 
     @Test("Timeout 'Off' no longer blocks the first paste indefinitely")
@@ -574,6 +620,128 @@ struct PrePasteBoundTests {
         await orchestrator.handle(.stopRecording)
 
         await #expect(spy.first() == "CLEANED")
+    }
+
+    @Test("A timed-out Qwen cleanup falls back to Apple while the ceiling has room")
+    func qwenTimeoutFallsBackToApple() async {
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(
+                local: HangingCleaner(),
+                localFallback: FastCleaner()
+            ),
+            modeProvider: modes(defaultTier: .local),
+            prePasteBound: .seconds(1)
+        )
+        await orchestrator.setCleanupTimeout(.milliseconds(30))
+
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+
+        await #expect(spy.first() == "CLEANED")
+        let seen = await notes(orchestrator)
+        #expect(seen.contains("Selected local cleanup failed or timed out. Used Apple Intelligence instead."))
+    }
+
+    @Test("A failed Qwen cleanup falls back to Apple")
+    func qwenFailureFallsBackToApple() async {
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(
+                local: FailingCleaner(tier: .local),
+                localFallback: FastCleaner()
+            ),
+            modeProvider: modes(defaultTier: .local),
+            prePasteBound: .seconds(1)
+        )
+
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+
+        await #expect(spy.first() == "CLEANED")
+        let seen = await notes(orchestrator)
+        #expect(seen.contains("Selected local cleanup failed or timed out. Used Apple Intelligence instead."))
+    }
+
+    @Test("An unchanged Apple result still counts as a successful fallback")
+    func unchangedAppleFallbackCountsAsSuccess() async {
+        let spy = SpyInjector()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(
+                local: HangingCleaner(),
+                localFallback: UnchangedCleaner()
+            ),
+            modeProvider: modes(defaultTier: .local),
+            prePasteBound: .seconds(1)
+        )
+        await orchestrator.setCleanupTimeout(.milliseconds(30))
+
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+
+        await #expect(spy.first() == StubTranscriber.output)
+        let seen = await notes(orchestrator)
+        #expect(seen.contains("Selected local cleanup failed or timed out. Used Apple Intelligence instead."))
+        #expect(!seen.contains("Cleanup didn't finish in time — raw text kept"))
+    }
+
+    @Test("Cloud failure then Qwen timeout still leaves time for Apple")
+    func cloudFailureThenQwenTimeoutFallsBackToApple() async {
+        let spy = SpyInjector()
+        let cloud = FailingCleaner(tier: .cloud(slug: "broken"))
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(
+                local: HangingCleaner(),
+                localFallback: FastCleaner(),
+                cloud: ["broken": cloud]
+            ),
+            modeProvider: modes(defaultTier: .cloud(slug: "broken")),
+            prePasteBound: .seconds(1)
+        )
+        await orchestrator.setCleanupTimeout(.milliseconds(30))
+
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+
+        await #expect(spy.first() == "CLEANED")
+        let seen = await notes(orchestrator)
+        #expect(seen.contains("Cloud and selected local cleanup failed. Used Apple Intelligence instead."))
+    }
+
+    @Test("A Qwen error gives Apple one fallback attempt, not two")
+    func qwenErrorDoesNotRetryApple() async {
+        let spy = SpyInjector()
+        let apple = CountingHangingCleaner()
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(
+                local: FailingCleaner(tier: .local),
+                localFallback: apple
+            ),
+            modeProvider: modes(defaultTier: .local),
+            prePasteBound: .milliseconds(300)
+        )
+        await orchestrator.setCleanupTimeout(.milliseconds(30))
+
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+
+        await #expect(spy.first() == StubTranscriber.output)
+        await #expect(apple.calls() == 1)
     }
 
     @Test("The local fallback is skipped once the bound is spent")

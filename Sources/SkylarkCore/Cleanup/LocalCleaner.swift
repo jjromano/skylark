@@ -162,15 +162,13 @@ public struct LocalCleaner: Cleaner {
         // input, so seam repair (`joinChunks`) can tell a model-introduced
         // capital from a proper noun the speaker actually used.
         var parts: [(cleaned: String, raw: String)] = []
+        var successfulChunkCount = 0
         parts.reserveCapacity(allChunks.count)
-        for (index, chunk) in capped.enumerated() {
-            // Observe cancellation (e.g. the cleanup-timeout `cancelAll`): keep
-            // every not-yet-cleaned chunk's RAW text — never partial-drop — and
-            // stop generating.
-            if Task.isCancelled {
-                for remaining in capped[index...] { parts.append((remaining, remaining)) }
-                break
-            }
+        for chunk in capped {
+            // The orchestrator owns the original transcript and the fallback
+            // budget. Propagate cancellation so it can try Apple rather than
+            // misreporting an all-raw partial result as successful Qwen cleanup.
+            try Task.checkCancellation()
             let maxTokens = Self.maximumResponseTokens(forTranscriptTokens: Self.estimatedTokens(chunk))
             do {
                 let raw = try await backend.generate(
@@ -187,6 +185,7 @@ public struct LocalCleaner: Cleaner {
                     translated: false
                 )
                 parts.append((cleaned, chunk))
+                successfulChunkCount += 1
             } catch is CancellationError {
                 // A cancelled generation is NOT a failed chunk: propagate so the
                 // caller's timeout path keeps the raw transcript, rather than
@@ -197,6 +196,10 @@ public struct LocalCleaner: Cleaner {
             }
         }
         if let remainderRaw { parts.append((remainderRaw, remainderRaw)) }
+        // Per-chunk raw preservation is useful when only one window is bad. If
+        // every attempted generation failed validation or threw, the selected
+        // model did no cleanup at all, so let the registry try Apple instead.
+        guard successfulChunkCount > 0 else { throw CleanerError.unusableOutput }
         await backend.prewarm(instructions: instructions)
         return Self.joinChunks(parts)
     }

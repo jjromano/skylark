@@ -224,6 +224,19 @@ struct LocalCleanerTests {
         #expect(!out.lowercased().contains("completely unrelated words"))
     }
 
+    @Test("All chunk generations failing rejects the Qwen attempt")
+    func allChunkFailuresThrow() async {
+        let backend = MappingBackend { _ in throw CleanerError.unusableOutput }
+        let cleaner = LocalCleaner(backend: backend)
+        let long = Array(repeating: "The nightly build passed on staging.", count: 40)
+            .joined(separator: " ")
+        #expect(LocalCleaner.estimatedTokens(long) > LocalCleaner.chunkTokenThreshold)
+
+        await #expect(throws: CleanerError.self) {
+            _ = try await cleaner.clean(long, context: CleanupContext())
+        }
+    }
+
     @Test("Chunk count is capped: past maxChunks the remainder is kept RAW in one piece")
     func chunkCountCapped() async throws {
         // Enough sentences to exceed maxChunks at the real budget.
@@ -246,20 +259,17 @@ struct LocalCleanerTests {
         #expect(out.contains(sentence.uppercased()))
     }
 
-    @Test("Cancellation never partial-drops: every chunk survives as raw or cleaned")
-    func cancellationKeepsAllContent() async throws {
+    @Test("Cancellation before chunking propagates to the orchestrator")
+    func cancellationBeforeChunkingPropagates() async {
         let backend = MappingBackend { chunk in chunk.uppercased() }
         let cleaner = LocalCleaner(backend: backend)
         let long = Array(repeating: "The build finished cleanly on staging today.", count: 60)
             .joined(separator: " ")
         let task = Task { try await cleaner.clean(long, context: CleanupContext()) }
         task.cancel()
-        let out = try await task.value
-        // Wherever cancellation landed (before / during / after generation), no
-        // content is lost: the output is at least as long as the raw transcript
-        // and the source sentence is present (raw and/or uppercased).
-        #expect(out.count >= long.count)
-        #expect(out.uppercased().contains("THE BUILD FINISHED CLEANLY ON STAGING TODAY."))
+        await #expect(throws: CancellationError.self) {
+            _ = try await task.value
+        }
     }
 
     @Test("A cancelled generation propagates (not swallowed as a failed chunk)")

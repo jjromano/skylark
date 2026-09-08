@@ -118,20 +118,20 @@ private struct CleanupMenu: View {
     }
 }
 
-/// Global cloud cleanup model picker (registry `.cleanup` entries + custom slug).
+/// Global cleanup model picker: on-device engines plus cloud registry entries.
 private struct CleanupModelMenu: View {
     let controller: AppController
 
     var body: some View {
         Menu("Cleanup Model") {
-            ForEach(controller.cleanupModels) { entry in
+            ForEach(controller.cleanupModelOptions) { option in
                 Button {
-                    controller.selectCleanupSlug(entry.slug)
+                    controller.selectCleanupModelOption(option)
                 } label: {
-                    if controller.currentCleanupSlug == entry.slug {
-                        Label(entry.label, systemImage: "checkmark")
+                    if controller.selectedCleanupModelOption.id == option.id {
+                        Label(option.displayName, systemImage: "checkmark")
                     } else {
-                        Text(entry.label)
+                        Text(option.displayName)
                     }
                 }
             }

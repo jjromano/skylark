@@ -178,11 +178,6 @@ private struct SidebarRow: View {
 private struct GeneralPane: View {
     @Bindable var controller: AppController
 
-    /// Sentinel selection for the Cleanup-model picker's local option (maps to
-    /// the "local" cleanup tier / Apple Intelligence). Won't collide with real
-    /// registry slugs.
-    private static let localCleanupTag = "skylark.local"
-
     /// Sentinel for the mouse-trigger picker's "None" row (no binding).
     private static let mouseOffTag = "off"
 
@@ -469,23 +464,15 @@ private struct GeneralPane: View {
                     }
                 }
                 Picker("Cleanup model", selection: Binding(
-                    get: { controller.cleanupOverride == "local" ? Self.localCleanupTag : controller.currentCleanupSlug },
+                    get: { controller.selectedCleanupModelOption },
                     set: { selection in
                         let previousTier = controller.cleanupOverride
-                        if selection == Self.localCleanupTag {
-                            controller.setCleanupOverride("local")
-                        } else {
-                            // Picking a cloud model routes cleanup to the cloud so
-                            // the choice actually takes effect.
-                            controller.setCleanupOverride("cloud")
-                            controller.selectCleanupSlug(selection)
-                        }
+                        controller.selectCleanupModelOption(selection)
                         announceTierSwitch(from: previousTier, to: controller.cleanupOverride)
                     }
                 )) {
-                    Text("Apple Intelligence (Local)").tag(Self.localCleanupTag)
-                    ForEach(controller.cleanupModels) { entry in
-                        Text(entry.label).tag(entry.slug)
+                    ForEach(controller.cleanupModelOptions) { option in
+                        Text(option.displayName).tag(option)
                     }
                 }
             } header: {

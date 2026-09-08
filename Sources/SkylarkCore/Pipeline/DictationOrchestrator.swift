@@ -180,14 +180,11 @@ public actor DictationOrchestrator {
     /// The hard bound on the WHOLE pre-paste cleanup stage, primary cleaner and
     /// local fallback together.
     ///
-    /// This is a safety bound, not a preference, and it is deliberately NOT the
-    /// user's cleanup timeout. That setting governs the DETACHED AX path, where
-    /// raw text is already on screen and a long cleanup costs nothing visible.
-    /// Ahead of the FIRST insertion the user has released the key and is staring
-    /// at an empty cursor, and PRD §12 budgets that whole path in hundreds of
-    /// ms — so raising the cleanup timeout must never lengthen it. 600 ms keeps
-    /// local Qwen (~535 ms) and most cloud cleanups landing; a slower engine
-    /// loses the race and raw text is pasted, which is the right trade here.
+    /// The selected cleanup timeout governs the primary attempt. This ceiling
+    /// only bounds "Off" and the primary+fallback total so a wedged model can
+    /// never hold the first paste indefinitely. Qwen3 4B takes 624–785 ms on a
+    /// supported work laptop, so the former 600 ms ceiling made the downloaded
+    /// model fail every paste-only dictation despite a visible 5 s selection.
     /// Injected only so tests need not wait it out.
     private let prePasteBound: Duration
 
@@ -323,7 +320,7 @@ public actor DictationOrchestrator {
         historyUpdate: (@Sendable (HistoryRecord) -> Void)? = nil,
         replaceTimeout: Duration = .seconds(5),
         waitForCleanTimeout: Duration = .seconds(2),
-        prePasteBound: Duration = .milliseconds(600),
+        prePasteBound: Duration = .seconds(10),
         lateCancelWindow: Duration = .seconds(2)
     ) {
         self.capture = capture
@@ -394,9 +391,11 @@ public actor DictationOrchestrator {
 
     /// Swap the local-tier cleaner (Settings "Local cleanup engine" picker —
     /// Apple Foundation Models vs. a Qwen GGUF). Takes effect on the next
-    /// dictation; raw/cloud tiers and the degrade chain are unaffected.
-    public func setLocalCleaner(_ cleaner: any Cleaner) {
-        cleaners = cleaners.withLocal(cleaner)
+    /// dictation; callers also provide Apple as the fallback for Qwen.
+    public func setLocalCleaner(
+        _ cleaner: any Cleaner, fallback: (any Cleaner)? = nil
+    ) {
+        cleaners = cleaners.withLocal(cleaner, fallback: fallback)
     }
 
     /// Temporary global cleanup override from the menu bar. `nil` = Auto (use the
@@ -2053,11 +2052,11 @@ public actor DictationOrchestrator {
         }
     }
 
-    /// After a (cloud) cleanup timed out, try the LOCAL engine before giving up to
-    /// raw — a slow cloud degrades to on-device cleanup, not none. Returns nil if
-    /// the timed-out tier already WAS local, or local is unavailable / a no-op /
-    /// also times out. Emits a status note on success so the switch is never
-    /// silent (the invisible-degrade complaint).
+    /// After cleanup fails or times out, try the remaining on-device engines
+    /// before giving up to raw. If cloud was primary, Qwen gets the first part
+    /// of the budget and Apple keeps a reserved final slice. If Qwen was primary,
+    /// Apple gets the whole remaining budget. A valid unchanged result is still
+    /// success: the fallback ran and decided the transcript needed no edits.
     ///
     /// `cap` defaults to the detached path's generous budget. The paste path
     /// passes what is LEFT of `prePasteBound` instead: nothing is on screen
@@ -2066,13 +2065,50 @@ public actor DictationOrchestrator {
         _ text: String, context: CleanupContext, timedOutTier: CleanupTier,
         cap: Duration? = nil
     ) async -> CleanOutcome? {
-        guard timedOutTier != .local else { return nil }
-        let local = cleaners.cleaner(for: .local)
-        guard let outcome = await cleanWithTimeout(local, text, context: context, cap: cap ?? localFallbackTimeout),
-              outcome.text != text
-        else { return nil }
-        logger.notice("cleanup degraded: cloud→local after timeout (from tier \(Self.tierString(timedOutTier), privacy: .public))")
-        noteContinuation.yield("Cloud cleanup was slow — used local cleanup instead")
+        let budget = cap ?? localFallbackTimeout
+        if timedOutTier == .local {
+            guard let fallback = cleaners.localFallbackCleaner() else { return nil }
+            guard let outcome = await cleanWithTimeout(
+                fallback, text, context: context, cap: budget
+            ) else { return nil }
+            logger.notice("cleanup degraded: selected local→Apple Intelligence after failure or timeout")
+            noteContinuation.yield("Selected local cleanup failed or timed out. Used Apple Intelligence instead.")
+            return outcome
+        }
+
+        guard let selectedLocal = cleaners.selectedLocalCleaner() else { return nil }
+        if let apple = cleaners.localFallbackCleaner() {
+            // Never let a wedged downloaded model consume Apple's entire turn.
+            // Two seconds is enough for the observed Apple fallback; short test
+            // or safety budgets split evenly so both engines still get a chance.
+            let appleReserve = min(.seconds(2), budget / 2)
+            let qwenBudget = budget - appleReserve
+            let started = ContinuousClock.now
+            if qwenBudget >= Self.minimumFallbackRemainder,
+               let outcome = await cleanWithTimeout(
+                   selectedLocal, text, context: context, cap: qwenBudget
+               ) {
+                logger.notice("cleanup degraded: cloud→selected local after failure or timeout")
+                noteContinuation.yield("Cloud cleanup failed or timed out. Used local cleanup instead.")
+                return outcome
+            }
+
+            let remaining = budget - started.duration(to: ContinuousClock.now)
+            guard remaining >= Self.minimumFallbackRemainder,
+                  let outcome = await cleanWithTimeout(
+                      apple, text, context: context, cap: remaining
+                  )
+            else { return nil }
+            logger.notice("cleanup degraded: cloud→local model→Apple Intelligence")
+            noteContinuation.yield("Cloud and selected local cleanup failed. Used Apple Intelligence instead.")
+            return outcome
+        }
+
+        guard let outcome = await cleanWithTimeout(
+            selectedLocal, text, context: context, cap: budget
+        ) else { return nil }
+        logger.notice("cleanup degraded: cloud→local after failure or timeout (from tier \(Self.tierString(timedOutTier), privacy: .public))")
+        noteContinuation.yield("Cloud cleanup failed or timed out. Used local cleanup instead.")
         return outcome
     }
 
@@ -2137,7 +2173,7 @@ public actor DictationOrchestrator {
         noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
         // Once the pattern is established, say what to actually DO about it —
         // the per-dictation note above never explains that a setting is wrong.
-        if let advice = cleanupWatchdog.recommendationIfNeeded(bound: prePasteBound) {
+        if let advice = cleanupWatchdog.recommendationIfNeeded(bound: prePasteCap(cleanupTimeout)) {
             logger.notice("cleanup timeout watchdog: recommending a settings change")
             noteContinuation.yield(advice)
         }

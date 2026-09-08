@@ -20,6 +20,14 @@ struct SettingsPropertyShapeTests {
         return try? String(contentsOf: path, encoding: .utf8)
     }
 
+    private static func source(at relativePath: String) -> String? {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // SkylarkTestKit
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // repo root
+        return try? String(contentsOf: root.appendingPathComponent(relativePath), encoding: .utf8)
+    }
+
     /// Member-level computed properties (`    var x: T {` … `    }`) and their
     /// bodies. Deliberately crude — indentation is the only structure a text
     /// scan needs, and the file is consistently formatted.
@@ -70,5 +78,24 @@ struct SettingsPropertyShapeTests {
         guard let source = Self.appControllerSource else { return }
         #expect(source.contains("private(set) var launchAtLoginStatus: SMAppService.Status ="))
         #expect(source.contains("func refreshLaunchAtLoginStatus()"))
+    }
+
+    /// A downloaded Qwen is selected through `localCleanupEngine`, not through
+    /// the cloud registry. Both quick selectors must therefore consume the
+    /// controller's combined local+cloud options instead of iterating only
+    /// `cleanupModels` (the v0.21.0 UI showed Apple even while Qwen was active).
+    @Test("General and menu-bar cleanup selectors include local model options")
+    func cleanupSelectorsUseCombinedOptions() throws {
+        let settings = try #require(Self.source(at: "Sources/Skylark/Settings/SettingsView.swift"))
+        let menu = try #require(Self.source(at: "Sources/Skylark/App.swift"))
+        let controller = try #require(Self.source(at: "Sources/Skylark/AppController.swift"))
+        #expect(settings.contains("ForEach(controller.cleanupModelOptions)"))
+        #expect(menu.contains("ForEach(controller.cleanupModelOptions)"))
+        // The selected slug must change before Cloud is activated. Deferring
+        // the slug write into registry work lets a fast dictation use the old
+        // model while that task is still running.
+        #expect(controller.contains("selectCleanupSlug(slug, forceCloud: true)"))
+        #expect(controller.contains("modelSelection.cleanupSlug = slug"))
+        #expect(controller.contains("if forceCloud { setCleanupOverride(\"cloud\") }"))
     }
 }

@@ -6,6 +6,19 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.21.1 - 2026-09-07
+
+- Downloaded Qwen cleanup models now appear in Settings → General and the
+  menu-bar Cleanup Model picker. Both surfaces show the actual selected local
+  engine instead of labelling every Local selection as Apple Intelligence.
+- Paste-only apps such as Terminal and VS Code now honor the selected cleanup
+  timeout, up to the existing 10-second safety ceiling. The v0.21.0 0.6-second
+  cutoff routinely cancelled Qwen3 4B before it could return.
+- If a selected Qwen model fails or exceeds its timeout while safety budget
+  remains, cleanup falls back to Apple Intelligence before keeping raw text.
+- Changing cloud cleanup models now updates the active slug before enabling the
+  cloud tier, so an immediate dictation cannot use the previously selected model.
+
 ## 0.21.0 - 2026-09-03
 
 **The app now tells you what went wrong, on the screen you are looking at.**

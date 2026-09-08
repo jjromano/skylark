@@ -8,36 +8,41 @@ import Foundation
 public struct CleanerRegistry: Sendable {
     private let raw: any Cleaner
     private let local: (any Cleaner)?
+    /// Apple Intelligence when the selected local cleaner is a downloaded
+    /// model. nil when Apple is already primary, so it is never retried.
+    private let localFallback: (any Cleaner)?
     private let cloud: [String: any Cleaner]
     private let cloudFactory: (@Sendable (String) -> (any Cleaner)?)?
-    /// Surface degrade events to the user (menu-bar note) — a cloud tier
-    /// falling back must never be invisible. Never receives transcript content.
-    private let notice: (@Sendable (String) -> Void)?
 
     public init(
         raw: any Cleaner = RawPassthrough(),
         local: (any Cleaner)? = nil,
+        localFallback: (any Cleaner)? = nil,
         cloud: [String: any Cleaner] = [:],
-        cloudFactory: (@Sendable (String) -> (any Cleaner)?)? = nil,
-        notice: (@Sendable (String) -> Void)? = nil
+        cloudFactory: (@Sendable (String) -> (any Cleaner)?)? = nil
     ) {
         self.raw = raw
         self.local = local
+        self.localFallback = localFallback
         self.cloud = cloud
         self.cloudFactory = cloudFactory
-        self.notice = notice
     }
 
     /// A copy with a different local-tier cleaner — the seam the Settings
     /// "Local cleanup engine" picker uses to swap Apple Foundation Models for a
     /// Qwen GGUF (or back) without rebuilding raw/cloud or the orchestrator.
-    public func withLocal(_ cleaner: any Cleaner) -> CleanerRegistry {
-        CleanerRegistry(raw: raw, local: cleaner, cloud: cloud, cloudFactory: cloudFactory, notice: notice)
+    public func withLocal(
+        _ cleaner: any Cleaner, fallback: (any Cleaner)? = nil
+    ) -> CleanerRegistry {
+        CleanerRegistry(
+            raw: raw, local: cleaner, localFallback: fallback,
+            cloud: cloud, cloudFactory: cloudFactory
+        )
     }
 
-    /// Returns the cleaner for `tier`, degrading gracefully so a request never
-    /// fails to resolve. A resolved cloud cleaner is wrapped so a runtime failure
-    /// (no key / unavailable) silently falls back cloud → local → raw.
+    /// Returns the cleaner for `tier`. Local Qwen failures can degrade to Apple
+    /// inside the same tier. Cloud fallback stays with the orchestrator because
+    /// it must divide one user-visible timeout budget between Qwen and Apple.
     public func cleaner(for tier: CleanupTier) -> any Cleaner {
         switch tier {
         case .raw:
@@ -46,66 +51,21 @@ public struct CleanerRegistry: Sendable {
             return local ?? raw
         case .cloud(let slug):
             if let registered = cloud[slug] {
-                return degrading(registered)
+                return registered
             }
             if let built = cloudFactory?(slug) {
-                return degrading(built)
+                return built
             }
-            return local ?? raw
+            return cleaner(for: .local)
         }
     }
 
-    /// Wrap a cloud cleaner so a thrown error falls through to local, then raw.
-    private func degrading(_ cloud: any Cleaner) -> any Cleaner {
-        var chain: [any Cleaner] = [cloud]
-        if let local { chain.append(local) }
-        return DegradingCleaner(tier: cloud.tier, chain: chain, notice: notice)
-    }
-}
+    /// The selected local cleaner without its Apple fallback wrapper. Cloud
+    /// fallback uses this so it can reserve time for Apple if Qwen stalls.
+    func selectedLocalCleaner() -> (any Cleaner)? { local }
 
-/// Tries each cleaner in order, returning the first usable output; if all throw,
-/// returns the input verbatim (raw). Never throws — the caller keeps raw either
-/// way — but every degrade is REPORTED via `notice` so the user knows the tier
-/// they picked isn't the one that ran (error reason only, never content).
-struct DegradingCleaner: Cleaner {
-    let tier: CleanupTier
-    let chain: [any Cleaner]
-    var notice: (@Sendable (String) -> Void)?
-
-    func clean(_ transcript: String, context: CleanupContext) async throws -> String {
-        try await cleanTracked(transcript, context: context).text
-    }
-
-    func cleanTracked(_ transcript: String, context: CleanupContext) async throws -> CleanOutcome {
-        var firstError: (any Error)?
-        for (index, cleaner) in chain.enumerated() {
-            // A cancelled task (e.g. the pre-paste timeout racing this call)
-            // must not fall through to the next tier: that would start a local
-            // generation — possibly a multi-GB model load — whose result is
-            // guaranteed to be discarded. Bail before touching the next cleaner.
-            try Task.checkCancellation()
-            do {
-                let output = try await cleaner.clean(transcript, context: context)
-                if index > 0 {
-                    notice?("Cloud cleanup failed — used local instead (\(Self.reason(firstError)))")
-                }
-                return CleanOutcome(text: output, engine: cleaner.engineID)
-            } catch is CancellationError {
-                // Same reasoning: the caller no longer wants any result, so
-                // degrade no further and propagate the cancellation.
-                throw CancellationError()
-            } catch {
-                if firstError == nil { firstError = error }
-            }
-        }
-        notice?("Cleanup unavailable — kept raw text (\(Self.reason(firstError)))")
-        return CleanOutcome(text: transcript, engine: "raw")
-    }
-
-    /// Short human-readable failure reason; never transcript content.
-    private static func reason(_ error: (any Error)?) -> String {
-        guard let error else { return "unknown error" }
-        let text = error.localizedDescription
-        return text.count > 80 ? String(text.prefix(77)) + "…" : text
-    }
+    /// The backup on-device cleaner used after a selected Qwen times out.
+    /// Kept separate from `cleaner(for: .local)` so the timeout path does not
+    /// restart the Qwen generation it just cancelled.
+    func localFallbackCleaner() -> (any Cleaner)? { localFallback }
 }

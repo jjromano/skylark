@@ -10,14 +10,10 @@ import Foundation
 /// dictation "Cleanup didn't finish in time" note is easy to miss and says
 /// nothing about the pattern, so the cause never got addressed.
 ///
-/// The advice is deliberately about the MODEL, not a timeout setting: the
-/// pre-paste wait is a fixed internal bound (nothing is on screen yet, so it
-/// cannot be stretched to taste), and the user's cleanup timeout governs only
-/// the detached path, which never records here. Telling them to raise a setting
-/// that has no effect on this path would be worse than silence.
-///
 /// This deliberately RECOMMENDS rather than acts: the right answer depends on
-/// what the user wants, a faster model or no wait at all.
+/// what the user wants, a longer wait, a faster model, or no wait at all. The
+/// selected timeout governs the primary attempt, with a separate 10 s safety
+/// ceiling for the whole pre-paste cleanup and fallback chain.
 ///
 /// Pure and deterministic — no I/O, no clock, no shared state — so the trigger
 /// rule is unit-testable. The caller owns when to show the recommendation.
@@ -90,13 +86,15 @@ public struct CleanupTimeoutWatchdog: Sendable, Equatable {
     }
 
     /// The recommendation text for the PASTE path. Names the pattern, the cost,
-    /// and the two ways out — never transcript content. There is no detached
+    /// and the available ways out. There is no detached
     /// variant because the detached path never records an outcome here: its
     /// cleanup lands after the text is on screen, so a slow one costs nothing.
     static func message(timeouts: Int, attempts: Int, bound: Duration) -> String {
-        "Cleanup couldn't finish within \(boundLabel(bound)) on \(timeouts) of your last "
-            + "\(attempts) dictations into apps that paste, so raw text was kept. "
-            + "Pick a faster cleanup model, or set cleanup to Raw for those apps."
+        let remedy = bound < .seconds(10)
+            ? "Increase Cleanup timeout in Settings, pick a faster cleanup model, or set cleanup to Raw for those apps."
+            : "Pick a faster cleanup model, or set cleanup to Raw for those apps."
+        return "Cleanup couldn't finish within \(boundLabel(bound)) on \(timeouts) of your last "
+            + "\(attempts) dictations into apps that paste, so raw text was kept. \(remedy)"
     }
 
     /// A human label for the bound. Sub-second bounds print as "0.6 s", not the

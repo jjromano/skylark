@@ -154,9 +154,8 @@ public protocol Cleaner: Sendable {
     /// cleanup was still recorded as the bare tier name.
     var engineID: String { get }
     func clean(_ transcript: String, context: CleanupContext) async throws -> String
-    /// `clean` plus engine provenance. Defaulted for simple cleaners (their
-    /// engine IS their tier); `DegradingCleaner` overrides to report the chain
-    /// element that actually produced the output.
+    /// `clean` plus engine provenance. Defaulted for simple cleaners whose
+    /// engine is their tier.
     func cleanTracked(_ transcript: String, context: CleanupContext) async throws -> CleanOutcome
 }
 

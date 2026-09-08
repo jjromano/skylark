@@ -39,21 +39,17 @@ private actor CountingCleaner: Cleaner {
     func calls() -> Int { callCount }
 }
 
-@Suite("DegradingCleaner cancellation")
-struct DegradingCleanerCancellationTests {
-    /// A cancelled first cleaner (the pre-paste timeout cancelling the cloud
-    /// generation) must propagate the cancellation immediately, not degrade to
-    /// the next tier — degrading would start a local generation (possibly a
-    /// multi-GB model load) whose result is guaranteed to be discarded.
+@Suite("CleanerRegistry fallback ownership")
+struct CleanerRegistryFallbackOwnershipTests {
+    /// A cancelled selected local cleaner must propagate immediately, not start
+    /// Apple inside the cancelled task. The orchestrator owns the fresh Apple
+    /// fallback attempt and its remaining time budget.
     @Test("Cancelled first cleaner never invokes the second")
     func cancellationSkipsRemainingChain() async {
-        let cloud = CountingCleaner(tier: .cloud(slug: "test"), behaviour: .hangUntilCancelled)
-        let local = CountingCleaner(tier: .local, behaviour: .transform("LOCAL"))
-        // `CleanerRegistry.cleaner(for:)` wraps the resolved cloud cleaner in
-        // the internal `DegradingCleaner` chain — exercise it through this
-        // public seam rather than the internal type directly.
-        let registry = CleanerRegistry(local: local, cloud: ["test": cloud])
-        let degrading = registry.cleaner(for: .cloud(slug: "test"))
+        let qwen = CountingCleaner(tier: .local, behaviour: .hangUntilCancelled)
+        let apple = CountingCleaner(tier: .local, behaviour: .transform("APPLE"))
+        let registry = CleanerRegistry(local: qwen, localFallback: apple)
+        let degrading = registry.cleaner(for: .local)
 
         let task = Task {
             try await degrading.cleanTracked("hello", context: CleanupContext())
@@ -74,21 +70,41 @@ struct DegradingCleanerCancellationTests {
         }
 
         #expect(threwCancellation)
-        await #expect(local.calls() == 0)
+        await #expect(apple.calls() == 0)
     }
 
-    /// Sanity check: a plain (non-cancellation) failure still degrades to the
-    /// next cleaner in the chain, exactly as before this fix.
-    @Test("A non-cancellation failure still degrades to the next cleaner")
-    func plainFailureStillDegrades() async throws {
+    /// The orchestrator, not the registry, owns fallback timing. Keeping Apple
+    /// outside this cleaner prevents it from being restarted after cancellation.
+    @Test("A local cleaner does not consume its Apple fallback itself")
+    func localCleanerDoesNotEmbedAppleFallback() async {
+        let qwen = CountingCleaner(tier: .local, behaviour: .fail(CleanerError.unusableOutput))
+        let apple = CountingCleaner(tier: .local, behaviour: .transform("APPLE"))
+        let registry = CleanerRegistry(local: qwen, localFallback: apple)
+
+        await #expect(throws: CleanerError.self) {
+            _ = try await registry.cleaner(for: .local)
+                .cleanTracked("hello", context: CleanupContext())
+        }
+        await #expect(apple.calls() == 0)
+    }
+
+    /// Cloud fallback is budgeted by the orchestrator. If the registry embeds
+    /// Qwen and Apple inside the cloud cleaner, a cloud timeout can restart Qwen
+    /// and spend Apple's entire fallback window before Apple gets a turn.
+    @Test("A cloud cleaner does not consume the local fallback chain itself")
+    func cloudCleanerDoesNotEmbedLocalFallbacks() async {
         let cloud = CountingCleaner(tier: .cloud(slug: "test"), behaviour: .fail(CleanerError.unusableOutput))
-        let local = CountingCleaner(tier: .local, behaviour: .transform("LOCAL"))
-        let registry = CleanerRegistry(local: local, cloud: ["test": cloud])
-        let degrading = registry.cleaner(for: .cloud(slug: "test"))
+        let qwen = CountingCleaner(tier: .local, behaviour: .transform("QWEN"))
+        let apple = CountingCleaner(tier: .local, behaviour: .transform("APPLE"))
+        let registry = CleanerRegistry(
+            local: qwen, localFallback: apple, cloud: ["test": cloud]
+        )
 
-        let outcome = try await degrading.cleanTracked("hello", context: CleanupContext())
-
-        #expect(outcome.text == "LOCAL")
-        await #expect(local.calls() == 1)
+        await #expect(throws: CleanerError.self) {
+            _ = try await registry.cleaner(for: .cloud(slug: "test"))
+                .cleanTracked("hello", context: CleanupContext())
+        }
+        await #expect(qwen.calls() == 0)
+        await #expect(apple.calls() == 0)
     }
 }
