@@ -1,9 +1,9 @@
 # Skylark v1 human-pass findings
 
-**Run:** 2026-09-08 on JJ's MacBook Air  
-**Source:** `docs/qa/v1-human-pass.md`  
-**Commit:** `63b3c304297485b4f7510c145d3cdb0d1940f6b8`  
-**Installed app:** Skylark 0.21.1 (build 45)
+- **Run:** 2026-09-08 on JJ's MacBook Air
+- **Source:** `docs/qa/v1-human-pass.md`
+- **Commit:** `63b3c304297485b4f7510c145d3cdb0d1940f6b8`
+- **Installed app:** Skylark 0.21.1 (build 45)
 
 ## Preflight
 
