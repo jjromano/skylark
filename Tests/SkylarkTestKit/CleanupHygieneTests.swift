@@ -370,4 +370,54 @@ struct CleanupHygieneScaffoldingTests {
         let raw = "```\n<think>hmm</think>\nOutput: Send it Friday.\n```"
         #expect(CleanupHygiene.sanitize(raw) == "Send it Friday.")
     }
+
+    // 2026-09-08 human pass: the strict local floors rejected every CORRECT
+    // spoken address and passed the wrong one, so raw stood after both Qwen and
+    // Apple were thrown away.
+    @Test("A correctly formatted spoken URL passes the local floors")
+    func spokenURLPassesLocalFloors() throws {
+        let raw = "Github dot com slash j j Romano slash skylark."
+        for out in ["github.com/jjromano/skylark.", "GitHub.com/jjromano/skylark", "github.com/jjromano/sky-lark"] {
+            let kept = try CleanupHygiene.validate(
+                out, transcript: raw,
+                retentionFloor: LocalCleaner.localRetentionFloor,
+                contentLossFloor: LocalCleaner.localContentLossFloor
+            )
+            #expect(kept.lowercased().hasPrefix("github.com/jjromano/sky"))
+        }
+    }
+
+    @Test("A correctly formatted spoken email passes the local floors")
+    func spokenEmailPassesLocalFloors() throws {
+        let kept = try CleanupHygiene.validate(
+            "jjromano@example.com.", transcript: "J Jromano at example dot com.",
+            retentionFloor: LocalCleaner.localRetentionFloor,
+            contentLossFloor: LocalCleaner.localContentLossFloor
+        )
+        #expect(kept == "jjromano@example.com.")
+    }
+
+    @Test("A longer spoken path with split words still passes")
+    func longerSpokenPathPasses() throws {
+        let raw = "open github dot com slash j j romano slash sky lark slash issues"
+        let kept = try CleanupHygiene.validate(
+            "Open github.com/jjromano/skylark/issues", transcript: raw,
+            retentionFloor: LocalCleaner.localRetentionFloor,
+            contentLossFloor: LocalCleaner.localContentLossFloor
+        )
+        #expect(kept == "Open github.com/jjromano/skylark/issues")
+    }
+
+    @Test("Address leniency does not excuse a paraphrase in ordinary prose")
+    func addressLeniencyIsScopedToAddresses() {
+        // No address token in the output: substring matches must not count.
+        #expect(throws: CleanerError.self) {
+            try CleanupHygiene.validate(
+                "Contact the team soon.",
+                transcript: "please contact the marketing department about the quarterly budget review",
+                retentionFloor: LocalCleaner.localRetentionFloor,
+                contentLossFloor: LocalCleaner.localContentLossFloor
+            )
+        }
+    }
 }

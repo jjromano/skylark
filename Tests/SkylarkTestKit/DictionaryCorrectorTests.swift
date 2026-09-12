@@ -76,4 +76,33 @@ struct DictionaryCorrectorTests {
         // Budget ≤ 5 ms; assert < 50 ms to keep CI slack (spec).
         #expect(elapsed < .milliseconds(50))
     }
+
+    // 2026-09-08 human pass: "CLAUDE.md" in the dictionary still pasted as
+    // "claude.md", because an entry without misspellings never rewrote.
+    @Test("A distinctively cased entry enforces its own casing")
+    func distinctiveCasingEnforced() {
+        let c = DictionaryCorrector(entries: [entry("CLAUDE.md"), entry("GitHub"), entry("iPhone")])
+        #expect(c.apply("Please update claude.md and ask claude to review it.")
+            == "Please update CLAUDE.md and ask claude to review it.")
+        #expect(c.apply("push it to github") == "push it to GitHub")
+        #expect(c.apply("Iphone photos") == "iPhone photos")
+    }
+
+    @Test("Title Case and common-word acronyms stay bias-only")
+    func plainCasingNotEnforced() {
+        let c = DictionaryCorrector(entries: [entry("Skylark"), entry("US"), entry("Will")])
+        #expect(c.apply("tell us about skylark, will you") == "tell us about skylark, will you")
+    }
+
+    @Test("A phrase starting with punctuation still matches on a word boundary")
+    func punctuationEdgedPhrase() {
+        let c = DictionaryCorrector(entries: [entry(".NET", ["dot net"])])
+        #expect(c.apply("built on dot net today") == "built on .NET today")
+    }
+
+    @Test("A misspelling rule for the same text wins over the casing rule")
+    func misspellingWinsOverCasing() {
+        let c = DictionaryCorrector(entries: [entry("GitHub", ["github", "git hub"])])
+        #expect(c.apply("Github and git hub") == "GitHub and GitHub")
+    }
 }

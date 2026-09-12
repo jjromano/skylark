@@ -6,6 +6,40 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.22.0 - 2026-09-12
+
+Fixes from the 2026-09-08 human pass on the Air.
+
+- **Holding Fn in silence no longer types "Yeah."** Room noise or the click
+  of the key could get past the silence check, and the speech model then
+  invented a word. When the transcript is a lone filler word ("Yeah",
+  "Mm-hmm", "Thank you") and speech detection hears no speech in the clip,
+  Skylark discards it and shows "No speech detected". Real words are never
+  discarded this way, because speech detection misses genuine whispers that
+  the model transcribes correctly.
+- **Spoken web addresses and emails survive on-device cleanup.** The safety
+  check that stops cleanup from changing your meaning counted "dot", "slash"
+  and "at" as words, so it rejected every correctly formatted address
+  (`github.com/jjromano/skylark`) and let a wrong one through
+  (`J. Jromano@example.com`). Spelled-out handles ("j j romano") are now also
+  joined inside an address.
+- **Slow cleanup never leaves the screen blank longer than your cleanup
+  timeout.** In apps where Skylark pastes (Terminal, VS Code, ChatGPT), a
+  cleanup that runs out the timeout now pastes your words at once instead of
+  starting a second model, which had stretched the wait to 6 to 7 seconds. A
+  cleanup that fails quickly still falls back to another engine inside the
+  same budget.
+- **A Qwen model that is still loading is skipped, not waited for.** After a
+  relaunch or an idle unload, that dictation uses Apple Intelligence while
+  Qwen loads in the background, instead of timing out.
+- **Failure notes say what happened.** A cleanup that was rejected or errored
+  now reads "Cleanup failed. Raw text kept." instead of claiming it did not
+  finish in time.
+- **Dictionary entries with distinctive capitals keep them.** Adding
+  `CLAUDE.md`, `GitHub` or `iPhone` now fixes the casing when the recognizer
+  writes it in lowercase. Ordinary capitalized words and short common words
+  (like "US") are unaffected.
+
 ## 0.21.1 - 2026-09-07
 
 - Downloaded Qwen cleanup models now appear in Settings → General and the

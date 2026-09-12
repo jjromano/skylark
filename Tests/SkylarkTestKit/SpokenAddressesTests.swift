@@ -104,4 +104,31 @@ struct SpokenAddressesIdempotencyTests {
         #expect(SpokenAddresses.format("email jjromano at example.com.")
             == "email jjromano@example.com.")
     }
+
+    // 2026-09-08 human pass: the speech engine spelled the handle out as
+    // letters, which the slash/at rules could not join.
+    @Test("A spelled-out handle in a URL path folds into one segment")
+    func spelledHandleInURL() {
+        #expect(SpokenAddresses.format("Github dot com slash j j Romano slash skylark.")
+            == "Github.com/jjromano/skylark.")
+    }
+
+    @Test("A spelled-out initial before an email 'at' folds into the handle")
+    func spelledInitialInEmail() {
+        #expect(SpokenAddresses.format("J Jromano at example dot com.") == "jjromano@example.com.")
+        #expect(SpokenAddresses.format("mail j j romano at example.com") == "mail jjromano@example.com")
+    }
+
+    @Test("Spelled letters outside an address are left alone")
+    func spelledLettersInProse() {
+        #expect(SpokenAddresses.format("the j j romano account") == "the j j romano account")
+        #expect(SpokenAddresses.format("I got a b plus at school") == "I got a b plus at school")
+        #expect(SpokenAddresses.format("see github.com slash a guide") != "see github.com/aguide")
+    }
+
+    @Test("Folding is idempotent")
+    func spelledFoldIdempotent() {
+        let once = SpokenAddresses.format("Github dot com slash j j Romano slash skylark.")
+        #expect(SpokenAddresses.format(once) == once)
+    }
 }

@@ -180,9 +180,10 @@ public actor DictationOrchestrator {
     /// The hard bound on the WHOLE pre-paste cleanup stage, primary cleaner and
     /// local fallback together.
     ///
-    /// The selected cleanup timeout governs the primary attempt. This ceiling
-    /// only bounds "Off" and the primary+fallback total so a wedged model can
-    /// never hold the first paste indefinitely. Qwen3 4B takes 624–785 ms on a
+    /// The selected cleanup timeout is the whole pre-paste budget, primary and
+    /// fallback together; a fallback only runs when the primary failed fast
+    /// enough to leave some of it. This ceiling only bounds "Off", so a wedged
+    /// model can never hold the first paste indefinitely. Qwen3 4B takes 624–785 ms on a
     /// supported work laptop, so the former 600 ms ceiling made the downloaded
     /// model fail every paste-only dictation despite a visible 5 s selection.
     /// Injected only so tests need not wait it out.
@@ -868,6 +869,23 @@ public actor DictationOrchestrator {
         guard !text.isEmpty else {
             phase = .idle
             publish(.idle)
+            return
+        }
+
+        // Push-to-talk only: a hold with no speech in it can still clear the
+        // silence gate above (a key click or room noise tops its peak floor),
+        // and the recognizer then invents a word out of the noise. "Yeah." was
+        // pasted on 2 of 2 silent holds in the 2026-09-08 human pass. The VAD
+        // cannot simply veto the clip, because it misses real whispered speech
+        // that the recognizer gets right; so it only overrules a transcript
+        // that is nothing but a lone filler word.
+        if !wasHandsFree, await isSilenceHallucination(text, clip: clip) {
+            logger.notice("no speech: VAD found none and the transcript was a lone filler word; discarded")
+            phase = .idle
+            publish(.idle)
+            noteContinuation.yield(
+                finalization.interrupted ? Self.interruptedNote(for: finalization) : "No speech detected"
+            )
             return
         }
 
@@ -1974,8 +1992,11 @@ public actor DictationOrchestrator {
         // one place the user's cleanup timeout applies as written: the raw text
         // is already on screen, so a long cleanup delays nothing the user is
         // waiting for. (Contrast `cleanForPaste`, bounded by `prePasteBound`.)
+        var primary: CleanAttempt?
         if outcome == nil {
-            outcome = await cleanWithTimeout(cleaner, sourceText, context: contexts.primary, cap: cleanupTimeout)
+            let attempt = await cleanAttempt(cleaner, sourceText, context: contexts.primary, cap: cleanupTimeout)
+            primary = attempt
+            outcome = attempt.outcome
         }
         if outcome == nil {
             // Cloud too slow → degrade to local cleanup (it replaces the on-screen
@@ -1983,8 +2004,13 @@ public actor DictationOrchestrator {
             outcome = await localFallbackAfterTimeout(sourceText, context: contexts.local, timedOutTier: tier)
         }
         guard let outcome else {
-            logger.notice("cleanup degraded: timeout→raw kept (tier \(Self.tierString(tier), privacy: .public))")
-            noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
+            if case .failed(let reason) = primary {
+                logger.notice("cleanup degraded: failed (\(reason, privacy: .public))→raw kept (tier \(Self.tierString(tier), privacy: .public))")
+                noteContinuation.yield(Self.cleanupFailedNote)
+            } else {
+                logger.notice("cleanup degraded: timeout→raw kept (tier \(Self.tierString(tier), privacy: .public))")
+                noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
+            }
             fireCorrectionSettled(token, finalText: token.text)
             return
         }
@@ -2025,6 +2051,23 @@ public actor DictationOrchestrator {
         ))
     }
 
+    /// How one cleanup attempt ended. A timeout and a failure both leave raw
+    /// text standing, but they are different facts: only a timeout means the
+    /// user's time budget is spent, and only a timeout is worth the "didn't
+    /// finish in time" note. (A correct URL rejected by the faithfulness guard
+    /// used to be reported as a timeout.)
+    enum CleanAttempt: Sendable {
+        case cleaned(CleanOutcome)
+        case timedOut
+        /// Content-free reason, for the log only.
+        case failed(String)
+
+        var outcome: CleanOutcome? {
+            if case .cleaned(let outcome) = self { return outcome }
+            return nil
+        }
+    }
+
     /// Race a cleaner against a timeout; returns the cleaned text, or nil on
     /// timeout or failure (caller keeps raw). Never throws.
     private func cleanWithTimeout(
@@ -2033,23 +2076,80 @@ public actor DictationOrchestrator {
         context: CleanupContext,
         cap: Duration?
     ) async -> CleanOutcome? {
+        await cleanAttempt(cleaner, text, context: context, cap: cap).outcome
+    }
+
+    /// `cleanWithTimeout`, keeping how the attempt ended. Never throws.
+    private func cleanAttempt(
+        _ cleaner: any Cleaner,
+        _ text: String,
+        context: CleanupContext,
+        cap: Duration?
+    ) async -> CleanAttempt {
         guard let cap else {
             // Timeout disabled (Settings): wait for the cleaner however long it
-            // takes. A failed cleaner still returns nil, so raw stands.
-            return try? await cleaner.cleanTracked(text, context: context)
+            // takes. A failed cleaner still leaves raw standing.
+            return await Self.tracked(cleaner, text, context: context)
         }
-        return await withTaskGroup(of: CleanOutcome?.self) { group in
+        return await withTaskGroup(of: CleanAttempt.self) { group in
             group.addTask {
-                try? await cleaner.cleanTracked(text, context: context)
+                await Self.tracked(cleaner, text, context: context)
             }
             group.addTask {
                 try? await Task.sleep(for: cap)
-                return nil
+                return .timedOut
             }
-            let first = await group.next() ?? nil
+            let first = await group.next() ?? .timedOut
             group.cancelAll()
             return first
         }
+    }
+
+    private static func tracked(
+        _ cleaner: any Cleaner, _ text: String, context: CleanupContext
+    ) async -> CleanAttempt {
+        do {
+            return .cleaned(try await cleaner.cleanTracked(text, context: context))
+        } catch is CancellationError {
+            return .timedOut
+        } catch {
+            return .failed(failureReason(error))
+        }
+    }
+
+    /// Log label for a failed cleanup. Built from the error's case only (the
+    /// `unavailable` reasons are fixed strings), never from transcript text.
+    static func failureReason(_ error: any Error) -> String {
+        switch error {
+        case CleanerError.unusableOutput: return "output rejected by the faithfulness guard"
+        case CleanerError.unavailable(let reason): return "unavailable: \(reason)"
+        default: return "error: \(type(of: error))"
+        }
+    }
+
+    static let cleanupFailedNote = "Cleanup failed. Raw text kept."
+    static let localModelLoadingNote = "Local cleanup model is still loading. Used Apple Intelligence this time."
+
+    /// Recognizer output that a silent hold produces out of noise: a lone
+    /// backchannel or filler word (Parakeet's "Yeah.", Whisper's "Thank you.").
+    static let silenceHallucinations: Set<String> = [
+        "yeah", "yea", "mm", "mmm", "hmm", "hm", "mhm", "mm-hmm", "mmhmm", "uh", "um",
+        "uh-huh", "ah", "oh", "huh", "you", "thank you", "thanks", "bye",
+    ]
+
+    /// True when a push-to-talk transcript is a lone filler word AND the VAD,
+    /// scanning the finalized clip now, finds no speech in it at all. The scan
+    /// only runs for a filler-word transcript (a few ms of CoreML for a short
+    /// clip), so real dictation never pays for it. VAD not resident or the scan
+    /// failing means "keep the text", never "discard it".
+    private func isSilenceHallucination(_ text: String, clip: AudioClip) async -> Bool {
+        let normalized = text.lowercased()
+            .trimmingCharacters(in: CharacterSet.punctuationCharacters.union(.whitespacesAndNewlines))
+        guard Self.silenceHallucinations.contains(normalized),
+              let endpointer, await endpointer.available(),
+              let regions = await endpointer.scanSpeechRegions(clip.samples)
+        else { return false }
+        return regions.allSatisfy { $0.endSample <= $0.startSample }
     }
 
     /// After cleanup fails or times out, try the remaining on-device engines
@@ -2063,7 +2163,7 @@ public actor DictationOrchestrator {
     /// there, so the fallback may not push the total wait past the bound.
     private func localFallbackAfterTimeout(
         _ text: String, context: CleanupContext, timedOutTier: CleanupTier,
-        cap: Duration? = nil
+        cap: Duration? = nil, skipColdModels: Bool = false, primaryWasCold: Bool = false
     ) async -> CleanOutcome? {
         let budget = cap ?? localFallbackTimeout
         if timedOutTier == .local {
@@ -2071,20 +2171,29 @@ public actor DictationOrchestrator {
             guard let outcome = await cleanWithTimeout(
                 fallback, text, context: context, cap: budget
             ) else { return nil }
-            logger.notice("cleanup degraded: selected local→Apple Intelligence after failure or timeout")
-            noteContinuation.yield("Selected local cleanup failed or timed out. Used Apple Intelligence instead.")
+            if primaryWasCold {
+                logger.notice("cleanup degraded: selected local model still loading→Apple Intelligence")
+                noteContinuation.yield(Self.localModelLoadingNote)
+            } else {
+                logger.notice("cleanup degraded: selected local→Apple Intelligence after failure or timeout")
+                noteContinuation.yield("Selected local cleanup failed or timed out. Used Apple Intelligence instead.")
+            }
             return outcome
         }
 
         guard let selectedLocal = cleaners.selectedLocalCleaner() else { return nil }
         if let apple = cleaners.localFallbackCleaner() {
+            // A downloaded model that is not resident yet would spend its whole
+            // slice loading. With nothing on screen, go straight to Apple (the
+            // readiness check starts the load for next time).
+            let localIsCold = skipColdModels ? !(await selectedLocal.isReadyNow()) : false
             // Never let a wedged downloaded model consume Apple's entire turn.
             // Two seconds is enough for the observed Apple fallback; short test
             // or safety budgets split evenly so both engines still get a chance.
             let appleReserve = min(.seconds(2), budget / 2)
             let qwenBudget = budget - appleReserve
             let started = ContinuousClock.now
-            if qwenBudget >= Self.minimumFallbackRemainder,
+            if !localIsCold, qwenBudget >= Self.minimumFallbackRemainder,
                let outcome = await cleanWithTimeout(
                    selectedLocal, text, context: context, cap: qwenBudget
                ) {
@@ -2099,8 +2208,13 @@ public actor DictationOrchestrator {
                       apple, text, context: context, cap: remaining
                   )
             else { return nil }
-            logger.notice("cleanup degraded: cloud→local model→Apple Intelligence")
-            noteContinuation.yield("Cloud and selected local cleanup failed. Used Apple Intelligence instead.")
+            if localIsCold {
+                logger.notice("cleanup degraded: cloud→Apple Intelligence (selected local model still loading)")
+                noteContinuation.yield("Cloud cleanup failed. Used Apple Intelligence instead.")
+            } else {
+                logger.notice("cleanup degraded: cloud→local model→Apple Intelligence")
+                noteContinuation.yield("Cloud and selected local cleanup failed. Used Apple Intelligence instead.")
+            }
             return outcome
         }
 
@@ -2149,31 +2263,50 @@ public actor DictationOrchestrator {
         // trip is the slowest part of the shortest dictation, and it is exactly
         // where a small model is most likely to invent structure.
         if let short = shortTranscriptOutcome(text, context: contexts.primary) { return short }
-        if let outcome = await cleanWithTimeout(
-            cleaner, text, context: contexts.primary, cap: prePasteCap(cleanupTimeout)
-        ) {
+        // ONE budget for the whole blank-screen wait: the selected cleanup
+        // timeout (the bound only when it is "Off"). A primary that times out
+        // has spent it, so raw lands at once; only a primary that fails FAST
+        // leaves time for a fallback. The 2026-09-08 human pass measured a 5 s
+        // timeout plus a fallback stacked on top: 6.4 s and 7.3 s of nothing.
+        let budget = prePasteCap(cleanupTimeout)
+        // A downloaded model that is not resident yet would spend the budget
+        // loading. Skip straight to a ready Apple fallback instead (the check
+        // itself starts the load, so the next dictation gets the model).
+        var primaryIsCold = false
+        if tier == .local, let fallback = cleaners.localFallbackCleaner(),
+           !(await cleaner.isReadyNow()), await fallback.isReadyNow() {
+            primaryIsCold = true
+        }
+        let first: CleanAttempt = primaryIsCold
+            ? .failed("selected local model not loaded yet")
+            : await cleanAttempt(cleaner, text, context: contexts.primary, cap: budget)
+        if let outcome = first.outcome {
             cleanupWatchdog.record(.completed)
             return outcome
         }
-        // The primary burned some of the bound; the fallback may only have what
-        // is left of it. Below `minimumFallbackRemainder` there is no point
-        // starting a generation that cannot finish.
-        let remaining = prePasteBound - cleanupStart.duration(to: ContinuousClock.now)
+        let remaining = budget - cleanupStart.duration(to: ContinuousClock.now)
         if remaining >= Self.minimumFallbackRemainder,
            let local = await localFallbackAfterTimeout(
-               text, context: contexts.local, timedOutTier: tier, cap: remaining
+               text, context: contexts.local, timedOutTier: tier, cap: remaining,
+               skipColdModels: true, primaryWasCold: primaryIsCold
            ) {
-            // The cloud tier timed out but local rescued it, so the user still
-            // got cleaned text. Not a wasted wait.
+            // The primary failed but a fallback rescued it inside the budget,
+            // so the user still got cleaned text. Not a wasted wait.
             cleanupWatchdog.record(.completed)
             return local
+        }
+        if case .failed(let reason) = first {
+            // Not a timeout, so no "raise your timeout" advice either.
+            logger.notice("cleanup degraded: failed (\(reason, privacy: .public))→raw kept for paste target (tier \(Self.tierString(tier), privacy: .public))")
+            noteContinuation.yield(Self.cleanupFailedNote)
+            return nil
         }
         cleanupWatchdog.record(.timedOut)
         logger.notice("cleanup degraded: timeout→raw kept for paste target (tier \(Self.tierString(tier), privacy: .public))")
         noteContinuation.yield("Cleanup didn't finish in time — raw text kept")
         // Once the pattern is established, say what to actually DO about it —
         // the per-dictation note above never explains that a setting is wrong.
-        if let advice = cleanupWatchdog.recommendationIfNeeded(bound: prePasteCap(cleanupTimeout)) {
+        if let advice = cleanupWatchdog.recommendationIfNeeded(bound: budget) {
             logger.notice("cleanup timeout watchdog: recommending a settings change")
             noteContinuation.yield(advice)
         }

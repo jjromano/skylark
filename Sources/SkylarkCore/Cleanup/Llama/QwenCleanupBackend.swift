@@ -17,6 +17,14 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
     private let model: LocalCleanupModel
     private let runner: LlamaRunner
     private let idleTimer: IdleTimer
+    /// Mirrors of the runner's state, kept HERE so `isReadyNow` can answer
+    /// while a load is running: the runner is an actor busy for the whole
+    /// load, so asking it would wait the load out.
+    private var resident = false
+    private var loading = false
+    /// Last instructions seen, so a load started by `isReadyNow` can also warm
+    /// the shared prompt prefix.
+    private var lastInstructions: String?
     private static let logger = Logger(subsystem: "com.jjromano.skylark", category: "cleanup.llama")
 
     /// Unload the model after this long with no cleanup activity. Weights are
@@ -58,6 +66,7 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
 
     public func generate(instructions: String, userMessage: String, maximumResponseTokens: Int) async throws -> String {
         let prompt = Self.prompt(instructions: instructions, userMessage: userMessage, model: model)
+        lastInstructions = instructions
         let result = try await runner.generate(
             prompt: prompt,
             maxTokens: maximumResponseTokens,
@@ -72,6 +81,7 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
             ms=\(Int(result.totalSeconds * 1000), privacy: .public) \
             capped=\(result.hitTokenLimit, privacy: .public)
             """)
+        resident = true
         // Keep the model warm for a follow-up dictation, then unload on idle.
         await idleTimer.touch { [weak self] in await self?.unload() }
         return Self.postprocess(result.text)
@@ -97,11 +107,15 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
     /// never from the dictation path. Best-effort: failures leave the backend
     /// cold and the next `generate` retries.
     public func preload(instructions: String? = nil) async {
+        loading = true
+        defer { loading = false }
+        if let instructions { lastInstructions = instructions }
         do {
             try await runner.load()
             if let instructions {
                 try await runner.warm(prompt: LlamaChatML.systemPrefix(instructions: instructions))
             }
+            resident = true
             await idleTimer.touch { [weak self] in await self?.unload() }
         } catch {
             Self.logger.error("qwen preload failed: \(error.localizedDescription, privacy: .public)")
@@ -113,7 +127,23 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
     /// on app termination — see the warning on `LlamaRunner.unload()`.
     public func unload() async {
         await idleTimer.cancel()
+        resident = false
         await runner.unload()
+    }
+
+    /// Ready once a load (and its prefix warm) has finished. Cold and idle, it
+    /// starts that load in the background and says not ready, so the paste
+    /// path uses Apple Intelligence now and this model next time, instead of
+    /// spending the user's whole cleanup timeout on a 2.5 GB load (the first
+    /// cleanup after a relaunch timed out in the 2026-09-08 human pass).
+    public func isReadyNow() async -> Bool {
+        if resident, !loading { return true }
+        if !loading, model.isInstalled {
+            loading = true
+            let instructions = lastInstructions
+            Task { await self.preload(instructions: instructions) }
+        }
+        return false
     }
 
     /// Whether the weights are currently resident — the idle-unload timer's input.

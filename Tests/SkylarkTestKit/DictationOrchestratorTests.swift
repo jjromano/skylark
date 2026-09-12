@@ -380,8 +380,29 @@ struct DictationOrchestratorCleanupTests {
         await #expect(spy.replaceCount() == 0)
     }
 
-    @Test("Slow cloud cleanup degrades to LOCAL (not raw) on timeout")
+    @Test("Slow cloud cleanup degrades to LOCAL (not raw) when raw is already on screen")
     func slowCloudDegradesToLocal() async {
+        let spy = SpyInjector(direct: true) // AX target → raw first, cleanup detached
+        let cloud = SpyCleaner(tier: .cloud(slug: "test"), behaviour: .hang)
+        let local = SpyCleaner(tier: .local, behaviour: .transform("LOCAL"))
+        let orchestrator = DictationOrchestrator(
+            capture: FakeCapture(clip: makeClip()),
+            transcriber: StubTranscriber(),
+            injector: spy,
+            cleaners: CleanerRegistry(local: local, cloud: ["test": cloud]),
+            modeProvider: modes(defaultTier: .cloud(slug: "test")),
+            waitForCleanTimeout: .milliseconds(50)
+        )
+        await orchestrator.handle(.startRecording)
+        await orchestrator.handle(.stopRecording)
+        await settle()
+        // Cloud hangs past the 50 ms cap → local cleanup replaces the raw text.
+        await #expect(spy.first() == StubTranscriber.output)
+        await #expect(spy.replaceCount() == 1)
+    }
+
+    @Test("Slow cloud cleanup on a paste target pastes raw at the timeout, no fallback on top")
+    func slowCloudOnPasteTargetPastesRaw() async {
         let spy = SpyInjector(direct: false) // paste target → wait-for-clean path
         let cloud = SpyCleaner(tier: .cloud(slug: "test"), behaviour: .hang)
         let local = SpyCleaner(tier: .local, behaviour: .transform("LOCAL"))
@@ -395,8 +416,9 @@ struct DictationOrchestratorCleanupTests {
         )
         await orchestrator.handle(.startRecording)
         await orchestrator.handle(.stopRecording)
-        // Cloud hangs past the 50 ms cap → local cleanup is used, not raw.
-        await #expect(spy.first() == "LOCAL")
+        // The timeout is the whole blank-screen budget: nothing on screen yet,
+        // so raw lands when it expires instead of waiting on a second model.
+        await #expect(spy.first() == StubTranscriber.output)
     }
 
     @Test("Disabled timeout (nil) waits for the cleaner instead of falling back")

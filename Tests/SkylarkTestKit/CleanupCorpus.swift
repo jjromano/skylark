@@ -137,5 +137,19 @@ public enum CleanupCorpus {
         .init("spokenAddress/email",
               raw: "please send the invoice to jjromano at example.com",
               expected: "Please send the invoice to jjromano@example.com."),
+
+        // Added for the 2026-09-08 human pass. The spelled-out handle is how the
+        // speech engine actually wrote it; the correct cleanup used to be
+        // rejected by the strict local floors. A stressed "really" is content
+        // (Qwen deleted it on 1 of 2 attempts).
+        .init("spokenAddress/spelledURL",
+              raw: "the repo is at github dot com slash j j romano slash skylark",
+              expected: "The repo is at github.com/jjromano/skylark."),
+        .init("spokenAddress/spelledEmail",
+              raw: "email me at j j romano at example dot com",
+              expected: "Email me at jjromano@example.com."),
+        .init("faithful/emphasis",
+              raw: "the deployment is really ready for production",
+              expected: "The deployment is really ready for production."),
     ]
 }

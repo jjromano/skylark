@@ -230,8 +230,31 @@ public enum CleanupHygiene {
         let rawWords = contentWords(raw)
         guard rawWords.count >= 4 else { return false }
         let cleanedSet = Set(contentWords(cleaned))
-        let retained = rawWords.filter { cleanedSet.contains($0) }.count
+        let joined = addressParts(cleaned)
+        let retained = rawWords.filter { word in
+            cleanedSet.contains(word)
+                || (word.count >= 3 && joined.contains { $0.count > word.count && $0.contains(word) })
+        }.count
         return Double(retained) / Double(rawWords.count) < retentionFloor
+    }
+
+    /// Content words of the address-shaped tokens in `cleaned` (anything with
+    /// "/" or "@", or a "." between two letters: "github.com/jjromano/skylark",
+    /// "jjromano@example.com"). A correct address joins spoken pieces into one
+    /// token ("j j romano" → "jjromano", "sky lark" → "skylark"), so a raw word
+    /// found INSIDE one of these parts was kept, not dropped. Scoped to address
+    /// tokens so ordinary prose gets no substring leniency.
+    private static func addressParts(_ cleaned: String) -> [String] {
+        cleaned.split(whereSeparator: { $0.isWhitespace })
+            .filter { token in
+                if token.contains("/") || token.contains("@") { return true }
+                let chars = Array(token)
+                return chars.indices.contains { i in
+                    chars[i] == "." && i > 0 && i + 1 < chars.count
+                        && chars[i - 1].isLetter && chars[i + 1].isLetter
+                }
+            }
+            .flatMap { contentWords(String($0)) }
     }
 
     /// True when the cleaned text's content-word COUNT dropped below `floor` ×
@@ -451,6 +474,14 @@ public enum CleanupHygiene {
         "be", "this", "that", "it", "in", "on", "for", "my", "you", "your",
     ]
 
+    /// The spoken separators of an address ("github dot com slash jjromano",
+    /// "jj at example dot com"). A correct cleanup turns each into punctuation
+    /// ("github.com/jjromano"), which deletes the WORD, so counting them made
+    /// every correctly formatted URL or email look like dropped content: the
+    /// local floors rejected `github.com/jjromano/skylark` and let the wrong
+    /// `J. Jromano@example.com` through (2026-09-08 human pass, D12 repeat).
+    private static let spokenAddressWords: Set<String> = ["dot", "slash", "at"]
+
     /// Self-correction markers ("send it to bob, actually alice"). Counting
     /// them as stopwords means that *resolving* a self-correction — deleting
     /// the marker and the word it replaces — doesn't itself dent the retention
@@ -494,6 +525,7 @@ public enum CleanupHygiene {
             .filter {
                 $0.count > 1
                     && !contentStopwords.contains($0)
+                    && !spokenAddressWords.contains($0)
                     && !selfCorrectionMarkers.contains($0)
                     && !numberWords.contains($0)
                     && !isNumericToken($0)

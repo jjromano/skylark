@@ -157,6 +157,10 @@ public protocol Cleaner: Sendable {
     /// `clean` plus engine provenance. Defaulted for simple cleaners whose
     /// engine is their tier.
     func cleanTracked(_ transcript: String, context: CleanupContext) async throws -> CleanOutcome
+    /// Whether a cleanup started now would run at once, rather than first
+    /// loading a model. Answers without waiting on a load in progress. Only a
+    /// downloaded local model is ever not ready; everything else says true.
+    func isReadyNow() async -> Bool
 }
 
 public extension Cleaner {
@@ -172,6 +176,8 @@ public extension Cleaner {
     func cleanTracked(_ transcript: String, context: CleanupContext) async throws -> CleanOutcome {
         CleanOutcome(text: try await clean(transcript, context: context), engine: engineID)
     }
+
+    func isReadyNow() async -> Bool { true }
 }
 
 public enum CleanerError: Error, Sendable {

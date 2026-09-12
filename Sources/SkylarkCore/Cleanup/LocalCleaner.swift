@@ -19,6 +19,10 @@ public protocol LocalCleanupBackend: Sendable {
     /// Warm the next session so a subsequent request is low-latency. Called off
     /// the paste path after each use.
     func prewarm(instructions: String) async
+    /// Whether a `generate` now would start at once, without loading weights
+    /// first. Must answer without waiting on a load in progress. A backend
+    /// that answers false may start loading so a later call finds it ready.
+    func isReadyNow() async -> Bool
     /// Which on-device engine this is, for history provenance: `"local:apple"`
     /// or `"local:<LocalCleanupModel.id>"`.
     ///
@@ -33,6 +37,9 @@ public protocol LocalCleanupBackend: Sendable {
 public extension LocalCleanupBackend {
     /// Backends that predate per-engine provenance keep the old label.
     var engineID: String { "local" }
+
+    /// Backends with nothing to load are always ready.
+    func isReadyNow() async -> Bool { true }
 }
 
 /// Tier 1 cleaner — Apple on-device Foundation Models (ARCHITECTURE §0).
@@ -95,6 +102,12 @@ public struct LocalCleaner: Cleaner {
 
     public init() {
         self.backend = Self.makeDefaultBackend()
+    }
+
+    /// Ready means the engine can run here AND needs no model load first.
+    public func isReadyNow() async -> Bool {
+        guard await backend.unavailability() == nil else { return false }
+        return await backend.isReadyNow()
     }
 
     /// The default on-device backend for this build: the live Apple

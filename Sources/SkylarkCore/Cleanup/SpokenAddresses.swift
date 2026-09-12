@@ -33,6 +33,7 @@ public enum SpokenAddresses {
         guard !text.isEmpty else { return text }
         var toks = tokenize(text).map { $0.text }
         formatDots(&toks)
+        joinSpelledRuns(&toks)
         formatSlashes(&toks)
         formatAts(&toks)
         return toks.joined()
@@ -76,6 +77,62 @@ public enum SpokenAddresses {
             toks[i + 1] = ""
             toks[i + 2] = ""
         }
+    }
+
+    // MARK: - Rule 1b: spelled-out letters
+
+    /// Fold a spelled-out run of single letters into the word right after it
+    /// ("j j Romano" → "jjromano") when that run sits in an address: right after
+    /// a spoken "slash" whose left side is a domain, or right before a spoken
+    /// "at" whose right side is one. Speech engines split a spelled handle into
+    /// letters, which left the slash/at rules nothing to join
+    /// (`Github.com/j j Romano slash skylark.`, 2026-09-08 human pass). The
+    /// joined handle is lowercased, the conventional form of a URL path segment
+    /// or email local part. A lone "a" or "I" is an English word, never folded.
+    private static func joinSpelledRuns(_ toks: inout [String]) {
+        var i = 0
+        while i < toks.count {
+            defer { i += 1 }
+            guard isSingleLetter(toks[i]) else { continue }
+            var last = i
+            while last + 2 < toks.count, toks[last + 1] == " ", isSingleLetter(toks[last + 2]) {
+                last += 2
+            }
+            let wordIndex = last + 2
+            guard wordIndex < toks.count, toks[last + 1] == " " else { continue }
+            let word = toks[wordIndex]
+            guard word.count > 1, word.allSatisfy({ $0.isLetter }),
+                  !addressKeywords.contains(word.lowercased()) else { continue }
+            if last == i, ["a", "i"].contains(toks[i].lowercased()) { continue }
+            guard followsDomainSlash(at: i, in: toks) || precedesAtDomain(after: wordIndex, in: toks) else { continue }
+            let letters = stride(from: i, through: last, by: 2).map { toks[$0] }.joined()
+            // Collapse to ONE token rather than blanking the rest: the slash rule
+            // reads the token right after its gap and the at rule the token right
+            // before its gap, and each must land on the joined handle.
+            toks.replaceSubrange(i ... wordIndex, with: [(letters + word).lowercased()])
+        }
+    }
+
+    private static let addressKeywords: Set<String> = ["dot", "slash", "at", "forward"]
+
+    private static func isSingleLetter(_ s: String) -> Bool {
+        s.count == 1 && s.first?.isLetter == true
+    }
+
+    /// Token `i` is preceded by `<domain> slash `.
+    private static func followsDomainSlash(at i: Int, in toks: [String]) -> Bool {
+        guard i >= 4, isWhitespaceOnly(toks[i - 1]), toks[i - 2].lowercased() == "slash",
+              isWhitespaceOnly(toks[i - 3]) else { return false }
+        let (left, _) = leftChunk(endingBefore: i - 3, in: toks)
+        return !left.isEmpty && isDomainLike(hostPart(left))
+    }
+
+    /// Token `wordIndex` is followed by ` at <domain>`.
+    private static func precedesAtDomain(after wordIndex: Int, in toks: [String]) -> Bool {
+        guard wordIndex + 3 < toks.count, isWhitespaceOnly(toks[wordIndex + 1]),
+              toks[wordIndex + 2].lowercased() == "at", isWhitespaceOnly(toks[wordIndex + 3]) else { return false }
+        let (right, _) = rightChunk(startingAfter: wordIndex + 3, in: toks)
+        return !right.isEmpty && isDomainLike(right)
     }
 
     // MARK: - Rule 2: slash
