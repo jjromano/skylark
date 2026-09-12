@@ -1,5 +1,5 @@
 import Testing
-import SkylarkCore
+@testable import SkylarkCore
 
 @Suite("CleanupHygiene — shared faithfulness guards")
 struct CleanupHygieneTests {
@@ -419,5 +419,15 @@ struct CleanupHygieneScaffoldingTests {
                 contentLossFloor: LocalCleaner.localContentLossFloor
             )
         }
+    }
+
+    @Test("Only words spoken next to an address separator get substring credit")
+    func addressCreditNeedsAdjacency() {
+        let words = CleanupHygiene.addressAdjacentWords(
+            "we ram the build first and later email j j romano at example dot com"
+        )
+        #expect(words.contains("romano"))
+        #expect(!words.contains("ram"))
+        #expect(CleanupHygiene.addressAdjacentWords("an ordinary sentence with no address").isEmpty)
     }
 }

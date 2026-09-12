@@ -231,11 +231,32 @@ public enum CleanupHygiene {
         guard rawWords.count >= 4 else { return false }
         let cleanedSet = Set(contentWords(cleaned))
         let joined = addressParts(cleaned)
+        let spokenInAddress = addressAdjacentWords(raw)
         let retained = rawWords.filter { word in
             cleanedSet.contains(word)
-                || (word.count >= 3 && joined.contains { $0.count > word.count && $0.contains(word) })
+                || (word.count >= 3 && spokenInAddress.contains(word)
+                    && joined.contains { $0.count > word.count && $0.contains(word) })
         }.count
         return Double(retained) / Double(rawWords.count) < retentionFloor
+    }
+
+    /// Raw words spoken within three tokens of a spoken address separator
+    /// ("dot", "slash", "at"): the pieces an address is dictated in. Only these
+    /// may be credited by a substring match, so a word dropped from ordinary
+    /// prose is not excused by coincidentally appearing inside an address.
+    static func addressAdjacentWords(_ raw: String) -> Set<String> {
+        let tokens = raw.lowercased()
+            .replacingOccurrences(of: "\u{2019}", with: "'")
+            .split { !$0.isLetter && !$0.isNumber }
+            .map(String.init)
+        let separators = tokens.indices.filter { spokenAddressWords.contains(tokens[$0]) }
+        guard !separators.isEmpty else { return [] }
+        var words: Set<String> = []
+        for (index, token) in tokens.enumerated()
+        where separators.contains(where: { abs($0 - index) <= 3 }) {
+            words.insert(token)
+        }
+        return words
     }
 
     /// Content words of the address-shaped tokens in `cleaned` (anything with

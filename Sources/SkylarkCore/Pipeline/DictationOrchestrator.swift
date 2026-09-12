@@ -2123,7 +2123,10 @@ public actor DictationOrchestrator {
         switch error {
         case CleanerError.unusableOutput: return "output rejected by the faithfulness guard"
         case CleanerError.unavailable(let reason): return "unavailable: \(reason)"
-        default: return "error: \(type(of: error))"
+        default:
+            // Domain and code, never the description (which can quote a URL).
+            let ns = error as NSError
+            return "error: \(type(of: error)) \(ns.domain) \(ns.code)"
         }
     }
 
