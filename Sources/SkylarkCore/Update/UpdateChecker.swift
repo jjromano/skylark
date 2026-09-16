@@ -236,18 +236,14 @@ public enum UpdateCommandWriter {
         // Double quotes are the only shell-meaningful character `repoPath`
         // (an absolute filesystem path) could plausibly contain.
         let escapedPath = repoPath.replacingOccurrences(of: "\"", with: "\\\"")
+        // No keypress at the end: on success `Scripts/install.sh` closes this
+        // Terminal window itself (see Scripts/close-update-window.sh, which
+        // lives in the repo so fixes arrive with the pull rather than one
+        // update late). On failure `set -e` stops here with the error on
+        // screen and the window stays open.
         let script = """
         #!/bin/bash
         set -euo pipefail
-
-        # Terminal leaves a window open after its script exits unless the
-        # user's profile says otherwise, so "press any key" alone never closed
-        # it. Remember THIS window now, while it is the one busy tab on our tty
-        # (a finished window can reuse the same tty name), and close it by id
-        # at the end. On failure `set -e` exits early and the window stays
-        # open, so the error remains readable.
-        WINDOW_ID="$(/usr/bin/osascript -e "tell application \"Terminal\" to get id of first window whose (tty of selected tab is \"$(tty)\") and (busy of selected tab is true)" 2>/dev/null || true)"
-
         cd "\(escapedPath)"
 
         echo "Updating Skylark…"
@@ -258,17 +254,7 @@ public enum UpdateCommandWriter {
         echo "→ Scripts/install.sh"
         "\(escapedPath)/Scripts/install.sh"
         echo
-        echo "✓ Update complete."
-        echo
-        read -n 1 -r -s -p "Press any key to close this window..." _ || true
-        echo
-        rm -f "$0"
-        if [[ "$WINDOW_ID" =~ ^[0-9]+$ ]]; then
-            # Detached and delayed so the shell has exited before the close;
-            # a window with a live process would ask to terminate it first.
-            nohup /usr/bin/osascript -e 'delay 1' -e "tell application \"Terminal\" to close (every window whose id is $WINDOW_ID)" </dev/null >/dev/null 2>&1 &
-        fi
-        exit 0
+        echo "✓ Update complete. You can close this window."
 
         """
 

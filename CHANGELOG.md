@@ -6,6 +6,17 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.24.2 - 2026-09-16
+
+- **Updates finish on their own.** Check for Updates no longer asks whether to
+  overwrite the installed app, and the Terminal window closes by itself once
+  the new version is running. If the update fails, the window stays open with
+  the error. This also applies to the update you run from 0.24.1 or earlier.
+- Settings → Models no longer has selection circles on the on-device cleanup
+  models. Every model is chosen in Settings → General (or the menu bar); the
+  Models pane describes, downloads and deletes.
+- Settings → General now lists Speech before Cleanup.
+
 ## 0.24.1 - 2026-09-16
 
 - Removed the experimental **Live preview while speaking** setting. It showed

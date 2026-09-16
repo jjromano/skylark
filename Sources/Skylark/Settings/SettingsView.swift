@@ -348,6 +348,43 @@ private struct GeneralPane: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section {
+                Picker("Speech engine", selection: Binding(
+                    get: { controller.currentSTT },
+                    set: { controller.selectSTT($0) }
+                )) {
+                    // Grouped, not prefixed: the section header carries "local
+                    // vs cloud" once instead of every row repeating it. The
+                    // Groq row keeps a "— Groq" tail because a collapsed picker
+                    // shows only the row label, and without it the two
+                    // Whisper turbo rows would be indistinguishable once closed.
+                    // Only engines that can run are offered (`SpeechEngineOptions`).
+                    let options = controller.speechEngineOptions
+                    Section("On this Mac") {
+                        ForEach(options.onDevice, id: \.self) { choice in
+                            Text(SpeechEngineOptions.onDeviceLabel(choice)).tag(choice)
+                        }
+                    }
+                    if options.groqDirect {
+                        Section("Cloud · Groq direct") {
+                            Text("Whisper large-v3-turbo — Groq").tag(STTChoice.groqDirect)
+                        }
+                    }
+                    Section("Cloud · OpenRouter") {
+                        ForEach(options.openRouter) { entry in
+                            Text(entry.label).tag(STTChoice.cloud(slug: entry.slug))
+                        }
+                    }
+                }
+                if controller.speechEngineOptions.needsOpenRouterKey {
+                    Text("Cloud speech engines appear here once you add an OpenRouter key in Account.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Speech")
+            }
+
             Section("Cleanup") {
                 // One picker, one meaning: this replaced a tier picker plus a
                 // separate model picker that silently rewrote each other. Same
@@ -455,43 +492,6 @@ private struct GeneralPane: View {
                 Text("Cleans up your dictation and translates it to the target language before typing it. Uses your selected cleanup model — with a Local tier this runs fully on-device. Cloud models translate best; on-device translation is usable for European languages but unreliable for Japanese, Chinese, and Korean (failed translations fall back to your original words).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-            }
-
-            Section {
-                Picker("Speech engine", selection: Binding(
-                    get: { controller.currentSTT },
-                    set: { controller.selectSTT($0) }
-                )) {
-                    // Grouped, not prefixed: the section header carries "local
-                    // vs cloud" once instead of every row repeating it. The
-                    // Groq row keeps a "— Groq" tail because a collapsed picker
-                    // shows only the row label, and without it the two
-                    // Whisper turbo rows would be indistinguishable once closed.
-                    // Only engines that can run are offered (`SpeechEngineOptions`).
-                    let options = controller.speechEngineOptions
-                    Section("On this Mac") {
-                        ForEach(options.onDevice, id: \.self) { choice in
-                            Text(SpeechEngineOptions.onDeviceLabel(choice)).tag(choice)
-                        }
-                    }
-                    if options.groqDirect {
-                        Section("Cloud · Groq direct") {
-                            Text("Whisper large-v3-turbo — Groq").tag(STTChoice.groqDirect)
-                        }
-                    }
-                    Section("Cloud · OpenRouter") {
-                        ForEach(options.openRouter) { entry in
-                            Text(entry.label).tag(STTChoice.cloud(slug: entry.slug))
-                        }
-                    }
-                }
-                if controller.speechEngineOptions.needsOpenRouterKey {
-                    Text("Cloud speech engines appear here once you add an OpenRouter key in Account.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("Speech")
             }
 
             Section("Feedback") {
@@ -911,39 +911,14 @@ private struct AppleSpeechRow: View {
     }
 }
 
-/// Leading radio-style control shared by the "Cleanup · on device" rows —
-/// tapping it selects that row's engine as the local cleanup tier. Disabled
-/// (dimmed) for a Qwen model that isn't downloaded yet, since there's nothing
-/// to select.
-private struct EngineSelector: View {
-    let isSelected: Bool
-    let isEnabled: Bool
-    let select: () -> Void
-
-    var body: some View {
-        Button(action: select) {
-            Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                .foregroundStyle(isEnabled ? .primary : .tertiary)
-        }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
-        .help(isEnabled ? "Use this as the local cleanup engine" : "Download it first")
-    }
-}
-
 /// Apple Foundation Models row in "Cleanup · on device" — always selectable
 /// (no download; unavailable is a supported runtime state the backend itself
 /// reports, exactly like Apple Intelligence being off elsewhere in the app).
 private struct AppleCleanupEngineRow: View {
     @Bindable var controller: AppController
 
-    private var isSelected: Bool { controller.localCleanupEngine == .appleFoundationModels }
-
     var body: some View {
         HStack(spacing: 12) {
-            EngineSelector(isSelected: isSelected, isEnabled: true) {
-                controller.setLocalCleanupEngine(.appleFoundationModels)
-            }
             VStack(alignment: .leading, spacing: 2) {
                 Text("Apple Intelligence").font(.system(size: 13, weight: .medium))
                 Text(ModelInfo.appleIntelligence.description).font(.caption).foregroundStyle(.secondary)
@@ -956,8 +931,8 @@ private struct AppleCleanupEngineRow: View {
 }
 
 /// A Qwen GGUF row in "Cleanup · on device" — download/progress/cancel/delete
-/// mirrors `ModelRow`, plus the leading `EngineSelector` (selectable only once
-/// downloaded).
+/// mirrors `ModelRow`. Selection happens in General → Cleanup, like every
+/// other model; this pane only describes, downloads and deletes.
 private struct QwenCleanupModelRow: View {
     @Bindable var controller: AppController
     let model: LocalCleanupModel
@@ -965,15 +940,10 @@ private struct QwenCleanupModelRow: View {
     private var state: AppController.ManagedModelState {
         controller.cleanupModelStates[model.id] ?? .notDownloaded
     }
-    private var isSelected: Bool { controller.localCleanupEngine.model?.id == model.id }
-    private var isReady: Bool { if case .ready = state { return true }; return false }
     private var info: ModelInfo.Entry? { ModelInfo.qwenLocal[model.id] }
 
     var body: some View {
         HStack(spacing: 12) {
-            EngineSelector(isSelected: isSelected, isEnabled: isReady) {
-                controller.setLocalCleanupEngine(.llama(modelID: model.id))
-            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.displayName).font(.system(size: 13, weight: .medium))
                 Text(statusText).font(.caption).foregroundStyle(.secondary)
@@ -1016,7 +986,7 @@ private struct QwenCleanupModelRow: View {
         case .ready:
             Button("Delete") { controller.deleteCleanupModel(model) }
                 .disabled(controller.isCleanupModelInUse(model))
-                .help(controller.isCleanupModelInUse(model) ? "In use as the local cleanup engine" : "")
+                .help(controller.isCleanupModelInUse(model) ? "In use. Pick a different Cleanup model in General first." : "")
         }
     }
 }
@@ -1282,7 +1252,7 @@ private struct AccountPane: View {
                       systemImage: "arrow.down.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.blue)
-                Text("Updating opens Terminal, pulls the latest code, and rebuilds — about two minutes. Skylark quits and relaunches itself at the end; the Terminal window prints the version that came back up.")
+                Text("Updating opens Terminal, pulls the latest code, and rebuilds — about two minutes. Skylark quits and relaunches itself at the end, and the Terminal window closes on its own. If something goes wrong it stays open showing the error.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             case let .failed(reason):

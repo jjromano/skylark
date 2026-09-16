@@ -57,7 +57,7 @@ enum ModelInfo {
     /// Not downloadable and not in the model registry, so it's a standalone
     /// entry rather than a dictionary keyed by model/slug.
     static let appleIntelligence = Entry(
-        "macOS Apple Intelligence (Foundation Models) — on-device, private, free, no download. Used when cleanup tier is Local. Needs Apple Intelligence enabled in System Settings.",
+        "macOS Apple Intelligence (Foundation Models) — on-device, private, free, no download. Needs Apple Intelligence enabled in System Settings.",
         // Stars track the measured comparison below (17/29 at ~1.2 s), so this
         // row and the table cannot disagree on the same screen.
         primary: 3.5, primaryLabel: "Quality", secondary: 3, secondaryLabel: "Speed"

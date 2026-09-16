@@ -144,18 +144,12 @@ echo "  ✓ Built $DIST_APP"
 
 # --- Install to /Applications ----------------------------------------------
 echo ""
+# An existing install is replaced without asking: re-running this script is
+# how Skylark updates (Settings → Check for Updates runs it), and a y/N prompt
+# there was one more thing to answer for no benefit. The copy being replaced
+# was built from this same repo.
 if [[ -d "$INSTALLED_APP" ]]; then
-    read -r -p "→ $INSTALLED_APP already exists — overwrite it? [y/N] " REPLY
-    case "$REPLY" in
-        [yY]|[yY][eE][sS])
-            ;;  # removal happens below, after the running app has quit
-
-        *)
-            echo "  Skipped install — leaving the existing $INSTALLED_APP in place."
-            echo "  Your new build is still available at $DIST_APP."
-            exit 0
-            ;;
-    esac
+    echo "→ Replacing the existing $INSTALLED_APP"
 fi
 
 # Quit before touching the bundle — also covers the case where /Applications is
@@ -256,3 +250,7 @@ cat <<'EOF'
   See README.md for full usage, cloud setup, and troubleshooting.
 ════════════════════════════════════════════════════════════════════════
 EOF
+
+# shellcheck source=Scripts/close-update-window.sh
+source "$REPO_ROOT/Scripts/close-update-window.sh"
+close_update_window_if_launched_by_app

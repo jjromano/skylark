@@ -179,11 +179,8 @@ struct UpdateCommandWriterTests {
         #expect(contents.contains("cd \"/Users/jj/repos/skylark\""))
         #expect(contents.contains("git pull --ff-only"))
         #expect(contents.contains("\"/Users/jj/repos/skylark/Scripts/install.sh\""))
-        #expect(contents.contains("Press any key to close"))
-        // The keypress must actually close the window (Terminal keeps it open
-        // after exit by default), and by window id, not by tty name.
-        #expect(contents.contains("close (every window whose id is $WINDOW_ID)"))
-        #expect(contents.contains("busy of selected tab is true"))
+        // No keypress: install.sh closes the window on success.
+        #expect(!contents.contains("read "))
         #expect(contents.hasPrefix("#!/bin/bash"))
 
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
