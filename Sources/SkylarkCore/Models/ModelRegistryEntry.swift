@@ -61,6 +61,11 @@ public struct ModelRegistryEntry: Sendable, Equatable, Codable, Identifiable {
         // languages, $0.10/hr of audio, OpenRouter P50 0.34 s), so it is the row
         // a new user should land on. Whisper turbo stays second as the cheapest
         // option people already know by name.
+        //
+        // PRICE WATCH: Microsoft published $0.10/hr as an introductory rate
+        // "through the end of the year" and has not said what it becomes in
+        // January 2027. Re-check before then — if it rises far enough this row
+        // should stop being the one a new user lands on first.
         .init(slug: "microsoft/mai-transcribe-2", label: "MAI Transcribe 2", providerPin: nil, kind: .stt, sort: 0),
         .init(slug: "openai/whisper-large-v3-turbo", label: "Whisper large-v3-turbo", providerPin: nil, kind: .stt, sort: 1),
         // OpenAI's own current default (released 2026-07-28); it supersedes
