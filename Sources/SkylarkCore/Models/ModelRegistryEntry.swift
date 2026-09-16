@@ -68,18 +68,15 @@ public struct ModelRegistryEntry: Sendable, Equatable, Codable, Identifiable {
         // should stop being the one a new user lands on first.
         .init(slug: "microsoft/mai-transcribe-2", label: "MAI Transcribe 2", providerPin: nil, kind: .stt, sort: 0),
         .init(slug: "openai/whisper-large-v3-turbo", label: "Whisper large-v3-turbo", providerPin: nil, kind: .stt, sort: 1),
-        // OpenAI's own current default (released 2026-07-28); it supersedes
-        // gpt-4o-transcribe, which OpenAI no longer recommends, at $0.0045/min
-        // vs $0.006/min. Both rows are kept for now — deleting a slug a user may
-        // have selected is a maintainer call, not a curation-pass side effect.
+        // OpenAI's own current default (released 2026-07-28). It replaced
+        // gpt-4o-transcribe, retired from the seed in 0.23.1 along with
+        // mai-transcribe-1.5 (superseded by mai-transcribe-2). syncSeed removes
+        // both rows from installs; both slugs stay live on OpenRouter, so a
+        // saved selection keeps transcribing, it just no longer shows a checkmark.
         .init(slug: "openai/gpt-transcribe", label: "GPT Transcribe", providerPin: nil, kind: .stt, sort: 2),
         .init(slug: "deepgram/nova-3", label: "Deepgram Nova-3", providerPin: nil, kind: .stt, sort: 3),
         .init(slug: "mistralai/voxtral-mini-transcribe", label: "Voxtral Mini Transcribe", providerPin: nil, kind: .stt, sort: 4),
-        .init(slug: "openai/gpt-4o-transcribe", label: "GPT-4o Transcribe", providerPin: nil, kind: .stt, sort: 5),
-        .init(slug: "openai/gpt-4o-mini-transcribe", label: "GPT-4o Mini Transcribe", providerPin: nil, kind: .stt, sort: 6),
-        // Superseded by mai-transcribe-2 on accuracy, price (3.6x) and speed.
-        // Retained only so an install that selected it keeps working.
-        .init(slug: "microsoft/mai-transcribe-1.5", label: "MAI Transcribe 1.5", providerPin: nil, kind: .stt, sort: 7),
+        .init(slug: "openai/gpt-4o-mini-transcribe", label: "GPT-4o Mini Transcribe", providerPin: nil, kind: .stt, sort: 5),
     ]
 
     /// Labels a seed slug shipped in a PAST seed, keyed by slug, other than its

@@ -6,6 +6,13 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.23.1 - 2026-09-16
+
+- Removed the superseded cloud speech engines **MAI Transcribe 1.5** (use MAI
+  Transcribe 2: more accurate, faster, cheaper) and **GPT-4o Transcribe** (use
+  GPT Transcribe). If one of them was selected it keeps working until you pick
+  another engine; it just no longer appears in the pickers.
+
 ## 0.23.0 - 2026-09-16
 
 - New cloud speech engine **MAI Transcribe 2** (Microsoft, September 2026). It

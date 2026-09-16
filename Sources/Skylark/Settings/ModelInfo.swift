@@ -129,10 +129,6 @@ enum ModelInfo {
             "Whisper large-v3-turbo through OpenRouter, which routes each request to Groq or DeepInfra by price — accurate, but speed varies by seconds. For consistently fast Groq speed, pick Groq direct with a Groq key.",
             primary: 4.5, secondary: 4.5, costPerMonth: "≈ $0.20/mo"
         ),
-        "openai/gpt-4o-transcribe": Entry(
-            "Superseded by GPT Transcribe, which OpenAI now recommends instead — more accurate and cheaper. Kept only so an existing selection keeps working.",
-            primary: 4.5, secondary: 4, costPerMonth: "≈ $1.80/mo"
-        ),
         "openai/gpt-4o-mini-transcribe": Entry(
             "Lighter, cheaper GPT-4o transcription — nearly as accurate, faster and cheaper.",
             primary: 4.5, secondary: 4.5, costPerMonth: "≈ $0.90/mo"
@@ -140,10 +136,6 @@ enum ModelInfo {
         "deepgram/nova-3": Entry(
             "Deepgram's flagship ASR — strong accuracy on real-world speech, very fast batch turnaround ($0.0043/min).",
             primary: 4.5, secondary: 4.5, costPerMonth: "≈ $1.30/mo"
-        ),
-        "microsoft/mai-transcribe-1.5": Entry(
-            "Superseded by MAI Transcribe 2, which is more accurate, faster and 3.6x cheaper. Kept only so an existing selection keeps working ($0.36/hr).",
-            primary: 4.5, secondary: 4, costPerMonth: "≈ $1.80/mo"
         ),
         "mistralai/voxtral-mini-transcribe": Entry(
             "Mistral's dedicated transcription model — accuracy near the leaders at a budget price ($0.003/min).",
