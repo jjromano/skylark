@@ -84,21 +84,22 @@ struct SettingsPropertyShapeTests {
     /// the cloud registry. Both quick selectors must therefore consume the
     /// controller's combined local+cloud options instead of iterating only
     /// `cleanupModels` (the v0.21.0 UI showed Apple even while Qwen was active).
-    @Test("General and menu-bar cleanup selectors include local model options")
+    @Test("General and menu-bar cleanup selectors are one unified list")
     func cleanupSelectorsUseCombinedOptions() throws {
         let settings = try #require(Self.source(at: "Sources/Skylark/Settings/SettingsView.swift"))
         let menu = try #require(Self.source(at: "Sources/Skylark/App.swift"))
         let controller = try #require(Self.source(at: "Sources/Skylark/AppController.swift"))
-        // Checked by source, not by exact call spelling: since v0.23.0 both
-        // selectors bind the list once and split it into "On this Mac" /
-        // "Cloud · OpenRouter" sections, so they read `cleanupModelOptions`
-        // and then `ForEach` the two halves. What must stay true is that the
-        // list they split is the combined one and that both halves are shown.
+        // Checked by source, not by exact call spelling. Since v0.24.0 both
+        // surfaces use ONE Cleanup list (Off, Match app mode, on-device, cloud)
+        // with ONE selection; the old separate tier picker must not return.
         for (name, source) in [("SettingsView", settings), ("App", menu)] {
-            #expect(source.contains("controller.cleanupModelOptions"), "\(name) must use the combined local+cloud options")
+            #expect(source.contains("controller.cleanupPickerOptions"), "\(name) must use the unified cleanup options")
+            #expect(source.contains("controller.selectedCleanupOption"), "\(name) must check the unified selection")
             #expect(source.contains("filter(\\.isOnDevice)"), "\(name) must offer the on-device options")
-            #expect(source.contains("filter { !$0.isOnDevice }"), "\(name) must offer the cloud options")
+            #expect(source.contains("filter(\\.isCloud)"), "\(name) must offer the cloud options")
         }
+        #expect(!settings.contains("Default cleanup tier"), "the separate tier picker is gone")
+        #expect(!menu.contains("item(\"Local\", value: \"local\")"), "the separate tier menu is gone")
         // The selected slug must change before Cloud is activated. Deferring
         // the slug write into registry work lets a fast dictation use the old
         // model while that task is still running.

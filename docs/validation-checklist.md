@@ -454,6 +454,30 @@ not as a substitute for the §0 fresh-onboarding flow.
       `Scripts/bench-baseline.tsv`); a non-zero exit is a real latency
       regression, not noise (see Evidence discipline above).
 
+## 23. State matrix (run for every picker, indicator or launch change)
+
+These three bugs each passed every single-state check and all shipped. They
+only show up when you vary the STATE around the screen, not the screen itself.
+
+- [ ] **Key matrix.** Open the menu-bar Cleanup and Speech Engine menus and the
+      Settings → General pickers in each of four states: no keys, OpenRouter key
+      only, Groq key only, both keys. Pass: no row appears that cannot run in
+      that state. Without an OpenRouter key each menu shows one "Add OpenRouter
+      Key…" row under a gray "no key added" heading, and Groq direct is absent
+      without a Groq key. (The option lists themselves are unit-tested in
+      `SpeechEngineOptionsTests` and `CleanupCycleTests`; this step checks the
+      rendering.)
+- [ ] **Download matrix.** Delete Whisper in Settings → Models. Pass: it leaves
+      the Speech Engine pickers, unless it was the selected engine.
+- [ ] **Second copy.** With Skylark running, launch a different build
+      (`make run`). Pass: exactly ONE Skylark icon in the menu bar within
+      ~5 s, and exactly one pill.
+- [ ] **Indicator × idle pill × style.** For each of Standard / Minimal: toggle
+      "Show idle pill" off and on, and quit + relaunch with it off. Pass: the
+      idle pill disappears and reappears immediately, and it is gone after
+      launch once the model finishes loading. A pill drawn inside another
+      pill means two copies are running (see above).
+
 ## Known intentional behaviors (don't file as bugs)
 
 - Paste-fallback apps wait up to 2 s for cleanup instead of replacing in

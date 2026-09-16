@@ -43,8 +43,8 @@ public enum CleanupCycleOption: Sendable, Equatable, Hashable, Identifiable {
     /// Instruct").
     public var displayName: String {
         switch self {
-        case .auto: return "Auto (per-mode)"
-        case .raw: return "Raw (no cleanup)"
+        case .auto: return "Match app mode"
+        case .raw: return "Off (raw text)"
         case .local(.appleFoundationModels): return "Apple Intelligence (local)"
         case .local(.llama(let modelID)):
             return LocalCleanupModel.model(id: modelID)?.displayName ?? modelID
@@ -58,15 +58,21 @@ public enum CleanupCycleOption: Sendable, Equatable, Hashable, Identifiable {
     /// ("Cleanup: …") has no header to lean on.
     public var menuLabel: String {
         switch self {
+        case .raw: return "Off (paste raw text)"
         case .local(.appleFoundationModels): return "Apple Intelligence"
         default: return displayName
         }
     }
 
     /// True for the on-device tier. `auto` and `raw` are tier selectors rather
-    /// than models and never reach the grouped menus, so they answer false.
+    /// than models, so they answer false here and false for `isCloud`.
     public var isOnDevice: Bool {
         if case .local = self { return true }
+        return false
+    }
+
+    public var isCloud: Bool {
+        if case .cloud = self { return true }
         return false
     }
 }
@@ -76,10 +82,12 @@ public enum CleanupCycleOption: Sendable, Equatable, Hashable, Identifiable {
 /// asks which one is current, asks for the next one, and applies it exactly as
 /// the menus would.
 public enum CleanupCycle {
-    /// The ring, in menu order: Auto → Raw → Apple Intelligence → each Qwen model
-    /// actually present on disk → each cloud cleanup model, but only when an API
-    /// key is stored (a cloud stop with no key would degrade every dictation and
-    /// is not a selection the user can act on).
+    /// The ring: Auto → Raw → Apple Intelligence (only where it is enabled) →
+    /// each Qwen model actually present on disk → each cloud cleanup model, but
+    /// only when an API key is stored. The same list feeds the menu-bar and
+    /// Settings Cleanup pickers, so an option is offered in all three places or
+    /// in none: a stop the user cannot actually use (no key, Apple Intelligence
+    /// switched off, model not downloaded) would only degrade every dictation.
     ///
     /// Auto leads because it is the app's default state and the menu's first row;
     /// including it keeps the ring lossless — whatever the hotkey does, another
@@ -87,9 +95,11 @@ public enum CleanupCycle {
     public static func options(
         localModels: [LocalCleanupModel] = LocalCleanupModel.installed,
         cloudModels: [ModelRegistryEntry],
-        hasAPIKey: Bool
+        hasAPIKey: Bool,
+        appleIntelligenceAvailable: Bool = true
     ) -> [CleanupCycleOption] {
-        var options: [CleanupCycleOption] = [.auto, .raw, .local(.appleFoundationModels)]
+        var options: [CleanupCycleOption] = [.auto, .raw]
+        if appleIntelligenceAvailable { options.append(.local(.appleFoundationModels)) }
         options += localModels.map { .local(.llama(modelID: $0.id)) }
         if hasAPIKey {
             options += cloudModels

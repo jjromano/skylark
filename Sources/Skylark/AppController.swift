@@ -3,6 +3,9 @@ import os
 import ServiceManagement
 import SkylarkCore
 import SwiftUI
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 
 /// An engine option offered by History → Re-transcribe. Cloud cases carry their
 /// slug + label so the factory can build an `OpenRouterCloud` without reading
@@ -1290,6 +1293,7 @@ final class AppController {
         // Cache key presence off-main so no SwiftUI body ever touches the
         // keychain (main-thread mutex hang; see hasAPIKey).
         refreshAPIKeyPresence()
+        refreshAppleIntelligenceAvailability()
         // Deep-vocabulary migrations, in order. The v0.12.2 kill switch forced
         // the feature off while its matcher corrupted cleaned text (spotter
         // rescue replaced unrelated words with dictionary terms). The matcher
@@ -1501,8 +1505,13 @@ final class AppController {
                 Task { [orchestrator] in await orchestrator.setTranscriberReady(false) }
             }
         }
-        if isActiveEngine {
+        if isActiveEngine, hud.isPreparing != prep.isPreparing {
             hud.isPreparing = prep.isPreparing
+            // Visibility depends on this flag (the loading dot keeps the pill
+            // up even with "Show idle pill" off), and the panel is ordered in
+            // and out only by `refreshLayout`. Without it, the pill that
+            // appeared while the model loaded stayed on screen afterwards.
+            hudPanel.refreshLayout()
         }
     }
 
@@ -1827,11 +1836,7 @@ final class AppController {
     /// pickers follow along with no extra bookkeeping. Bound to nothing by
     /// default; `hotkeyCycleCleanup` is where the user opts in.
     func cycleCleanupSelection() {
-        let options = CleanupCycle.options(
-            localModels: LocalCleanupModel.installed,
-            cloudModels: cleanupModels,
-            hasAPIKey: hasAPIKey
-        )
+        let options = cleanupOptions
         let current = CleanupCycle.current(
             tierOverride: cleanupOverride,
             localEngine: localCleanupEngine,
@@ -1902,36 +1907,72 @@ final class AppController {
     var currentCleanupSlug: String { modelSelection.cleanupSlug }
     var currentSTT: STTChoice { modelSelection.sttChoice }
 
-    /// One shared list for Settings and the menu bar: Apple Intelligence, each
-    /// downloaded Qwen model, then the cloud registry. The old surfaces read
-    /// only `cleanupModels`, which is cloud-only, so Qwen could be selected in
-    /// Models while both quick selectors falsely showed Apple or omitted it.
-    var cleanupModelOptions: [CleanupCycleOption] {
-        Array(CleanupCycle.options(
+    /// The one Cleanup list shared by the menu bar, Settings and the cycle
+    /// hotkey: Off, Match app mode, each on-device model that can run on this
+    /// Mac, then the cloud models when an OpenRouter key is stored. There used
+    /// to be a separate tier menu (Auto/Raw/Local/Cloud) beside a model menu,
+    /// and picking in one silently rewrote the other; a single radio list has
+    /// exactly one meaning per checkmark.
+    var cleanupOptions: [CleanupCycleOption] {
+        CleanupCycle.options(
             localModels: LocalCleanupModel.installed,
             cloudModels: cleanupModels,
-            hasAPIKey: true
-        ).dropFirst(2))
+            hasAPIKey: hasAPIKey,
+            appleIntelligenceAvailable: appleIntelligenceAvailable
+        )
     }
 
-    /// The underlying selected model. Cloud displays its selected slug; Auto and
-    /// Raw display the retained on-device choice because their effective model
-    /// varies by mode or is intentionally disabled. Choosing an item forces its
-    /// corresponding tier.
-    var selectedCleanupModelOption: CleanupCycleOption {
-        if cleanupOverride != "cloud" { return .local(localCleanupEngine) }
-        let slug = currentCleanupSlug
-        let label = cleanupModels.first { $0.slug == slug }?.label ?? slug
-        return .cloud(slug: slug, label: label)
-    }
-
-    func selectCleanupModelOption(_ option: CleanupCycleOption) {
-        switch option {
-        case .local, .cloud:
-            applyCleanupCycleOption(option)
-        case .auto, .raw:
-            break
+    /// `cleanupOptions` for the pickers: the same list, plus the selected
+    /// on-device model if it is currently unavailable (Apple Intelligence
+    /// switched off, a Qwen file deleted), so the menu never loses its only
+    /// checkmark. The cycle hotkey keeps using `cleanupOptions` and skips it.
+    var cleanupPickerOptions: [CleanupCycleOption] {
+        var options = cleanupOptions
+        let selected = selectedCleanupOption
+        if selected.isOnDevice, !options.contains(where: { $0.id == selected.id }) {
+            let insertAt = options.lastIndex(where: \.isOnDevice).map { $0 + 1 }
+                ?? options.firstIndex(where: \.isCloud) ?? options.endIndex
+            options.insert(selected, at: insertAt)
         }
+        return options
+    }
+
+    /// The checked row. Cloud carries the registry label so a Settings picker
+    /// tag matches it exactly; a custom slug with no registry row falls back to
+    /// the slug itself.
+    var selectedCleanupOption: CleanupCycleOption {
+        switch cleanupOverride {
+        case "raw": return .raw
+        case "local": return .local(localCleanupEngine)
+        case "cloud":
+            let slug = currentCleanupSlug
+            let label = cleanupModels.first { $0.slug == slug }?.label ?? slug
+            return .cloud(slug: slug, label: label)
+        default: return .auto
+        }
+    }
+
+    func selectCleanupOption(_ option: CleanupCycleOption) {
+        applyCleanupCycleOption(option)
+    }
+
+    /// What the Speech Engine pickers offer right now; see `SpeechEngineOptions`.
+    var speechEngineOptions: SpeechEngineOptions {
+        func onDisk(_ model: ManagedModel) -> Bool {
+            switch modelStates[model] {
+            case .none, .notDownloaded: return false
+            default: return true
+            }
+        }
+        return SpeechEngineOptions(
+            current: currentSTT,
+            parakeetAvailable: onDisk(.parakeet),
+            whisperAvailable: onDisk(.whisper),
+            appleSpeechAvailable: onDisk(.appleSpeech),
+            hasGroqKey: hasGroqKey,
+            hasOpenRouterKey: hasAPIKey,
+            cloudModels: sttModels
+        )
     }
 
     /// Select the global cleanup model slug (upserts an ad-hoc registry entry for
@@ -2604,10 +2645,25 @@ final class AppController {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    /// A pane Settings should switch to the next time it renders (consumed and
+    /// cleared by `SettingsView`). Lets a menu row like "Add OpenRouter key…"
+    /// land on Account whether or not the window is already open.
+    private(set) var requestedSettingsPane: String?
+
+    func showSettings(pane: String) {
+        requestedSettingsPane = pane
+        showSettings()
+    }
+
+    func clearSettingsPaneRequest() {
+        requestedSettingsPane = nil
+    }
+
     func showSettings() {
         // Login-item state can change behind our back (System Settings → Login
         // Items); re-read it before the pane that shows it appears.
         refreshLaunchAtLoginStatus()
+        refreshAppleIntelligenceAvailability()
         if let window = settingsWindow {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
@@ -2701,6 +2757,25 @@ final class AppController {
     /// key change.
     private(set) var hasAPIKey: Bool = false
 
+    /// Whether a Groq key is stored, cached for the same reason as `hasAPIKey`.
+    /// Only decides whether the Groq-direct engine is offered in the pickers.
+    private(set) var hasGroqKey: Bool = false
+
+    /// Whether Apple Intelligence can run cleanup on this Mac right now. Stored,
+    /// not computed, so SwiftUI observes it; refreshed at launch and whenever
+    /// Settings opens (the user may have just enabled it in System Settings).
+    private(set) var appleIntelligenceAvailable: Bool = true
+
+    func refreshAppleIntelligenceAvailability() {
+        #if canImport(FoundationModels)
+        let available: Bool
+        if case .available = SystemLanguageModel.default.availability { available = true } else { available = false }
+        #else
+        let available = false
+        #endif
+        if appleIntelligenceAvailable != available { appleIntelligenceAvailable = available }
+    }
+
     /// Re-read key presence OFF the main actor and publish the cached flag.
     /// `completion` (if any) runs on the main actor after the flag updates.
     func refreshAPIKeyPresence(completion: (@MainActor () -> Void)? = nil) {
@@ -2710,8 +2785,10 @@ final class AppController {
             // exists. The key itself stays in memory only — never persisted,
             // never logged.
             let exists = APIKeyCache.shared.reload() != nil
+            let groqExists = APIKeyCache.groq.reload() != nil
             await MainActor.run { [weak self] in
                 self?.hasAPIKey = exists
+                self?.hasGroqKey = groqExists
                 completion?()
             }
         }

@@ -93,6 +93,11 @@ struct SettingsView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: 760, height: 600)
+        .onChange(of: controller.requestedSettingsPane, initial: true) { _, requested in
+            guard let requested, let pane = Pane(rawValue: requested) else { return }
+            selection = pane
+            controller.clearSettingsPaneRequest()
+        }
     }
 
     private var sidebarFooter: some View {
@@ -181,12 +186,6 @@ private struct GeneralPane: View {
     /// Sentinel for the mouse-trigger picker's "None" row (no binding).
     private static let mouseOffTag = "off"
 
-    /// Transient footer note surfacing the "Cleanup model" picker's implicit
-    /// tier switch (choosing a local/cloud model forces that tier). Mirrors
-    /// `AppController.showNote`'s clear-after-4s pattern, scoped to this pane.
-    @State private var tierSwitchNote: String?
-    @State private var tierSwitchNoteClearTask: Task<Void, Never>?
-
     /// Whether macOS itself has the Fn key bound to Change Input Source / Show
     /// Emoji & Symbols / Start Dictation (`System Settings ▸ Keyboard`) — that
     /// system action fights Skylark's Fn trigger for the same key-down. This
@@ -225,7 +224,7 @@ private struct GeneralPane: View {
     /// Caption for the live-preview toggle. Notes the Parakeet-only limitation
     /// when another engine is active (the toggle stays but preview won't render).
     private var livePreviewCaption: String {
-        let base = "Shows words as you speak in the recording pill. Experimental — the pasted text is unaffected."
+        let base = "Shows your words inside the recording pill as you speak (not in the document you are typing into), starting about a second and a half in. Experimental; the pasted text is unaffected."
         return controller.currentSTT == .localParakeet ? base : base + " Parakeet only."
     }
 
@@ -312,7 +311,7 @@ private struct GeneralPane: View {
             } header: {
                 Text("Cleanup model shortcut")
             } footer: {
-                Text("Optional. Each press moves the active cleanup one step — Auto, Raw, Apple Intelligence, any Qwen model you've downloaded, then your cloud models when an API key is stored — and names the new choice in the menu bar. If it collides with the dictation or voice-command shortcut, those win.")
+                Text("Optional. Each press moves the active cleanup one step through the same list as the Cleanup picker: Match app mode, Off, each on-device model, then your cloud models when an OpenRouter key is stored. It names the new choice in the menu bar. If it collides with the dictation or voice-command shortcut, those win.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -340,6 +339,11 @@ private struct GeneralPane: View {
                 Text(livePreviewCaption)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if controller.hud.style == .hidden {
+                    Text("The idle pill and live preview are both drawn in the recording indicator, so they are off while it is hidden.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             Section {
@@ -360,14 +364,33 @@ private struct GeneralPane: View {
             }
 
             Section("Cleanup") {
-                Picker("Default cleanup tier", selection: Binding(
-                    get: { controller.cleanupOverride },
-                    set: { controller.setCleanupOverride($0) }
+                // One picker, one meaning: this replaced a tier picker plus a
+                // separate model picker that silently rewrote each other. Same
+                // options, order and availability rules as the menu bar.
+                Picker("Cleanup", selection: Binding(
+                    get: { controller.selectedCleanupOption },
+                    set: { controller.selectCleanupOption($0) }
                 )) {
-                    Text("Auto (per-mode)").tag("auto")
-                    Text("Raw").tag("raw")
-                    Text("Local").tag("local")
-                    Text("Cloud").tag("cloud")
+                    let options = controller.cleanupPickerOptions
+                    Text(CleanupCycleOption.raw.menuLabel).tag(CleanupCycleOption.raw)
+                    Text(CleanupCycleOption.auto.menuLabel).tag(CleanupCycleOption.auto)
+                    Section("On this Mac") {
+                        ForEach(options.filter(\.isOnDevice)) { option in
+                            Text(option.menuLabel).tag(option)
+                        }
+                    }
+                    if controller.hasAPIKey {
+                        Section("Cloud · OpenRouter") {
+                            ForEach(options.filter(\.isCloud)) { option in
+                                Text(option.menuLabel).tag(option)
+                            }
+                        }
+                    }
+                }
+                if !controller.hasAPIKey {
+                    Text("Cloud cleanup models appear here once you add an OpenRouter key in Account.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
                 if usesCloud, !controller.hasAPIKey {
                     Label(
@@ -384,9 +407,8 @@ private struct GeneralPane: View {
                     // cleanup forever while Settings shows them a cloud model —
                     // the silent mismatch this note exists to end.
                     Label(
-                        "Auto uses each app's mode, and modes ship set to on-device cleanup. "
-                            + "The cloud cleanup model below only runs for a mode you have set to Cloud — "
-                            + "choose Cloud here to use it everywhere.",
+                        "Match app mode uses each app's mode (Settings → Modes), and modes ship set to on-device cleanup. "
+                            + "Pick a model here to use it everywhere.",
                         systemImage: "info.circle"
                     )
                     .font(.caption)
@@ -460,48 +482,31 @@ private struct GeneralPane: View {
                     // Groq row keeps a "— Groq" tail because a collapsed picker
                     // shows only the row label, and without it the two
                     // Whisper turbo rows would be indistinguishable once closed.
+                    // Only engines that can run are offered (`SpeechEngineOptions`).
+                    let options = controller.speechEngineOptions
                     Section("On this Mac") {
-                        Text("Parakeet").tag(STTChoice.localParakeet)
-                        Text("Whisper large-v3-turbo").tag(STTChoice.localWhisper)
-                        Text("Apple Speech (macOS)").tag(STTChoice.localApple)
+                        ForEach(options.onDevice, id: \.self) { choice in
+                            Text(SpeechEngineOptions.onDeviceLabel(choice)).tag(choice)
+                        }
                     }
-                    Section("Cloud · Groq direct") {
-                        Text("Whisper large-v3-turbo — Groq").tag(STTChoice.groqDirect)
+                    if options.groqDirect {
+                        Section("Cloud · Groq direct") {
+                            Text("Whisper large-v3-turbo — Groq").tag(STTChoice.groqDirect)
+                        }
                     }
                     Section("Cloud · OpenRouter") {
-                        ForEach(controller.sttModels) { entry in
+                        ForEach(options.openRouter) { entry in
                             Text(entry.label).tag(STTChoice.cloud(slug: entry.slug))
                         }
                     }
                 }
-                Picker("Cleanup model", selection: Binding(
-                    get: { controller.selectedCleanupModelOption },
-                    set: { selection in
-                        let previousTier = controller.cleanupOverride
-                        controller.selectCleanupModelOption(selection)
-                        announceTierSwitch(from: previousTier, to: controller.cleanupOverride)
-                    }
-                )) {
-                    let options = controller.cleanupModelOptions
-                    Section("On this Mac") {
-                        ForEach(options.filter(\.isOnDevice)) { option in
-                            Text(option.menuLabel).tag(option)
-                        }
-                    }
-                    Section("Cloud · OpenRouter") {
-                        ForEach(options.filter { !$0.isOnDevice }) { option in
-                            Text(option.menuLabel).tag(option)
-                        }
-                    }
-                }
-            } header: {
-                Text("Speech & cleanup")
-            } footer: {
-                if let tierSwitchNote {
-                    Text(tierSwitchNote)
+                if controller.speechEngineOptions.needsOpenRouterKey {
+                    Text("Cloud speech engines appear here once you add an OpenRouter key in Account.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            } header: {
+                Text("Speech")
             }
 
             Section("Feedback") {
@@ -557,21 +562,6 @@ private struct GeneralPane: View {
         .formStyle(.grouped)
         .onAppear {
             systemFnActionConfigured = Self.isSystemFnActionConfigured()
-        }
-    }
-
-    /// Surfaces the "Cleanup model" picker's implicit tier switch (a picker
-    /// selection forces Local or Cloud tier) with a transient footer caption,
-    /// but only when the tier actually changed — re-picking the same effective
-    /// tier stays silent.
-    private func announceTierSwitch(from previousTier: String, to newTier: String) {
-        guard previousTier != newTier else { return }
-        let label = newTier == "local" ? "Local" : "Cloud"
-        tierSwitchNote = "Default cleanup tier switched to \(label) to match your model choice."
-        tierSwitchNoteClearTask?.cancel()
-        tierSwitchNoteClearTask = Task {
-            try? await Task.sleep(for: .seconds(4))
-            if !Task.isCancelled { tierSwitchNote = nil }
         }
     }
 }

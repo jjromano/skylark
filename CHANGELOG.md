@@ -6,6 +6,28 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.24.0 - 2026-09-16
+
+- **One Cleanup menu.** The menu bar's separate "Cleanup" (Auto/Raw/Local/Cloud)
+  and "Cleanup Model" menus are merged into a single "Cleanup" menu with exactly
+  one checkmark: Off, Match app mode, your on-device models, then your cloud
+  models. Settings → General gets the same single picker. Before, choosing in
+  one menu silently changed the other.
+- **Pickers only offer what can run.** Cloud models are listed only once an
+  OpenRouter key is added; until then each menu shows an "Add OpenRouter Key…"
+  row that opens Settings → Account. Groq direct appears only with a Groq key.
+  On-device speech engines appear once downloaded, and Apple Intelligence only
+  when it is enabled on this Mac.
+- **Only one Skylark runs at a time.** Opening a second copy (for example a
+  fresh build while the installed app is running) now quits the older one.
+  Two copies meant two hotkey listeners and two recording pills drawn on top of
+  each other.
+- With "Show idle pill" off, the pill no longer stays on screen after the
+  speech model finishes loading.
+- Settings explains why the idle pill and live preview are unavailable while
+  the recording indicator is hidden, and that live preview appears in the pill,
+  not in your document.
+
 ## 0.23.1 - 2026-09-16
 
 - Removed the superseded cloud speech engines **MAI Transcribe 1.5** (use MAI

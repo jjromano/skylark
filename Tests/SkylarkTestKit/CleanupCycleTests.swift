@@ -35,7 +35,7 @@ struct CleanupCycleTests {
     func onlyInstalledLocalModels() {
         let options = CleanupCycle.options(localModels: [], cloudModels: cloud, hasAPIKey: true)
         #expect(!options.contains { $0.id.hasPrefix("local:llama") })
-        // Apple Intelligence needs no download, so it is always offered.
+        // Apple Intelligence needs no download, so it is offered whenever enabled.
         #expect(options.contains { $0.id == "local:apple" })
     }
 
@@ -128,7 +128,17 @@ struct CleanupCycleTests {
         #expect(CleanupCycleOption.local(.appleFoundationModels).displayName == "Apple Intelligence (local)")
         #expect(CleanupCycleOption.cloud(slug: "openai/gpt-oss-20b", label: "GPT-OSS 20B (Groq)").displayName
             == "GPT-OSS 20B (Groq)")
-        #expect(CleanupCycleOption.raw.displayName == "Raw (no cleanup)")
+        #expect(CleanupCycleOption.raw.displayName == "Off (raw text)")
+        #expect(CleanupCycleOption.auto.displayName == "Match app mode")
+    }
+
+    @Test("Apple Intelligence switched off: not offered anywhere")
+    func appleIntelligenceUnavailable() {
+        let options = CleanupCycle.options(
+            localModels: [qwen], cloudModels: cloud, hasAPIKey: true, appleIntelligenceAvailable: false
+        )
+        #expect(!options.contains { $0.id == "local:apple" })
+        #expect(options.contains { $0.id == "local:llama:qwen3-4b-instruct" })
     }
 
     // MARK: - Binding

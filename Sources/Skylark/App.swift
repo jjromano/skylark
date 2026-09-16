@@ -28,7 +28,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar accessory app (also LSUIElement in Info.plist).
         NSApp.setActivationPolicy(.accessory)
-        controller.start()
+        // Quit any older copy BEFORE starting: `start()` installs the hotkey
+        // tap and shows the pill, and two of each is the bug this prevents.
+        Task { @MainActor [controller] in
+            await SingleInstanceGuard.replaceOlderInstances()
+            controller.start()
+        }
     }
 
     /// MANDATORY: if a local Qwen cleanup engine is active, block (boundedly)
@@ -72,7 +77,6 @@ struct MenuContent: View {
         Divider()
 
         CleanupMenu(controller: controller)
-        CleanupModelMenu(controller: controller)
         SpeechEngineMenu(controller: controller)
         WhisperModeToggle(controller: controller)
 
@@ -89,92 +93,97 @@ struct MenuContent: View {
     }
 }
 
-/// Temporary global cleanup-tier override (real Settings UI lands later).
-/// Auto = use the app-resolved mode's tier; Raw/Local force a tier.
+/// The single Cleanup picker: exactly one checkmark, one meaning.
+///
+/// Replaces a tier menu (Auto/Raw/Local/Cloud) that sat beside a model menu,
+/// where choosing in one silently rewrote the other (Cloud tier + a local model
+/// meant local). Offers only what can run: on-device models that are present
+/// and enabled, cloud models only with an OpenRouter key. The same list drives
+/// Settings and the cycle hotkey.
 private struct CleanupMenu: View {
     let controller: AppController
-    @AppStorage(AppController.cleanupOverrideKey) private var override = "auto"
 
     var body: some View {
         Menu("Cleanup") {
-            item("Auto", value: "auto")
-            item("Raw", value: "raw")
-            item("Local", value: "local")
-            item("Cloud", value: "cloud")
-        }
-    }
-
-    private func item(_ title: String, value: String) -> some View {
-        MenuChoice(title: title, isSelected: override == value) {
-            override = value
-            controller.setCleanupOverride(value)
-        }
-    }
-}
-
-/// Global cleanup model picker, split into "On this Mac" and "Cloud" sections
-/// so it is never ambiguous which one a row runs on.
-private struct CleanupModelMenu: View {
-    let controller: AppController
-
-    var body: some View {
-        Menu("Cleanup Model") {
-            let options = controller.cleanupModelOptions
+            let options = controller.cleanupPickerOptions
+            row(.raw)
+            row(.auto)
             Section("On this Mac") {
                 ForEach(options.filter(\.isOnDevice)) { row($0) }
             }
-            Section("Cloud · OpenRouter") {
-                ForEach(options.filter { !$0.isOnDevice }) { row($0) }
+            if controller.hasAPIKey {
+                Section("Cloud · OpenRouter") {
+                    ForEach(options.filter(\.isCloud)) { row($0) }
+                }
+                Divider()
+                Button("Custom Slug…") { controller.promptCustomCleanupSlug() }
+            } else {
+                AddOpenRouterKeySection(controller: controller)
             }
-            Divider()
-            Button("Custom Slug…") { controller.promptCustomCleanupSlug() }
         }
     }
 
     private func row(_ option: CleanupCycleOption) -> some View {
         MenuChoice(
             title: option.menuLabel,
-            isSelected: controller.selectedCleanupModelOption.id == option.id
+            isSelected: controller.selectedCleanupOption.id == option.id
         ) {
-            controller.selectCleanupModelOption(option)
+            controller.selectCleanupOption(option)
         }
     }
 }
 
-/// Speech engine picker, grouped the same way as the cleanup menu and as the
-/// Models pane: on-device engines, then each cloud transport.
+/// Speech engine picker: on-device engines, then each cloud transport, each
+/// shown only when it can actually run (see `SpeechEngineOptions`).
 ///
-/// The flat version of this menu read as if the local rows were indented
-/// children of something: a selected row was `Label(…, systemImage:)` and an
-/// unselected one a bare `Text`, so the two kinds of row started at different
-/// x-positions inside one contiguous run. `MenuChoice` gives every row the same
-/// shape, so the text edges line up whatever is selected.
+/// Every row is a `MenuChoice`, so the text edges line up whatever is selected
+/// (a `Label` with a checkmark next to bare `Text` rows used to shift them).
 private struct SpeechEngineMenu: View {
     let controller: AppController
 
     var body: some View {
         Menu("Speech Engine") {
+            let options = controller.speechEngineOptions
             Section("On this Mac") {
-                choice("Parakeet", .localParakeet)
-                choice("Whisper large-v3-turbo", .localWhisper)
-                choice("Apple Speech (macOS)", .localApple)
-            }
-            Section("Cloud · Groq direct") {
-                choice("Whisper large-v3-turbo — Groq", .groqDirect)
-            }
-            Section("Cloud · OpenRouter") {
-                ForEach(controller.sttModels) { entry in
-                    choice(entry.label, .cloud(slug: entry.slug))
+                ForEach(options.onDevice, id: \.self) { choice in
+                    self.choice(SpeechEngineOptions.onDeviceLabel(choice), choice)
                 }
             }
-            Divider()
-            Button("Custom Slug…") { controller.promptCustomSTTSlug() }
+            if options.groqDirect {
+                Section("Cloud · Groq direct") {
+                    choice("Whisper large-v3-turbo — Groq", .groqDirect)
+                }
+            }
+            if options.needsOpenRouterKey {
+                AddOpenRouterKeySection(controller: controller)
+            } else {
+                Section("Cloud · OpenRouter") {
+                    ForEach(options.openRouter) { entry in
+                        choice(entry.label, .cloud(slug: entry.slug))
+                    }
+                }
+                Divider()
+                Button("Custom Slug…") { controller.promptCustomSTTSlug() }
+            }
         }
     }
 
     private func choice(_ title: String, _ value: STTChoice) -> some View {
         MenuChoice(title: title, isSelected: controller.currentSTT == value) {
             controller.selectSTT(value)
+        }
+    }
+}
+
+/// Stand-in for the OpenRouter models when no key is stored. The section header
+/// is rendered gray by the system, which is what tells the user why no cloud
+/// models are listed; the one row under it is the way to fix that.
+private struct AddOpenRouterKeySection: View {
+    let controller: AppController
+
+    var body: some View {
+        Section("Cloud · OpenRouter · no key added") {
+            Button("Add OpenRouter Key…") { controller.showSettings(pane: "account") }
         }
     }
 }
