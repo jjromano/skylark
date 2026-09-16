@@ -6,6 +6,14 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.22.1 - 2026-09-15
+
+- Diagnostics now distinguish a successful cleanup that made no text change
+  from a timeout, request failure or rejected result. Fast no-op cleanups no
+  longer inflate the failure count.
+- Diagnostics now count history rows from before and after the installed
+  build, and warn when no shown dictation actually exercises that build.
+
 ## 0.22.0 - 2026-09-12
 
 Fixes from the 2026-09-08 human pass on the Air.

@@ -201,8 +201,53 @@ struct DiagnosticsReportTests {
         #expect(out.contains("inj_ms"))
         #expect(out.contains("3800"))
         #expect(out.contains("2000"))
-        #expect(out.contains("cleanup waited then returned raw: 1"))
-        #expect(out.contains("2000 ms of pure wait"))
+        #expect(out.contains("cleanup produced no usable result: 1"))
+        #expect(out.contains("2000 ms waited"))
+    }
+
+    @Test("A successful no-op cleanup is not reported as a failure")
+    func successfulNoOpIsNotFailure() {
+        let unchanged = HistoryRecord(
+            timestamp: Self.fixedDate, rawText: "already correct words here",
+            cleanText: nil, engine: "parakeet",
+            durationMs: 1500, latencyMs: 700, appName: "Claude",
+            cleanupEngine: "meta-llama/llama-3.3-70b-instruct",
+            transcribeMs: 200, cleanupMs: 365, injectMs: 20
+        )
+        let noResult = HistoryRecord(
+            timestamp: Self.fixedDate, rawText: "one two three four",
+            cleanText: nil, engine: "parakeet",
+            durationMs: 1800, latencyMs: 12_445, appName: "Claude",
+            cleanupEngine: nil, transcribeMs: 256, cleanupMs: 12_078, injectMs: 104
+        )
+        let out = DiagnosticsReport.build(
+            environment: environment(), settings: settings(),
+            dictations: [unchanged, noResult], logs: []
+        )
+
+        #expect(out.contains("cln_result"))
+        #expect(out.contains("unchanged"))
+        #expect(out.contains("no-result"))
+        #expect(out.contains("cleanup completed with no text change: 1"))
+        #expect(out.contains("cleanup produced no usable result: 1 (12078 ms waited)"))
+        #expect(!out.contains("cleanup waited then returned raw"))
+    }
+
+    @Test("Report says when history cannot exercise the current build")
+    func currentBuildCoverageIsExplicit() {
+        var env = environment()
+        env.buildDate = Self.fixedDate.addingTimeInterval(60)
+        let old = HistoryRecord(
+            timestamp: Self.fixedDate, rawText: "one two three", cleanText: nil,
+            engine: "parakeet", durationMs: 1000, latencyMs: 700, appName: "Claude"
+        )
+        let out = DiagnosticsReport.build(
+            environment: env, settings: settings(), dictations: [old], logs: []
+        )
+
+        #expect(out.contains("dictations predating current build: 1"))
+        #expect(out.contains("dictations at/after current build: 0"))
+        #expect(out.contains("no shown dictation exercises the current build"))
     }
 
     @Test("Rows recorded before 0.17.0 render a dash rather than a bogus zero")

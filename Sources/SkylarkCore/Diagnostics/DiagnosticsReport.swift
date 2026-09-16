@@ -148,7 +148,7 @@ public enum DiagnosticsReport {
         out += "\n"
         out += settingsSection(settings)
         out += "\n"
-        out += dictationsSection(dictations)
+        out += dictationsSection(dictations, currentBuildDate: environment.buildDate)
         out += "\n"
         out += logsSection(logs, note: logNote)
         return out
@@ -207,7 +207,9 @@ public enum DiagnosticsReport {
     /// Per-dictation metadata table + the truncation/silent-tail heuristics that
     /// have surfaced real bugs (cloud cleanup truncation; silent-tail capture).
     /// Only counts and timings — never the text itself.
-    private static func dictationsSection(_ records: [HistoryRecord]) -> String {
+    private static func dictationsSection(
+        _ records: [HistoryRecord], currentBuildDate: Date?
+    ) -> String {
         var out = "RECENT DICTATIONS (metadata only — no transcript text)\n"
         out += String(repeating: "-", count: 60) + "\n"
 
@@ -217,16 +219,19 @@ public enum DiagnosticsReport {
         }
 
         let header = ["#", "timestamp", "app", "stt", "dur_ms", "raw_w", "cln_w", "cleanup",
-                      "stt_ms", "cln_ms", "inj_ms", "lat_ms"]
+                      "cln_result", "stt_ms", "cln_ms", "inj_ms", "lat_ms"]
         var rows: [[String]] = [header]
 
         var truncationCount = 0
         var silentTailCount = 0
-        // A cleanup that burned its whole budget and still returned raw text is
-        // pure waste: the user waited and got nothing for it. This is the one
-        // signal the pre-0.17.0 export could not show at all.
-        var wastedCleanupCount = 0
-        var wastedCleanupMs = 0
+        // `cleanText == nil` alone does NOT mean cleanup failed. A successful
+        // cleaner that returns the transcript unchanged deliberately records no
+        // duplicate clean text, but DOES record the engine that completed. Only
+        // a measured cleanup with neither clean text nor an engine produced no
+        // usable result (timeout, request failure, or rejected output).
+        var unchangedCleanupCount = 0
+        var noResultCleanupCount = 0
+        var noResultCleanupMs = 0
 
         for (idx, r) in records.enumerated() {
             let rawWords = WordCount.count(r.rawText)
@@ -245,9 +250,24 @@ public enum DiagnosticsReport {
                 silentTailCount += 1
             }
 
-            if let cleanupMs = r.cleanupMs, cleanupMs > 0, r.cleanText == nil {
-                wastedCleanupCount += 1
-                wastedCleanupMs += cleanupMs
+            let cleanupResult: String
+            if r.cleanupMs == nil {
+                cleanupResult = "-"
+            } else if r.cleanText != nil {
+                cleanupResult = "changed"
+            } else if let cleanupEngine = r.cleanupEngine {
+                cleanupResult = cleanupEngine == "raw" ? "raw" : "unchanged"
+            } else if let cleanupMs = r.cleanupMs, cleanupMs > 0 {
+                cleanupResult = "no-result"
+            } else {
+                cleanupResult = "skipped"
+            }
+
+            if cleanupResult == "unchanged" {
+                unchangedCleanupCount += 1
+            } else if cleanupResult == "no-result", let cleanupMs = r.cleanupMs {
+                noResultCleanupCount += 1
+                noResultCleanupMs += cleanupMs
             }
 
             rows.append([
@@ -259,6 +279,7 @@ public enum DiagnosticsReport {
                 "\(rawWords)",
                 cleanWords.map { "\($0)" } ?? "-",
                 r.cleanupEngine ?? "-",
+                cleanupResult,
                 r.transcribeMs.map { "\($0)" } ?? "-",
                 r.cleanupMs.map { "\($0)" } ?? "-",
                 r.injectMs.map { "\($0)" } ?? "-",
@@ -269,11 +290,23 @@ public enum DiagnosticsReport {
         out += table(rows) + "\n"
         out += "\nSummary:\n"
         out += "  dictations shown: \(records.count)\n"
+        if let currentBuildDate {
+            let preBuildCount = records.count { $0.timestamp < currentBuildDate }
+            let currentBuildCount = records.count - preBuildCount
+            out += "  dictations predating current build: \(preBuildCount)\n"
+            out += "  dictations at/after current build: \(currentBuildCount)\n"
+            if currentBuildCount == 0 {
+                out += "  NOTE: no shown dictation exercises the current build; this history cannot verify its behavior\n"
+            }
+        }
         out += "  likely cleanup truncation (clean words < 50% of raw): \(truncationCount)\n"
         out += "  likely mic/silent-tail (words/sec < 1.2 over >4s clip): \(silentTailCount)\n"
-        if wastedCleanupCount > 0 {
-            out += "  cleanup waited then returned raw: \(wastedCleanupCount)"
-                + " (\(wastedCleanupMs) ms of pure wait)\n"
+        if unchangedCleanupCount > 0 {
+            out += "  cleanup completed with no text change: \(unchangedCleanupCount)\n"
+        }
+        if noResultCleanupCount > 0 {
+            out += "  cleanup produced no usable result: \(noResultCleanupCount)"
+                + " (\(noResultCleanupMs) ms waited)\n"
         }
         out += "  (stt_ms/cln_ms/inj_ms are blank for rows recorded before 0.17.0)\n"
         return out
