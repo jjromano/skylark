@@ -89,8 +89,16 @@ struct SettingsPropertyShapeTests {
         let settings = try #require(Self.source(at: "Sources/Skylark/Settings/SettingsView.swift"))
         let menu = try #require(Self.source(at: "Sources/Skylark/App.swift"))
         let controller = try #require(Self.source(at: "Sources/Skylark/AppController.swift"))
-        #expect(settings.contains("ForEach(controller.cleanupModelOptions)"))
-        #expect(menu.contains("ForEach(controller.cleanupModelOptions)"))
+        // Checked by source, not by exact call spelling: since v0.23.0 both
+        // selectors bind the list once and split it into "On this Mac" /
+        // "Cloud · OpenRouter" sections, so they read `cleanupModelOptions`
+        // and then `ForEach` the two halves. What must stay true is that the
+        // list they split is the combined one and that both halves are shown.
+        for (name, source) in [("SettingsView", settings), ("App", menu)] {
+            #expect(source.contains("controller.cleanupModelOptions"), "\(name) must use the combined local+cloud options")
+            #expect(source.contains("filter(\\.isOnDevice)"), "\(name) must offer the on-device options")
+            #expect(source.contains("filter { !$0.isOnDevice }"), "\(name) must offer the cloud options")
+        }
         // The selected slug must change before Cloud is activated. Deferring
         // the slug write into registry work lets a fast dictation use the old
         // model while that task is still running.

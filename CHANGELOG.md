@@ -6,6 +6,28 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.23.0 - 2026-09-16
+
+- New cloud speech engine **MAI Transcribe 2** (Microsoft, September 2026). It
+  is simultaneously the most accurate cloud option Skylark offers (#1 on the
+  FLEURS multilingual benchmark, 5.2% average word error rate over 60
+  languages), the fastest (0.34 s median response) and the cheapest (about
+  $0.50/month at 10 minutes of dictation a day, against $1.80 for MAI Transcribe
+  1.5). It is served by a single provider, so unlike Whisper large-v3-turbo its
+  speed does not swing by seconds between requests.
+- New cloud speech engine **GPT Transcribe**, the model OpenAI now recommends in
+  place of GPT-4o Transcribe — more accurate and 25% cheaper.
+- MAI Transcribe 1.5 and GPT-4o Transcribe are now marked as superseded in
+  Settings → Models. They still work and nothing switches on its own; both will
+  be removed in a later release.
+- The menu-bar **Speech Engine** and **Cleanup Model** pickers, and the matching
+  pickers in Settings → General, now group their rows under "On this Mac" and
+  "Cloud" headings instead of listing everything in one run. Rows no longer
+  shift sideways as the selection moves, which made the on-device engines look
+  as though they were indented under something.
+- The menu-bar Speech Engine picker now offers **Apple Speech (macOS)**, which
+  until now could only be selected in Settings.
+
 ## 0.22.1 - 2026-09-15
 
 - Diagnostics now distinguish a successful cleanup that made no text change

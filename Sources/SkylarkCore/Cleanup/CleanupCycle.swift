@@ -51,6 +51,24 @@ public enum CleanupCycleOption: Sendable, Equatable, Hashable, Identifiable {
         case .cloud(_, let label): return label
         }
     }
+
+    /// Name for a menu that already groups rows under an "On this Mac" /
+    /// "Cloud" header, where repeating the tier inside the row is noise.
+    /// `displayName` keeps the suffix because the cycle-hotkey note
+    /// ("Cleanup: …") has no header to lean on.
+    public var menuLabel: String {
+        switch self {
+        case .local(.appleFoundationModels): return "Apple Intelligence"
+        default: return displayName
+        }
+    }
+
+    /// True for the on-device tier. `auto` and `raw` are tier selectors rather
+    /// than models and never reach the grouped menus, so they answer false.
+    public var isOnDevice: Bool {
+        if case .local = self { return true }
+        return false
+    }
 }
 
 /// Pure ordering + advance logic for the cleanup cycle hotkey. Nothing here

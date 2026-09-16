@@ -117,13 +117,21 @@ enum ModelInfo {
     // MARK: Cloud (by registry slug)
 
     static let cloudSTT: [String: Entry] = [
+        "microsoft/mai-transcribe-2": Entry(
+            "Microsoft's September 2026 model and the current accuracy leader — #1 on FLEURS across 60 languages, with automatic language detection. Also the cheapest and the fastest cloud option here ($0.10/hr of audio, 0.34 s median). Served only by Azure, so its speed doesn't drift.",
+            primary: 5, secondary: 5, costPerMonth: "≈ $0.50/mo"
+        ),
+        "openai/gpt-transcribe": Entry(
+            "OpenAI's current recommended transcription model, which replaced GPT-4o Transcribe — same family, better accuracy, 25% cheaper ($0.0045/min).",
+            primary: 4.5, secondary: 4, costPerMonth: "≈ $1.35/mo"
+        ),
         "openai/whisper-large-v3-turbo": Entry(
             "Whisper large-v3-turbo through OpenRouter, which routes each request to Groq or DeepInfra by price — accurate, but speed varies by seconds. For consistently fast Groq speed, pick Groq direct with a Groq key.",
             primary: 4.5, secondary: 4.5, costPerMonth: "≈ $0.20/mo"
         ),
         "openai/gpt-4o-transcribe": Entry(
-            "OpenAI's flagship transcription — best-in-class accuracy, robust to noise and accents.",
-            primary: 5, secondary: 4, costPerMonth: "≈ $1.80/mo"
+            "Superseded by GPT Transcribe, which OpenAI now recommends instead — more accurate and cheaper. Kept only so an existing selection keeps working.",
+            primary: 4.5, secondary: 4, costPerMonth: "≈ $1.80/mo"
         ),
         "openai/gpt-4o-mini-transcribe": Entry(
             "Lighter, cheaper GPT-4o transcription — nearly as accurate, faster and cheaper.",
@@ -134,8 +142,8 @@ enum ModelInfo {
             primary: 4.5, secondary: 4.5, costPerMonth: "≈ $1.30/mo"
         ),
         "microsoft/mai-transcribe-1.5": Entry(
-            "Microsoft's 2026 transcription model — current independent accuracy leader, fast batch; served via Azure ($0.36/hr).",
-            primary: 5, secondary: 4.5, costPerMonth: "≈ $1.80/mo"
+            "Superseded by MAI Transcribe 2, which is more accurate, faster and 3.6x cheaper. Kept only so an existing selection keeps working ($0.36/hr).",
+            primary: 4.5, secondary: 4, costPerMonth: "≈ $1.80/mo"
         ),
         "mistralai/voxtral-mini-transcribe": Entry(
             "Mistral's dedicated transcription model — accuracy near the leaders at a budget price ($0.003/min).",

@@ -455,12 +455,23 @@ private struct GeneralPane: View {
                     get: { controller.currentSTT },
                     set: { controller.selectSTT($0) }
                 )) {
-                    Text("Local — Parakeet").tag(STTChoice.localParakeet)
-                    Text("Local — Whisper large-v3-turbo").tag(STTChoice.localWhisper)
-                    Text("Local — Apple Speech (macOS)").tag(STTChoice.localApple)
-                    Text("Groq direct — Whisper large-v3-turbo").tag(STTChoice.groqDirect)
-                    ForEach(controller.sttModels) { entry in
-                        Text(entry.label).tag(STTChoice.cloud(slug: entry.slug))
+                    // Grouped, not prefixed: the section header carries "local
+                    // vs cloud" once instead of every row repeating it. The
+                    // Groq row keeps a "— Groq" tail because a collapsed picker
+                    // shows only the row label, and without it the two
+                    // Whisper turbo rows would be indistinguishable once closed.
+                    Section("On this Mac") {
+                        Text("Parakeet").tag(STTChoice.localParakeet)
+                        Text("Whisper large-v3-turbo").tag(STTChoice.localWhisper)
+                        Text("Apple Speech (macOS)").tag(STTChoice.localApple)
+                    }
+                    Section("Cloud · Groq direct") {
+                        Text("Whisper large-v3-turbo — Groq").tag(STTChoice.groqDirect)
+                    }
+                    Section("Cloud · OpenRouter") {
+                        ForEach(controller.sttModels) { entry in
+                            Text(entry.label).tag(STTChoice.cloud(slug: entry.slug))
+                        }
                     }
                 }
                 Picker("Cleanup model", selection: Binding(
@@ -471,8 +482,16 @@ private struct GeneralPane: View {
                         announceTierSwitch(from: previousTier, to: controller.cleanupOverride)
                     }
                 )) {
-                    ForEach(controller.cleanupModelOptions) { option in
-                        Text(option.displayName).tag(option)
+                    let options = controller.cleanupModelOptions
+                    Section("On this Mac") {
+                        ForEach(options.filter(\.isOnDevice)) { option in
+                            Text(option.menuLabel).tag(option)
+                        }
+                    }
+                    Section("Cloud · OpenRouter") {
+                        ForEach(options.filter { !$0.isOnDevice }) { option in
+                            Text(option.menuLabel).tag(option)
+                        }
                     }
                 }
             } header: {

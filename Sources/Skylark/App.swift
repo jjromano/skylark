@@ -105,90 +105,99 @@ private struct CleanupMenu: View {
     }
 
     private func item(_ title: String, value: String) -> some View {
-        Button {
+        MenuChoice(title: title, isSelected: override == value) {
             override = value
             controller.setCleanupOverride(value)
-        } label: {
-            if override == value {
-                Label(title, systemImage: "checkmark")
-            } else {
-                Text(title)
-            }
         }
     }
 }
 
-/// Global cleanup model picker: on-device engines plus cloud registry entries.
+/// Global cleanup model picker, split into "On this Mac" and "Cloud" sections
+/// so it is never ambiguous which one a row runs on.
 private struct CleanupModelMenu: View {
     let controller: AppController
 
     var body: some View {
         Menu("Cleanup Model") {
-            ForEach(controller.cleanupModelOptions) { option in
-                Button {
-                    controller.selectCleanupModelOption(option)
-                } label: {
-                    if controller.selectedCleanupModelOption.id == option.id {
-                        Label(option.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(option.displayName)
-                    }
-                }
+            let options = controller.cleanupModelOptions
+            Section("On this Mac") {
+                ForEach(options.filter(\.isOnDevice)) { row($0) }
+            }
+            Section("Cloud · OpenRouter") {
+                ForEach(options.filter { !$0.isOnDevice }) { row($0) }
             }
             Divider()
             Button("Custom Slug…") { controller.promptCustomCleanupSlug() }
         }
     }
+
+    private func row(_ option: CleanupCycleOption) -> some View {
+        MenuChoice(
+            title: option.menuLabel,
+            isSelected: controller.selectedCleanupModelOption.id == option.id
+        ) {
+            controller.selectCleanupModelOption(option)
+        }
+    }
 }
 
-/// Speech engine picker: local Parakeet + registry `.stt` entries + custom slug.
+/// Speech engine picker, grouped the same way as the cleanup menu and as the
+/// Models pane: on-device engines, then each cloud transport.
+///
+/// The flat version of this menu read as if the local rows were indented
+/// children of something: a selected row was `Label(…, systemImage:)` and an
+/// unselected one a bare `Text`, so the two kinds of row started at different
+/// x-positions inside one contiguous run. `MenuChoice` gives every row the same
+/// shape, so the text edges line up whatever is selected.
 private struct SpeechEngineMenu: View {
     let controller: AppController
 
     var body: some View {
         Menu("Speech Engine") {
-            Button {
-                controller.selectSTT(.localParakeet)
-            } label: {
-                if controller.currentSTT == .localParakeet {
-                    Label("Local (Parakeet)", systemImage: "checkmark")
-                } else {
-                    Text("Local (Parakeet)")
-                }
+            Section("On this Mac") {
+                choice("Parakeet", .localParakeet)
+                choice("Whisper large-v3-turbo", .localWhisper)
+                choice("Apple Speech (macOS)", .localApple)
             }
-            Button {
-                controller.selectSTT(.localWhisper)
-            } label: {
-                if controller.currentSTT == .localWhisper {
-                    Label("Local (Whisper large-v3-turbo)", systemImage: "checkmark")
-                } else {
-                    Text("Local (Whisper large-v3-turbo)")
-                }
+            Section("Cloud · Groq direct") {
+                choice("Whisper large-v3-turbo — Groq", .groqDirect)
             }
-            Divider()
-            Button {
-                controller.selectSTT(.groqDirect)
-            } label: {
-                if controller.currentSTT == .groqDirect {
-                    Label("Groq direct — Whisper large-v3-turbo", systemImage: "checkmark")
-                } else {
-                    Text("Groq direct — Whisper large-v3-turbo")
-                }
-            }
-            ForEach(controller.sttModels) { entry in
-                Button {
-                    controller.selectSTT(.cloud(slug: entry.slug))
-                } label: {
-                    if controller.currentSTT == .cloud(slug: entry.slug) {
-                        Label(entry.label, systemImage: "checkmark")
-                    } else {
-                        Text(entry.label)
-                    }
+            Section("Cloud · OpenRouter") {
+                ForEach(controller.sttModels) { entry in
+                    choice(entry.label, .cloud(slug: entry.slug))
                 }
             }
             Divider()
             Button("Custom Slug…") { controller.promptCustomSTTSlug() }
         }
+    }
+
+    private func choice(_ title: String, _ value: STTChoice) -> some View {
+        MenuChoice(title: title, isSelected: controller.currentSTT == value) {
+            controller.selectSTT(value)
+        }
+    }
+}
+
+/// One selectable row in a menu that behaves like a radio group.
+///
+/// A `Toggle` becomes a checkable `NSMenuItem`, which makes AppKit reserve the
+/// state column for every row in the menu — including the unchecked ones. That
+/// is what keeps the labels flush with each other; a `Button` whose label
+/// switches between `Label(…, systemImage: "checkmark")` and `Text` does not,
+/// and the rows visibly shift as the selection moves.
+private struct MenuChoice: View {
+    let title: String
+    let isSelected: Bool
+    let select: () -> Void
+
+    var body: some View {
+        Toggle(title, isOn: Binding(
+            get: { isSelected },
+            // Re-selecting the active row is a no-op rather than a deselect:
+            // these are radio choices and there is no "nothing selected" state.
+            set: { if $0 { select() } }
+        ))
     }
 }
 

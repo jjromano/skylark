@@ -26,7 +26,8 @@ public struct ModelRegistryEntry: Sendable, Equatable, Codable, Identifiable {
         self.sort = sort
     }
 
-    /// Seed registry (verified live on OpenRouter, 2026-07). Order = UI order.
+    /// Seed registry (every slug verified live on OpenRouter 2026-09-15).
+    /// Order = UI order.
     public static let seed: [ModelRegistryEntry] = [
         // Cleanup (Tier 2) — gpt-oss-20b is the default (best evaluated
         // quality-at-speed; Groq-pinned, endpoint confirmed live 2026-07-31).
@@ -49,14 +50,31 @@ public struct ModelRegistryEntry: Sendable, Equatable, Codable, Identifiable {
         // relation to clip length, and why the old "Groq Fast Whisper" label was
         // a promise the transport cannot keep. Pinning a fast provider requires
         // calling that provider directly, not through OpenRouter.
-        .init(slug: "openai/whisper-large-v3-turbo", label: "Whisper large-v3-turbo", providerPin: nil, kind: .stt, sort: 0),
-        .init(slug: "openai/gpt-4o-transcribe", label: "GPT-4o Transcribe", providerPin: nil, kind: .stt, sort: 1),
-        .init(slug: "openai/gpt-4o-mini-transcribe", label: "GPT-4o Mini Transcribe", providerPin: nil, kind: .stt, sort: 2),
-        // 2026 transcription entrants — each has a single OpenRouter provider
-        // (Deepgram / Azure / Mistral respectively), so no pin needed.
+        //
+        // Corollary: a SINGLE-provider slug is the only way to get predictable
+        // cloud latency here. Every row below except whisper-large-v3-turbo has
+        // exactly one OpenRouter provider (verified 2026-09-15), so its speed is
+        // whatever that provider does — no silent reroute mid-week.
+        //
+        // Order is best-for-dictation first: MAI-Transcribe 2 leads on accuracy,
+        // price AND latency simultaneously (FLEURS #1 at 5.2% average WER over 60
+        // languages, $0.10/hr of audio, OpenRouter P50 0.34 s), so it is the row
+        // a new user should land on. Whisper turbo stays second as the cheapest
+        // option people already know by name.
+        .init(slug: "microsoft/mai-transcribe-2", label: "MAI Transcribe 2", providerPin: nil, kind: .stt, sort: 0),
+        .init(slug: "openai/whisper-large-v3-turbo", label: "Whisper large-v3-turbo", providerPin: nil, kind: .stt, sort: 1),
+        // OpenAI's own current default (released 2026-07-28); it supersedes
+        // gpt-4o-transcribe, which OpenAI no longer recommends, at $0.0045/min
+        // vs $0.006/min. Both rows are kept for now — deleting a slug a user may
+        // have selected is a maintainer call, not a curation-pass side effect.
+        .init(slug: "openai/gpt-transcribe", label: "GPT Transcribe", providerPin: nil, kind: .stt, sort: 2),
         .init(slug: "deepgram/nova-3", label: "Deepgram Nova-3", providerPin: nil, kind: .stt, sort: 3),
-        .init(slug: "microsoft/mai-transcribe-1.5", label: "MAI Transcribe 1.5", providerPin: nil, kind: .stt, sort: 4),
-        .init(slug: "mistralai/voxtral-mini-transcribe", label: "Voxtral Mini Transcribe", providerPin: nil, kind: .stt, sort: 5),
+        .init(slug: "mistralai/voxtral-mini-transcribe", label: "Voxtral Mini Transcribe", providerPin: nil, kind: .stt, sort: 4),
+        .init(slug: "openai/gpt-4o-transcribe", label: "GPT-4o Transcribe", providerPin: nil, kind: .stt, sort: 5),
+        .init(slug: "openai/gpt-4o-mini-transcribe", label: "GPT-4o Mini Transcribe", providerPin: nil, kind: .stt, sort: 6),
+        // Superseded by mai-transcribe-2 on accuracy, price (3.6x) and speed.
+        // Retained only so an install that selected it keeps working.
+        .init(slug: "microsoft/mai-transcribe-1.5", label: "MAI Transcribe 1.5", providerPin: nil, kind: .stt, sort: 7),
     ]
 
     /// Labels a seed slug shipped in a PAST seed, keyed by slug, other than its
