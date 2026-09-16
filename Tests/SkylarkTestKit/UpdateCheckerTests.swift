@@ -180,11 +180,27 @@ struct UpdateCommandWriterTests {
         #expect(contents.contains("git pull --ff-only"))
         #expect(contents.contains("\"/Users/jj/repos/skylark/Scripts/install.sh\""))
         #expect(contents.contains("Press any key to close"))
+        // The keypress must actually close the window (Terminal keeps it open
+        // after exit by default), and by window id, not by tty name.
+        #expect(contents.contains("close (every window whose id is $WINDOW_ID)"))
+        #expect(contents.contains("busy of selected tab is true"))
         #expect(contents.hasPrefix("#!/bin/bash"))
 
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let permissions = try #require(attributes[.posixPermissions] as? Int)
         #expect(permissions & 0o111 != 0) // at least one execute bit set
+    }
+
+    @Test("The generated script is valid bash")
+    func scriptParses() throws {
+        let url = try UpdateCommandWriter.makeUpdateScript(repoPath: "/Users/jj/repos/skylark")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let bash = Process()
+        bash.executableURL = URL(fileURLWithPath: "/bin/bash")
+        bash.arguments = ["-n", url.path]
+        try bash.run()
+        bash.waitUntilExit()
+        #expect(bash.terminationStatus == 0)
     }
 
     @Test("makeUpdateScript escapes embedded double quotes in the repo path")

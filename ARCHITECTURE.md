@@ -96,9 +96,30 @@ Hands-free toggle: same, but VAD endpointing generates the "Fn up" event
 **Transcription strategy for push-to-talk (Phase 1 MVP):** batch — feed the
 whole clip to `AsrManager.transcribe` on release. At Parakeet's ~140× real-time
 on ANE, a 10 s utterance decodes in well under 100 ms, comfortably inside the
-300 ms bar, with none of the sliding-window complexity. Live interim text in
-the HUD via `SlidingWindowAsrManager` is an additive enhancement after the
-latency bar is proven.
+300 ms bar, with none of the sliding-window complexity.
+
+**Parked: live interim text while speaking (removed in 0.24.1).** A
+default-off "Live preview while speaking" prototype shipped from 0.6.1 to
+0.24.0 and was removed after JJ used it: it showed a few scattered words, never
+the sentence. Cause: it ran FluidAudio's `SlidingWindowAsrManager` over the
+warm TDT v3 models with 1.5 s chunks, 1.5 s left context and 0.5 s right
+context (tuned so text appeared quickly), and TDT 0.6B decoding 1.5 s windows
+in isolation produces fragments. Larger windows make the text late, which
+defeats the feature. The last commit containing it is `b97e6c4`
+(`FluidAudioLivePreview.swift`, `TranscriptPreview.swift`, the orchestrator's
+`startLivePreview`, the capture service's gated `previewFrames` tap, and the
+HUD's preview layout); restore from there rather than rewriting. Revisit when
+one of these is true:
+- A true streaming model is practical in FluidAudio on the ANE: a cache-aware
+  or end-of-utterance Parakeet variant (EOU 120M, Unified 0.6B, or the
+  Nemotron streaming ASR line) that emits stable partial words with low
+  latency, rather than re-decoding overlapping windows.
+- Re-decoding the WHOLE clip so far every ~0.5–1 s with the batch model is
+  shown not to delay the final paste (it shares the ANE with the release-time
+  decode, and latency is the product), with the re-decode capped to the most
+  recent ~15 s.
+The pasted text never came from the preview, so removing it changed no
+dictation output.
 
 **Injection strategy (AX-first — deliberate inversion of Hex's order):**
 1. Probe `kAXFocusedUIElement`; if it answers `kAXValue`/`kAXSelectedText`
@@ -288,8 +309,9 @@ and `UpdateCommandWriter` emits a Terminal `.command` running
 - Interim results for TDT v3 = `SlidingWindowAsrManager`
   (volatile/confirmed updates via `AsyncStream`), NOT transducer cache
   streaming. True low-latency streaming needs different model variants
-  (Parakeet EOU 120M with end-of-utterance callbacks, Unified 0.6B) — a
-  Phase 1+ option, not the MVP path.
+  (Parakeet EOU 120M with end-of-utterance callbacks, Unified 0.6B). A
+  sliding-window preview was tried and removed; see "Parked: live interim
+  text" in §3.
 - **VAD included**: `VadManager` (Silero CoreML, 16 kHz, 256 ms chunks) with a
   streaming hysteresis state machine (`.speechStart`/`.speechEnd` events) and
   endpointing knobs (`minSilenceDuration` etc.). No extra dependency needed.

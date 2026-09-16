@@ -239,6 +239,15 @@ public enum UpdateCommandWriter {
         let script = """
         #!/bin/bash
         set -euo pipefail
+
+        # Terminal leaves a window open after its script exits unless the
+        # user's profile says otherwise, so "press any key" alone never closed
+        # it. Remember THIS window now, while it is the one busy tab on our tty
+        # (a finished window can reuse the same tty name), and close it by id
+        # at the end. On failure `set -e` exits early and the window stays
+        # open, so the error remains readable.
+        WINDOW_ID="$(/usr/bin/osascript -e "tell application \"Terminal\" to get id of first window whose (tty of selected tab is \"$(tty)\") and (busy of selected tab is true)" 2>/dev/null || true)"
+
         cd "\(escapedPath)"
 
         echo "Updating Skylark…"
@@ -253,6 +262,13 @@ public enum UpdateCommandWriter {
         echo
         read -n 1 -r -s -p "Press any key to close this window..." _ || true
         echo
+        rm -f "$0"
+        if [[ "$WINDOW_ID" =~ ^[0-9]+$ ]]; then
+            # Detached and delayed so the shell has exited before the close;
+            # a window with a live process would ask to terminate it first.
+            nohup /usr/bin/osascript -e 'delay 1' -e "tell application \"Terminal\" to close (every window whose id is $WINDOW_ID)" </dev/null >/dev/null 2>&1 &
+        fi
+        exit 0
 
         """
 
