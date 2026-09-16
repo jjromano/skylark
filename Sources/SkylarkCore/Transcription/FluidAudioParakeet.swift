@@ -24,7 +24,6 @@ public actor FluidAudioParakeet: Transcriber {
     /// quieter speech (phase-4 spec §5). Defaults to the standard floor.
     private var silenceFloor: Float = FluidAudioParakeet.silenceFloor
 
-    private var models: AsrModels?
     private var manager: AsrManager?
     private var decoderState: TdtDecoderState?
     private var preparing: Task<Void, Error>?
@@ -107,20 +106,12 @@ public actor FluidAudioParakeet: Transcriber {
         let mgr = AsrManager(config: .default)
         try await mgr.loadModels(loaded)
 
-        self.models = loaded
         self.manager = mgr
         self.decoderState = try TdtDecoderState()
         self.isReady = true
         progress(.ready)
         logger.info("Parakeet ready")
     }
-
-    /// The loaded ASR models (nil until warm-up completes). Handed to a
-    /// `SlidingWindowAsrManager` for the optional live preview: the `MLModel`
-    /// instances are shared read-only — the streaming manager retains them
-    /// without reloading from disk, so preview adds no download and only a small
-    /// resident-memory delta.
-    public func loadedModels() -> AsrModels? { models }
 
     /// Apply the whisper-mode tuning (currently just the silence floor for the
     /// skip guard). Takes effect on the next `transcribe`.
@@ -132,7 +123,6 @@ public actor FluidAudioParakeet: Transcriber {
     public func shutdown() async {
         await manager?.cleanup()
         manager = nil
-        models = nil
         decoderState = nil
         isReady = false
     }

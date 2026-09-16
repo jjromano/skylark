@@ -137,20 +137,8 @@ struct HUDView: View {
     }
 
     private var listeningContent: some View {
-        Group {
-            if model.hasPreview {
-                // Prototype live preview: waveform row on top, interim text below.
-                VStack(spacing: 5) {
-                    listeningRow
-                    previewText
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-            } else {
-                listeningRow
-                    .padding(.horizontal, isMinimal ? 8 : 10)
-            }
-        }
+        listeningRow
+            .padding(.horizontal, isMinimal ? 8 : 10)
     }
 
     private var listeningRow: some View {
@@ -200,22 +188,6 @@ struct HUDView: View {
                 .help("Recording stops at the 2-minute limit")
                 .transition(.opacity)
         }
-    }
-
-    /// Interim transcription (confirmed brighter, volatile dimmer). Tail region;
-    /// truncated to keep the pill to two lines. Display-only — never the paste.
-    @ViewBuilder
-    private var previewText: some View {
-        let preview = model.preview ?? .empty
-        (Text(preview.confirmed.isEmpty ? "" : preview.confirmed + " ")
-            .foregroundStyle(.white.opacity(0.9))
-            + Text(preview.volatile)
-            .foregroundStyle(.white.opacity(0.5)))
-            .font(.system(size: 11))
-            .lineLimit(2)
-            .truncationMode(.head)
-            .multilineTextAlignment(.leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// Voice Command Mode listening pill: a distinct blue tint + a "Command"

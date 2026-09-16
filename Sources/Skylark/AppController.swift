@@ -167,18 +167,6 @@ final class AppController {
         Task { [orchestrator] in await orchestrator.setContextAwareCleanupEnabled(on) }
     }
 
-    /// Live transcription preview (prototype): show interim words in the
-    /// recording pill while speaking. Off by default; only renders for the local
-    /// Parakeet engine. The pasted text is always the batch decode — unaffected.
-    static let livePreviewKey = "recording.livePreview"
-    private(set) var livePreviewEnabled: Bool
-
-    func setLivePreviewEnabled(_ on: Bool) {
-        livePreviewEnabled = on
-        UserDefaults.standard.set(on, forKey: Self.livePreviewKey)
-        Task { [orchestrator] in await orchestrator.setLivePreviewEnabled(on) }
-    }
-
     /// Pause Music/Spotify while dictating (off by default; needs an Automation
     /// permission grant the first time it fires).
     static let pauseMediaKey = "pauseMediaWhileDictating"
@@ -750,7 +738,6 @@ final class AppController {
             audioRetentionDays: audioRetentionDays,
             historyRetentionDays: retentionDays,
             pressEnterEnabled: pressEnterEnabled,
-            livePreviewEnabled: livePreviewEnabled,
             pauseMediaEnabled: pauseMediaEnabled,
             deepVocabEnabled: deepVocabEnabled,
             inputDeviceSelected: selectedDeviceUID?.isEmpty == false
@@ -940,7 +927,8 @@ final class AppController {
         )
         retentionDays = UserDefaults.standard.integer(forKey: HistoryStore.retentionDefaultsKey)
         contextAwareCleanupEnabled = UserDefaults.standard.bool(forKey: Self.contextAwareCleanupKey)
-        livePreviewEnabled = UserDefaults.standard.bool(forKey: Self.livePreviewKey)
+        // Stale key from the removed live-preview prototype (never re-read now).
+        UserDefaults.standard.removeObject(forKey: "recording.livePreview")
         pauseMediaEnabled = UserDefaults.standard.bool(forKey: Self.pauseMediaKey)
         translateEnabled = UserDefaults.standard.bool(forKey: Self.translateEnabledKey)
         translateTargetLanguage = UserDefaults.standard.string(forKey: Self.translateLanguageKey)
@@ -1087,12 +1075,6 @@ final class AppController {
             snippets: snippetsProvider,
             fieldContextReader: AXFieldContextReader(),
             commandRunner: commandRunner,
-            // Live-preview prototype: streams the SAME warm Parakeet models via a
-            // sliding-window manager. `loadedModels()` returns nil until warm-up
-            // completes, in which case makeSession() yields no session.
-            livePreview: FluidAudioLivePreviewProvider(
-                modelsSource: { [parakeet] in await parakeet.loadedModels() }
-            ),
             historyRecord: historyHub?.recordSink(appInfo: frontmost.infoSnapshot),
             historyUpdate: historyHub?.updateSink()
         )
@@ -1163,17 +1145,14 @@ final class AppController {
                 switch state {
                 // The cap countdown rides on the state itself (`HUDModel
                 // .capSecondsRemaining` reads it), so nothing to mirror here.
-                case let .listening(level, preview, _):
+                case let .listening(level, _):
                     hud.pushLevel(level)
-                    // Live-preview prototype text (nil unless the setting is on).
-                    hud.preview = preview
                 case let .commandListening(level):
                     hud.pushLevel(level)
                 case .idle:
                     hud.resetWaveform()
-                    hud.preview = nil
                 case .processing:
-                    hud.preview = nil
+                    break
                 }
                 hudPanel.refreshLayout()
             }
@@ -1285,9 +1264,6 @@ final class AppController {
         Task { [orchestrator, pressEnterEnabled] in await orchestrator.setPressEnterEnabled(pressEnterEnabled) }
         Task { [orchestrator, contextAwareCleanupEnabled] in
             await orchestrator.setContextAwareCleanupEnabled(contextAwareCleanupEnabled)
-        }
-        Task { [orchestrator, livePreviewEnabled] in
-            await orchestrator.setLivePreviewEnabled(livePreviewEnabled)
         }
         applyTranslationSetting()
         // Cache key presence off-main so no SwiftUI body ever touches the

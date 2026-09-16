@@ -37,11 +37,6 @@ final class HUDModel {
     /// pulses to signal "not ready yet".
     var isPreparing = false
 
-    /// Interim live-transcription text to show in the listening pill (prototype,
-    /// behind a default-off setting). nil the vast majority of the time. Set from
-    /// the `.listening` HUD state; cleared when a recording ends.
-    var preview: TranscriptPreview?
-
     /// The transient status note ("Mic interrupted — text may be incomplete",
     /// "No speech detected", …) mirrored from `AppController.statusNote` so the
     /// pill can show it where the user is actually looking. The menu-bar
@@ -49,17 +44,11 @@ final class HUDModel {
     /// Rendered inside `HUDMetrics.noteSize`, never by growing the panel.
     var note: String?
 
-    /// Whether the listening pill should render its preview text region.
-    var hasPreview: Bool {
-        if let preview, !preview.isEmpty { return true }
-        return false
-    }
-
     /// Whole seconds left before the 2-minute recording cap, or nil while
     /// there's plenty of headroom (the normal case). Read straight off the
     /// state — the orchestrator is the only writer, exactly like `level`.
     var capSecondsRemaining: Int? {
-        guard case let .listening(_, _, remaining) = state, let remaining else { return nil }
+        guard case let .listening(_, remaining) = state, let remaining else { return nil }
         return max(0, Int(remaining.rounded(.up)))
     }
 

@@ -6,6 +6,17 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.24.1 - 2026-09-16
+
+- Removed the experimental **Live preview while speaking** setting. It showed
+  scattered words rather than your sentence, because it transcribed 1.5-second
+  slices of audio on their own. Dictated and pasted text is unchanged; it never
+  came from the preview. ARCHITECTURE.md notes what would make it worth
+  bringing back.
+- **Check for Updates:** pressing a key at "Press any key to close this window"
+  now actually closes the Terminal window. If the update fails, the window
+  stays open so you can read the error.
+
 ## 0.24.0 - 2026-09-16
 
 - **One Cleanup menu.** The menu bar's separate "Cleanup" (Auto/Raw/Local/Cloud)

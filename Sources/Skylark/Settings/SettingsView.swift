@@ -221,13 +221,6 @@ private struct GeneralPane: View {
         return false
     }
 
-    /// Caption for the live-preview toggle. Notes the Parakeet-only limitation
-    /// when another engine is active (the toggle stays but preview won't render).
-    private var livePreviewCaption: String {
-        let base = "Shows your words inside the recording pill as you speak (not in the document you are typing into), starting about a second and a half in. Experimental; the pasted text is unaffected."
-        return controller.currentSTT == .localParakeet ? base : base + " Parakeet only."
-    }
-
     var body: some View {
         Form {
             Section {
@@ -331,16 +324,8 @@ private struct GeneralPane: View {
                     set: { controller.setHUDShowIdlePill($0) }
                 ))
                 .disabled(controller.hud.style == .hidden)
-                Toggle("Live preview while speaking", isOn: Binding(
-                    get: { controller.livePreviewEnabled },
-                    set: { controller.setLivePreviewEnabled($0) }
-                ))
-                .disabled(controller.hud.style == .hidden)
-                Text(livePreviewCaption)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 if controller.hud.style == .hidden {
-                    Text("The idle pill and live preview are both drawn in the recording indicator, so they are off while it is hidden.")
+                    Text("The idle pill is drawn in the recording indicator, so it is off while the indicator is hidden.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

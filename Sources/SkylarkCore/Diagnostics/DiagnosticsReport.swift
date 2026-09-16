@@ -63,7 +63,6 @@ public enum DiagnosticsReport {
         public var audioRetentionDays: Int
         public var historyRetentionDays: Int
         public var pressEnterEnabled: Bool
-        public var livePreviewEnabled: Bool
         public var pauseMediaEnabled: Bool
         public var deepVocabEnabled: Bool
         /// nil = system default input device.
@@ -86,7 +85,6 @@ public enum DiagnosticsReport {
             audioRetentionDays: Int,
             historyRetentionDays: Int,
             pressEnterEnabled: Bool,
-            livePreviewEnabled: Bool,
             pauseMediaEnabled: Bool,
             deepVocabEnabled: Bool,
             inputDeviceSelected: Bool
@@ -107,7 +105,6 @@ public enum DiagnosticsReport {
             self.audioRetentionDays = audioRetentionDays
             self.historyRetentionDays = historyRetentionDays
             self.pressEnterEnabled = pressEnterEnabled
-            self.livePreviewEnabled = livePreviewEnabled
             self.pauseMediaEnabled = pauseMediaEnabled
             self.deepVocabEnabled = deepVocabEnabled
             self.inputDeviceSelected = inputDeviceSelected
@@ -197,7 +194,6 @@ public enum DiagnosticsReport {
         lines.append(("Audio retention", s.audioRetentionEnabled ? "on (\(s.audioRetentionDays) days)" : "off"))
         lines.append(("History retention", s.historyRetentionDays <= 0 ? "keep forever" : "\(s.historyRetentionDays) days"))
         lines.append(("Spoken \"press enter\"", onOff(s.pressEnterEnabled)))
-        lines.append(("Live preview", onOff(s.livePreviewEnabled)))
         lines.append(("Pause media while dictating", onOff(s.pauseMediaEnabled)))
         lines.append(("Deep vocabulary", onOff(s.deepVocabEnabled)))
         lines.append(("Input device", s.inputDeviceSelected ? "custom (UID withheld)" : "system default"))

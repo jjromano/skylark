@@ -24,13 +24,6 @@ public protocol AudioCapturing: Sendable {
     var frames: AsyncStream<[Float]> { get }
     /// Enable/disable raw-frame delivery on `frames`. Off by default.
     func setFramesWanted(_ wanted: Bool)
-    /// Raw 16 kHz mono frames for the optional live transcription preview.
-    /// Delivered on a separate stream from `frames` so preview and hands-free
-    /// VAD never contend for the same single-consumer iterator. Emitted only
-    /// while preview delivery is enabled.
-    var previewFrames: AsyncStream<[Float]> { get }
-    /// Enable/disable raw-frame delivery on `previewFrames`. Off by default.
-    func setPreviewWanted(_ wanted: Bool)
     /// Disruptions of the input path observed while recording (engine
     /// configuration change, failed restart). The orchestrator finalizes the
     /// utterance on the ones capture can't recover from; the rest are stamped
@@ -47,8 +40,6 @@ public extension AudioCapturing {
     /// Default: no frame delivery (fakes and Phase-0 callers don't need it).
     var frames: AsyncStream<[Float]> { AsyncStream { $0.finish() } }
     func setFramesWanted(_ wanted: Bool) {}
-    var previewFrames: AsyncStream<[Float]> { AsyncStream { $0.finish() } }
-    func setPreviewWanted(_ wanted: Bool) {}
     /// Default: nothing ever interrupts (fakes and Phase-0 callers).
     var interruptions: AsyncStream<CaptureInterruption> { AsyncStream { $0.finish() } }
     /// Default: no cap to warn about (fakes return a preset clip).

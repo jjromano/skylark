@@ -37,27 +37,6 @@ public actor DictationOrchestrator {
     /// does nothing destructive.
     private let commandRunner: (any CommandRunning)?
 
-    /// Live transcription preview source (optional prototype). nil = not wired.
-    /// Only used when `livePreviewEnabled` is on AND the active engine is
-    /// Parakeet; produces interim HUD text that is NEVER pasted (the batch decode
-    /// owns the final result). Everything here is off the Fn-up→paste path.
-    private let livePreview: (any LivePreviewProviding)?
-    /// Setting toggle (Settings → General, Recording indicator). Default off.
-    private var livePreviewEnabled = false
-    /// The active preview session for the current recording, if any.
-    private var previewSession: (any LivePreviewSession)?
-    private var previewFeedTask: Task<Void, Never>?
-    private var previewPumpTask: Task<Void, Never>?
-    /// Monotonic guard so a late `makeSession()` from a finished/cancelled
-    /// recording can't attach itself to a newer session.
-    private var previewSetupID = 0
-    /// Latest interim preview text, folded into the `.listening` HUD state
-    /// alongside the level. nil unless preview is active and has produced text.
-    private var currentPreview: TranscriptPreview?
-    /// Most recent RMS level, so a preview-text update can republish `.listening`
-    /// without waiting for the next level tick (and vice-versa).
-    private var lastLevel: Float = 0
-
     /// Kind of the active/last session (set at start; consumed at finish and by
     /// level forwarding so the command pill renders distinctly).
     private var sessionKind: SessionKind = .dictation
@@ -316,7 +295,6 @@ public actor DictationOrchestrator {
         snippets: (@Sendable () async -> [SnippetRecord])? = nil,
         fieldContextReader: (any FieldContextReading)? = nil,
         commandRunner: (any CommandRunning)? = nil,
-        livePreview: (any LivePreviewProviding)? = nil,
         historyRecord: (@Sendable (HistoryRecord, AudioClip) -> Void)? = nil,
         historyUpdate: (@Sendable (HistoryRecord) -> Void)? = nil,
         replaceTimeout: Duration = .seconds(5),
@@ -330,7 +308,6 @@ public actor DictationOrchestrator {
         self.endpointer = endpointer
         self.hint = hint
         self.commandRunner = commandRunner
-        self.livePreview = livePreview
         self.cleaners = cleaners
         self.modeProvider = modeProvider
         self.dictionary = dictionary
@@ -454,13 +431,6 @@ public actor DictationOrchestrator {
         contextAwareCleanupEnabled = enabled
     }
 
-    /// Toggle the live transcription preview (Settings → General, Recording
-    /// indicator). Prototype, default off. Only takes effect when the active
-    /// engine is Parakeet and a `livePreview` provider is wired; otherwise the
-    /// flag is stored but no preview renders. Never affects the batch paste path.
-    public func setLivePreviewEnabled(_ enabled: Bool) {
-        livePreviewEnabled = enabled
-    }
 
     /// Set (or clear) the translation target (Settings → General). `nil` = off.
     /// Resets the one-time raw-tier note so toggling translation back on can warn
@@ -604,96 +574,8 @@ public actor DictationOrchestrator {
                 await self?.storeFieldContext(context, session: session)
             }
         }
-        // Live transcription preview (prototype, off the paste path). No-op
-        // unless enabled AND the engine is Parakeet AND a provider is wired.
-        lastLevel = 0
-        currentPreview = nil
-        startLivePreview()
         publish(listeningState(level: 0))
         startLevelForwarding()
-    }
-
-    // MARK: - Live preview (prototype)
-
-    /// Spin up a live-preview session for the current recording, if enabled and
-    /// supported. Everything here is additive and off the Fn-up→paste path: the
-    /// batch decode of the full clip still produces the pasted text unchanged.
-    private func startLivePreview() {
-        guard livePreviewEnabled,
-              sessionKind == .dictation,
-              transcriber.id == .parakeet,
-              let livePreview
-        else { return }
-
-        // Enable the gated preview-frame tap and invalidate any prior setup.
-        capture.setPreviewWanted(true)
-        previewSetupID &+= 1
-        let setupID = previewSetupID
-        // Session creation (loading a sliding-window manager over the SHARED warm
-        // models) runs off the recording path in its own Task; frames captured
-        // before it's ready are simply dropped.
-        Task { [weak self, livePreview] in
-            guard let session = await livePreview.makeSession() else {
-                await self?.livePreviewSetupFailed(setupID: setupID)
-                return
-            }
-            await self?.attachLivePreview(session, setupID: setupID)
-        }
-    }
-
-    /// Attach a freshly created preview session: begin feeding it captured frames
-    /// and pumping its interim text into the HUD. Discards the session if the
-    /// recording already ended (or a newer one started) while it was loading.
-    private func attachLivePreview(_ session: any LivePreviewSession, setupID: Int) {
-        guard phase == .recording, sessionKind == .dictation, setupID == previewSetupID else {
-            Task { await session.finish() }
-            return
-        }
-        previewSession = session
-        previewFeedTask = Task { [capture] in
-            for await frame in capture.previewFrames {
-                if Task.isCancelled { break }
-                await session.feed(frame)
-            }
-        }
-        previewPumpTask = Task { [weak self] in
-            for await update in session.updates {
-                if Task.isCancelled { break }
-                await self?.applyLivePreview(update, setupID: setupID)
-            }
-        }
-    }
-
-    private func livePreviewSetupFailed(setupID: Int) {
-        guard setupID == previewSetupID else { return }
-        // Nothing to preview this session; clear the gate if still recording.
-        if phase != .recording { capture.setPreviewWanted(false) }
-    }
-
-    /// Fold a preview-text update into the `.listening` HUD state. Guarded so a
-    /// late update from a torn-down session can't repaint the pill.
-    private func applyLivePreview(_ preview: TranscriptPreview, setupID: Int) {
-        guard phase == .recording, sessionKind == .dictation, setupID == previewSetupID else { return }
-        currentPreview = preview
-        publish(listeningState(level: lastLevel))
-    }
-
-    /// Tear down the preview session promptly (recording ended or cancelled).
-    /// Cancels feed/pump, invalidates in-flight setup, disables the frame tap,
-    /// and clears the interim text. Called BEFORE the batch decode so the
-    /// streaming decoder stops touching the shared models first.
-    private func stopLivePreview() {
-        previewSetupID &+= 1
-        previewFeedTask?.cancel()
-        previewFeedTask = nil
-        previewPumpTask?.cancel()
-        previewPumpTask = nil
-        if let session = previewSession {
-            previewSession = nil
-            Task { await session.finish() }
-        }
-        capture.setPreviewWanted(false)
-        currentPreview = nil
     }
 
     /// Store the AX-read field context for the current recording. Rejected when a
@@ -711,7 +593,6 @@ public actor DictationOrchestrator {
             ? .commandListening(level: level)
             : .listening(
                 level: level,
-                preview: currentPreview,
                 // One relaxed atomic read; nil until the capture buffer is
                 // within its warning window of the hard cap.
                 capSecondsRemaining: capture.capCountdown()
@@ -756,10 +637,6 @@ public actor DictationOrchestrator {
         // which case the hotkey layer still holds its double-tap lock — tell it
         // the session is over (idempotent when a tap already released it).
         if wasHandsFree { handsFreeEndedContinuation.yield(()) }
-        // Tear down the live preview FIRST: stop feeding/pumping and cancel the
-        // streaming decoder before the batch decode runs, so the two never
-        // contend for the shared models and the latency metric below is clean.
-        stopLivePreview()
 
         // Fn-up → text-inserted is THE latency metric.
         let t0 = ContinuousClock.now
@@ -1818,7 +1695,6 @@ public actor DictationOrchestrator {
     private func cancelDuringRecording() {
         if isHandsFree { handsFreeEndedContinuation.yield(()) }
         stopHandsFree()
-        stopLivePreview()
         teardownSessionState()
         cancelRequested = false
         _ = capture.stop() // discard audio
@@ -1833,7 +1709,6 @@ public actor DictationOrchestrator {
     /// the feedback.
     private func abortCancelledSession(stage: String) {
         logger.notice("dictation cancelled during \(stage, privacy: .public)")
-        stopLivePreview()
         teardownSessionState()
         cancelRequested = false
         phase = .idle
@@ -2395,7 +2270,6 @@ public actor DictationOrchestrator {
 
     private func forwardLevel(_ level: Float) {
         guard phase == .recording else { return }
-        lastLevel = level
         publish(listeningState(level: level))
     }
 

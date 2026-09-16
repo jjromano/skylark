@@ -37,7 +37,6 @@ struct DiagnosticsReportTests {
             audioRetentionDays: 7,
             historyRetentionDays: 0,
             pressEnterEnabled: false,
-            livePreviewEnabled: false,
             pauseMediaEnabled: false,
             deepVocabEnabled: false,
             inputDeviceSelected: false

@@ -11,7 +11,7 @@ import os
 /// audio thread (a lock-free `Atomic` write index is used instead).
 ///
 /// Nothing is PUBLISHED from the render thread either (audit U9): HUD levels,
-/// raw VAD/preview frames and the cap boundary all leave via a 20 Hz timer on
+/// raw VAD frames and the cap boundary all leave via a 20 Hz timer on
 /// `levelQueue`, which reads the same lock-free atomics and the already-written
 /// samples. The tap's whole job is convert → copy → two relaxed atomic stores.
 ///
@@ -128,17 +128,15 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
     private var staleTicks = 0
     private var capSignalled = false
 
-    // Raw-frame delivery for hands-free VAD and for the optional live preview.
-    // Gated by `framesWanted` / `previewWanted` so an idle consumer costs
-    // nothing. Frames are drained from the capture buffer by the publisher tick
-    // (see `drainFrames`) — the audio thread never yields and never allocates.
+    // Raw-frame delivery for hands-free VAD. Gated by `framesWanted` so an idle
+    // consumer costs nothing. Frames are drained from the capture buffer by the
+    // publisher tick (see `drainFrames`) — the audio thread never yields and
+    // never allocates.
     //
-    // The continuations are REPLACED on every access to `frames` /
-    // `previewFrames`; see those properties for why a stored stream can't work.
+    // The continuation is REPLACED on every access to `frames`; see that
+    // property for why a stored stream can't work.
     private let framesSink = Mutex<AsyncStream<[Float]>.Continuation?>(nil)
     private let framesWanted = Atomic<Bool>(false)
-    private let previewSink = Mutex<AsyncStream<[Float]>.Continuation?>(nil)
-    private let previewWanted = Atomic<Bool>(false)
     /// How far the frame drain has read (publisher-side; `levelQueue` only).
     private var drainIndex = 0
 
@@ -198,7 +196,6 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         traceCounts.deallocate()
         levelsContinuation.finish()
         framesSink.withLock { $0 }?.finish()
-        previewSink.withLock { $0 }?.finish()
         interruptionsContinuation.finish()
     }
 
@@ -221,23 +218,8 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         return stream
     }
 
-    /// Raw 16 kHz frames for the live-preview prototype. Separate sink from
-    /// `frames` so preview and hands-free never contend; same per-access rule.
-    public var previewFrames: AsyncStream<[Float]> {
-        let (stream, continuation) = AsyncStream<[Float]>.makeStream(bufferingPolicy: .bufferingNewest(32))
-        previewSink.withLock { sink in
-            sink?.finish()
-            sink = continuation
-        }
-        return stream
-    }
-
     public func setFramesWanted(_ wanted: Bool) {
         framesWanted.store(wanted, ordering: .relaxed)
-    }
-
-    public func setPreviewWanted(_ wanted: Bool) {
-        previewWanted.store(wanted, ordering: .relaxed)
     }
 
     /// Set the whisper-mode capture gain (linear multiplier). Applied in the tap,
@@ -437,8 +419,8 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         }
     }
 
-    /// Hand every sample captured since the last tick to whichever raw-frame
-    /// consumers are active. Runs on `levelQueue`.
+    /// Hand every sample captured since the last tick to the raw-frame consumer,
+    /// if active. Runs on `levelQueue`.
     ///
     /// Single producer (the render thread, publishing `writeIndex` with a release
     /// store), single consumer (this queue): reading below the published index is
@@ -450,16 +432,11 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
         let end = min(writeIndex.load(ordering: .acquiring), Self.maxSamples)
         defer { drainIndex = end }
         guard end > drainIndex else { return }
-        let wantFrames = framesWanted.load(ordering: .relaxed)
-        let wantPreview = previewWanted.load(ordering: .relaxed)
-        guard wantFrames || wantPreview else { return }
-        // One allocation per tick (~50 ms of audio), off the audio thread, shared
-        // by both consumers (copy-on-write, and both only read it).
+        guard framesWanted.load(ordering: .relaxed) else { return }
         let copy = Array(UnsafeBufferPointer(
             start: storage.baseAddress! + drainIndex, count: end - drainIndex
         ))
-        if wantFrames { framesSink.withLock { $0 }?.yield(copy) }
-        if wantPreview { previewSink.withLock { $0 }?.yield(copy) }
+        framesSink.withLock { $0 }?.yield(copy)
     }
 
     // MARK: - Interruption handling
@@ -752,8 +729,8 @@ public final class AudioCaptureService: AudioCapturing, @unchecked Sendable {
             traceIndex.store(t + 1, ordering: .releasing)
         }
 
-        // Raw-frame delivery to the hands-free VAD / live preview is NOT done
-        // here: the samples are already in `storage`, published by the release
+        // Raw-frame delivery to the hands-free VAD is NOT done here: the samples
+        // are already in `storage`, published by the release
         // store above, so `drainFrames` reads them straight out on the publisher
         // queue. That keeps the render callback free of the Array allocation and
         // the stream lock it used to take per buffer (audit U9).

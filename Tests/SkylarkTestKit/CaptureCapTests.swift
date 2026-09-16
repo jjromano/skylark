@@ -327,7 +327,7 @@ struct CaptureCapTests {
         await settle()
         var countdowns: [Double?] = []
         for state in await states.all() {
-            if case let .listening(_, _, remaining) = state { countdowns.append(remaining) }
+            if case let .listening(_, remaining) = state { countdowns.append(remaining) }
         }
         #expect(!countdowns.isEmpty)
         #expect(countdowns.allSatisfy { $0 == 12 })
@@ -347,7 +347,7 @@ struct CaptureCapTests {
         await orchestrator.handle(.startRecording)
         await settle()
         for state in await states.all() {
-            if case let .listening(_, _, remaining) = state { #expect(remaining == nil) }
+            if case let .listening(_, remaining) = state { #expect(remaining == nil) }
         }
     }
 
