@@ -62,6 +62,12 @@ struct SpeechEngineOptionsTests {
         #expect(o.onDevice == [.localParakeet])
     }
 
+    @Test("Selected Groq direct stays listed after its key is removed")
+    func currentGroqListed() {
+        let o = options(current: .groqDirect, groqKey: false, openRouterKey: false)
+        #expect(o.groqDirect)
+    }
+
     @Test("The current engine stays listed even when unavailable, so the checkmark never vanishes")
     func currentAlwaysListed() {
         let o = options(current: .localWhisper, whisper: false, groqKey: false, openRouterKey: false)

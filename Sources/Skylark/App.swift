@@ -28,6 +28,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar accessory app (also LSUIElement in Info.plist).
         NSApp.setActivationPolicy(.accessory)
+        // The menu bar is live before `start()` runs (which can wait up to 5 s
+        // below), so resolve what the pickers may offer right away.
+        controller.refreshAppleIntelligenceAvailability()
         // Quit any older copy BEFORE starting: `start()` installs the hotkey
         // tap and shows the pill, and two of each is the bug this prevents.
         Task { @MainActor [controller] in

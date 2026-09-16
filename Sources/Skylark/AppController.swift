@@ -1960,7 +1960,7 @@ final class AppController {
     var speechEngineOptions: SpeechEngineOptions {
         func onDisk(_ model: ManagedModel) -> Bool {
             switch modelStates[model] {
-            case .none, .notDownloaded: return false
+            case .none, .notDownloaded, .downloading: return false
             default: return true
             }
         }
@@ -2764,7 +2764,7 @@ final class AppController {
     /// Whether Apple Intelligence can run cleanup on this Mac right now. Stored,
     /// not computed, so SwiftUI observes it; refreshed at launch and whenever
     /// Settings opens (the user may have just enabled it in System Settings).
-    private(set) var appleIntelligenceAvailable: Bool = true
+    private(set) var appleIntelligenceAvailable: Bool = false
 
     func refreshAppleIntelligenceAvailability() {
         #if canImport(FoundationModels)

@@ -96,7 +96,7 @@ public enum CleanupCycle {
         localModels: [LocalCleanupModel] = LocalCleanupModel.installed,
         cloudModels: [ModelRegistryEntry],
         hasAPIKey: Bool,
-        appleIntelligenceAvailable: Bool = true
+        appleIntelligenceAvailable: Bool
     ) -> [CleanupCycleOption] {
         var options: [CleanupCycleOption] = [.auto, .raw]
         if appleIntelligenceAvailable { options.append(.local(.appleFoundationModels)) }

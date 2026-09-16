@@ -7,8 +7,9 @@ import Foundation
 /// menu full of engines that cannot run. Rules:
 /// - An on-device engine is offered once it is on disk, and always while it is
 ///   the current selection, so the menu never loses its checkmark.
-/// - Groq direct is offered only with a Groq key. It is optional and most users
-///   never add one, so without a key it leaves no trace.
+/// - Groq direct is offered only with a Groq key (or while it is the current
+///   selection). It is optional and most users never add one, so otherwise it
+///   leaves no trace.
 /// - OpenRouter models are offered only with an OpenRouter key. Without one the
 ///   pickers show a single "add key" affordance instead (`needsOpenRouterKey`),
 ///   because OpenRouter is where nearly every cloud model lives.
@@ -33,7 +34,7 @@ public struct SpeechEngineOptions: Sendable, Equatable {
             (.localApple, appleSpeechAvailable),
         ]
         onDevice = local.filter { choice, available in available || choice == current }.map(\.0)
-        groqDirect = hasGroqKey
+        groqDirect = hasGroqKey || current == .groqDirect
         openRouter = hasOpenRouterKey ? cloudModels.filter { $0.kind == .stt } : []
         needsOpenRouterKey = !hasOpenRouterKey
     }

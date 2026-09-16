@@ -20,7 +20,7 @@ struct CleanupCycleTests {
 
     @Test("Order: Auto → Raw → Apple → on-disk local models → cloud models")
     func order() {
-        let options = CleanupCycle.options(localModels: [qwen], cloudModels: cloud, hasAPIKey: true)
+        let options = CleanupCycle.options(localModels: [qwen], cloudModels: cloud, hasAPIKey: true, appleIntelligenceAvailable: true)
         #expect(options.map(\.id) == [
             "auto",
             "raw",
@@ -33,7 +33,7 @@ struct CleanupCycleTests {
 
     @Test("A local model that isn't on disk is not a stop on the ring")
     func onlyInstalledLocalModels() {
-        let options = CleanupCycle.options(localModels: [], cloudModels: cloud, hasAPIKey: true)
+        let options = CleanupCycle.options(localModels: [], cloudModels: cloud, hasAPIKey: true, appleIntelligenceAvailable: true)
         #expect(!options.contains { $0.id.hasPrefix("local:llama") })
         // Apple Intelligence needs no download, so it is offered whenever enabled.
         #expect(options.contains { $0.id == "local:apple" })
@@ -41,7 +41,7 @@ struct CleanupCycleTests {
 
     @Test("No API key: the cloud models are left out (they could only degrade)")
     func cloudNeedsKey() {
-        let options = CleanupCycle.options(localModels: [qwen], cloudModels: cloud, hasAPIKey: false)
+        let options = CleanupCycle.options(localModels: [qwen], cloudModels: cloud, hasAPIKey: false, appleIntelligenceAvailable: true)
         #expect(!options.contains { $0.id.hasPrefix("cloud:") })
         #expect(options.map(\.id) == ["auto", "raw", "local:apple", "local:llama:qwen3-4b-instruct"])
     }
@@ -50,7 +50,7 @@ struct CleanupCycleTests {
 
     @Test("Each press advances one stop and the ring wraps")
     func advanceAndWrap() {
-        let options = CleanupCycle.options(localModels: [], cloudModels: cloud, hasAPIKey: true)
+        let options = CleanupCycle.options(localModels: [], cloudModels: cloud, hasAPIKey: true, appleIntelligenceAvailable: true)
         var current: CleanupCycleOption? = .auto
         var visited: [String] = []
         for _ in 0..<options.count {
@@ -69,7 +69,7 @@ struct CleanupCycleTests {
 
     @Test("A selection that is not on the ring restarts from the first stop")
     func unknownCurrentRestarts() {
-        let options = CleanupCycle.options(localModels: [], cloudModels: cloud, hasAPIKey: true)
+        let options = CleanupCycle.options(localModels: [], cloudModels: cloud, hasAPIKey: true, appleIntelligenceAvailable: true)
         #expect(CleanupCycle.next(after: nil, in: options)?.id == "auto")
     }
 
@@ -82,7 +82,7 @@ struct CleanupCycleTests {
 
     @Test("Current stop is derived from the persisted tier + engine + slug")
     func currentFromState() {
-        let options = CleanupCycle.options(localModels: [qwen], cloudModels: cloud, hasAPIKey: true)
+        let options = CleanupCycle.options(localModels: [qwen], cloudModels: cloud, hasAPIKey: true, appleIntelligenceAvailable: true)
 
         #expect(CleanupCycle.current(
             tierOverride: "auto", localEngine: .appleFoundationModels,
@@ -100,7 +100,7 @@ struct CleanupCycleTests {
 
     @Test("Cloud tier with no key on the ring reads as 'not on the ring'")
     func currentOffRing() {
-        let options = CleanupCycle.options(localModels: [], cloudModels: cloud, hasAPIKey: false)
+        let options = CleanupCycle.options(localModels: [], cloudModels: cloud, hasAPIKey: false, appleIntelligenceAvailable: true)
         let current = CleanupCycle.current(
             tierOverride: "cloud", localEngine: .appleFoundationModels,
             cloudSlug: "openai/gpt-oss-20b", options: options)
