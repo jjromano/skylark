@@ -20,6 +20,19 @@ enum AXTextReader {
         return (focusedRef as! AXUIElement)
     }
 
+    /// The application that owns keyboard focus (the frontmost app).
+    @MainActor
+    static func focusedApplication() -> AXUIElement? {
+        let systemWide = AXUIElementCreateSystemWide()
+        var appRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(systemWide, kAXFocusedApplicationAttribute as CFString, &appRef) == .success,
+              let appRef
+        else {
+            return nil
+        }
+        return (appRef as! AXUIElement)
+    }
+
     @MainActor
     static func isSecure(_ element: AXUIElement) -> Bool {
         var subroleRef: CFTypeRef?

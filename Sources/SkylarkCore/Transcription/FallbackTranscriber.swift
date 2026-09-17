@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum FallbackTranscriberError: Error, Sendable {
     /// The primary engine didn't finish within the cap; caller falls back.
@@ -72,9 +73,42 @@ public struct FallbackTranscriber: Transcriber {
             lastRun.value = primary.id
             return text
         } catch {
+            // Content-free: which engine gave up and why, so a diagnostics report
+            // can tell a slow provider (timeout) from a rejected request.
+            Self.logger.notice("stt fallback: \(primary.id.historyColumn, privacy: .public) failed (\(Self.reason(error), privacy: .public)) → \(fallback.id.historyColumn, privacy: .public), clip-ms: \(Int(clip.duration * 1000), privacy: .public)")
             notice("Cloud transcription unavailable — using local engine")
             lastRun.value = fallback.id
             return try await fallback.transcribe(clip, hint: hint)
+        }
+    }
+
+    private static let logger = Logger(subsystem: "com.jjromano.skylark", category: "pipeline")
+
+    /// A log-safe failure reason. Never includes a server message body.
+    static func reason(_ error: any Error) -> String {
+        switch error {
+        case FallbackTranscriberError.primaryTimedOut: return "timeout"
+        case let error as OpenRouterError:
+            switch error {
+            case .noKey: return "no-key"
+            case .invalidKey: return "invalid-key"
+            case .rateLimited: return "rate-limited"
+            case .timeout: return "network-timeout"
+            case .network(let underlying): return "network \((underlying as NSError).domain) \((underlying as NSError).code)"
+            case .server(let status, _): return "http \(status)"
+            case .decoding: return "decoding"
+            case .responseTruncated: return "truncated"
+            }
+        case let error as GroqError:
+            switch error {
+            case .noKey: return "no-key"
+            case .timeout: return "network-timeout"
+            case .http(let status, _): return "http \(status)"
+            case .decoding: return "decoding"
+            case .network: return "network"
+            }
+        default:
+            return "\(type(of: error))"
         }
     }
 

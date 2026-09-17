@@ -6,6 +6,20 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.24.4 - 2026-09-16
+
+- **Dictating mid-sentence no longer capitalizes the first word** when
+  on-screen context is on. If the text before your cursor ends without a
+  period (after a word, comma, semicolon or dash), the dictation continues in
+  lowercase. "I", acronyms, dictionary terms and names (people, places,
+  companies, or a word already capitalized in the field) keep their capital.
+- On-screen context now works in **Electron apps** such as the Claude desktop
+  app, Slack and VS Code, which previously hid their text fields from Skylark.
+  The very first dictation after opening one of these apps may still miss it.
+- Diagnostics now record why a cloud transcription fell back to the local
+  engine (timeout, HTTP status, key problem) and whether the on-screen context
+  read succeeded.
+
 ## 0.24.3 - 2026-09-16
 
 - The menu bar lists **Speech Engine** above **Cleanup**, the order a

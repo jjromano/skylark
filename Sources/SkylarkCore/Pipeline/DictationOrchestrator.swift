@@ -130,6 +130,8 @@ public actor DictationOrchestrator {
     /// its context into a newer session.
     private var fieldContextSession = 0
     private var fieldContextTask: Task<Void, Never>?
+    /// Set once the continuation-casing name tagger has been warmed.
+    private var continuationCasingWarmed = false
     /// Optional deep-vocabulary rescorer (PRD §8, default on). When set,
     /// Parakeet utterances get a second on-device acoustic pass against the
     /// dictionary in the DETACHED post-insert flow (never on fn-up→paste), whose
@@ -564,6 +566,11 @@ public actor DictationOrchestrator {
         fieldContextTask?.cancel()
         fieldContextTask = nil
         if contextAwareCleanupEnabled, let fieldContextReader {
+            if !continuationCasingWarmed {
+                // Load the name tagger while the user speaks, never on the paste path.
+                continuationCasingWarmed = true
+                Task.detached(priority: .utility) { ContinuationCasing.warmUp() }
+            }
             let session = fieldContextSession
             fieldContextTask = Task { [weak self] in
                 let context = await fieldContextReader.readFieldContext(
@@ -797,6 +804,20 @@ public actor DictationOrchestrator {
         let rawText = stripped.text
         let pressEnter = stripped.pressEnter
 
+        // Context-aware continuation: dictating into the middle of a sentence
+        // must not paste a sentence-start capital. Applied to every write of
+        // dictated text below (raw, cleaned, or a cleanup that changed nothing),
+        // because the prompt's lowercase rule alone never reaches the raw tier,
+        // the short-transcript bypass, or a model that returns the text as-is.
+        // No field context (toggle off, unreadable field, read still pending)
+        // leaves the text untouched. Sub-millisecond; see `ContinuationCasing`.
+        let fieldContextForFit = cleanupContext.fieldContext
+        let protectedTerms = cleanupContext.dictionaryTerms
+        let fitToField: @Sendable (String) -> String = { text in
+            ContinuationCasing.apply(text, context: fieldContextForFit, protectedTerms: protectedTerms)
+        }
+        let insertRawText = fitToField(rawText)
+
         // Pause-punctuation repair (v0.16.0): the recogniser inserts a period
         // wherever the speaker paused to think, so the transcript reaching
         // cleanup is already shredded into false sentences. Rejoin them BEFORE
@@ -887,7 +908,7 @@ public actor DictationOrchestrator {
             // Tier 0: raw stands, no cleanup stage.
             syncCleanupEngine = "raw"
             cleanupEngineRan = "raw"
-            let write = await guardedInsert(rawText)
+            let write = await guardedInsert(insertRawText)
             if write.cancelled { return abortCancelledSession(stage: "injecting") }
             if let refusal = write.refusal {
                 recordRefusal(refusal)
@@ -904,10 +925,11 @@ public actor DictationOrchestrator {
             let outcome = await cleanForPaste(cleaner, tier: effectiveTier, text: cleanupInput, contexts: contexts)
             if let outcome {
                 syncCleanupEngine = outcome.engine
-                if outcome.text != rawText { syncCleanText = outcome.text }
+                let fitted = fitToField(outcome.text)
+                if fitted != rawText { syncCleanText = fitted }
             }
             cleanupEngineRan = outcome?.engine ?? "raw"
-            let final = outcome?.text ?? rawText
+            let final = outcome.map { fitToField($0.text) } ?? insertRawText
             // Cleanup just ran (up to the pre-paste ceiling) — the guard and the
             // cancellation check are both re-run inside `guardedInsert`.
             let write = await guardedInsert(final)
@@ -920,7 +942,7 @@ public actor DictationOrchestrator {
                 injectMethod = Self.methodString(token)
             }
         } else {
-            let direct = await guardedInsert(rawText, direct: true)
+            let direct = await guardedInsert(insertRawText, direct: true)
             if direct.cancelled { return abortCancelledSession(stage: "injecting") }
             if let refusal = direct.refusal {
                 // The guard refused the write (focus moved between the verdict
@@ -946,7 +968,8 @@ public actor DictationOrchestrator {
                 let detachedCleanupInput = cleanupInput
                 Task { [weak self] in
                     await self?.runCleanupAndReplace(
-                        token: token, rawText: rawText, cleanupText: detachedCleanupInput,
+                        token: token, rawText: rawText, insertedRawText: insertRawText,
+                        cleanupText: detachedCleanupInput, fitToField: fitToField,
                         cleaner: cleaner, tier: tier,
                         contexts: detachedContexts, historyTimestamp: historyTimestamp,
                         rescoreSamples: rescoreSamples, rescoreTimings: rescoreTimings
@@ -961,10 +984,11 @@ public actor DictationOrchestrator {
                 let outcome = await cleanForPaste(cleaner, tier: effectiveTier, text: cleanupInput, contexts: contexts)
                 if let outcome {
                     syncCleanupEngine = outcome.engine
-                    if outcome.text != rawText { syncCleanText = outcome.text }
+                    let fitted = fitToField(outcome.text)
+                    if fitted != rawText { syncCleanText = fitted }
                 }
                 cleanupEngineRan = outcome?.engine ?? "raw"
-                let final = outcome?.text ?? rawText
+                let final = outcome.map { fitToField($0.text) } ?? insertRawText
                 let write = await guardedInsert(final)
                 if write.cancelled { return abortCancelledSession(stage: "injecting") }
                 if let refusal = write.refusal {
@@ -1840,7 +1864,9 @@ public actor DictationOrchestrator {
     private func runCleanupAndReplace(
         token: InsertionToken,
         rawText: String,
+        insertedRawText: String,
         cleanupText: String,
+        fitToField: @Sendable (String) -> String,
         cleaner: any Cleaner,
         tier: CleanupTier,
         contexts: CleanupContexts,
@@ -1889,18 +1915,19 @@ public actor DictationOrchestrator {
             fireCorrectionSettled(token, finalText: token.text)
             return
         }
-        guard outcome.text != rawText else {
+        let finalText = fitToField(outcome.text)
+        guard finalText != insertedRawText else {
             // Cleanup was a no-op: raw stands on screen — watch that.
             fireCorrectionSettled(token, finalText: token.text)
             return
         }
         do {
-            try await injector.replace(token, with: outcome.text)
+            try await injector.replace(token, with: finalText)
             // Replace succeeded — record the clean text against this dictation.
-            emitHistoryUpdate(timestamp: historyTimestamp, cleanText: outcome.text, cleanupEngine: outcome.engine)
+            emitHistoryUpdate(timestamp: historyTimestamp, cleanText: finalText, cleanupEngine: outcome.engine)
             // The cleaned text (with the same leading separator the replace
             // re-applied) is what now sits on screen — watch that.
-            fireCorrectionSettled(token, finalText: token.leadingSeparator + outcome.text)
+            fireCorrectionSettled(token, finalText: token.leadingSeparator + finalText)
         } catch {
             logger.notice("cleanup replace skipped: \(error.localizedDescription, privacy: .public)")
             // The cleaned text exists but can't be applied here — say so
