@@ -11,16 +11,24 @@ observation — log streaming, database queries, crash-report checks, screenshot
 watch logs yourself; that is what the agent is for and it is the difference
 between this taking 25 minutes and taking two hours.
 
-## Recheck (0.24.3 or later, ~6 min) — do this, not the full pass
+## Recheck (0.24.7 or later, ~6 min) — do this, not the full pass
 
 The full pass ran on 2026-09-08
 (`docs/qa/2026-09-08-v1-human-pass-findings.md`). Blocks 3 and 4 passed and
 stay closed. 0.22.0 fixed what failed; later builds added cloud engines,
-merged the Cleanup menus and reworked updates, none of which reopens a
-closed block. This recheck is the whole remaining gate.
+merged the Cleanup menus, reworked updates, taught on-screen context to read
+Electron apps and made a slow cloud speech engine fall back after 2 s. None of
+that reopens a closed block. This recheck is the whole remaining gate.
 
-**Agent first, no input from you (~5 min):** install as in Setup below and
-confirm `0.24.3` or later. Then, in the real room with the USB mic selected, drive five
+**Agent first, no input from you (~7 min):** install as in Setup below,
+confirm `0.24.7` or later, and run `make test` (report the pass count). Open a
+Terminal window running `cat > /dev/null` as the dictation target: Terminal
+never accepts Skylark's in-place writes, so every dictation there waits for
+cleanup before pasting (the path the 5-second budget protects), and `cat`
+swallows anything typed, so nothing dictated can run. Avoid Electron editors
+such as VS Code here: since 0.24.4 Skylark can reach their text fields, so they
+may no longer take the wait-then-paste path. Then, in the real room with the
+USB mic selected, drive five
 silent holds with `open -a /Applications/Skylark.app "skylark://record/start"`,
 wait 3 s, `open -a /Applications/Skylark.app "skylark://record/stop"` (a bare
 `open skylark://` can wake a stale build copy instead); expect nothing pasted, no new History row, and
@@ -31,7 +39,7 @@ corpus cases (`spokenAddress/spelledURL`, `spokenAddress/spelledEmail`,
 `faithful/emphasis`) by name.
 
 **You, with the menu bar's Cleanup menu set to Qwen3 4B (under "On this Mac"),
-dictating into a VS Code scratch file:**
+dictating into the Terminal window the agent opened:**
 
 1. **ACT.** Hold **Fn** and say nothing for three seconds. Three times.
 2. **ACT.** Say "github dot com slash j j romano slash skylark".
@@ -42,7 +50,7 @@ dictating into a VS Code scratch file:**
 
 **Passes if:** 1 pastes nothing all three times and the pill says
 `No speech detected`; 2 lands as `github.com/jjromano/skylark` and 3 as
-`jjromano@example.com`; 4 lands within 5 seconds (a note saying Apple
+`jjromano@example.com`; 4 lands within 5 seconds of releasing Fn (a note saying Apple
 Intelligence was used while Qwen loads is expected, not a failure); 5 shows
 Speech Engine above Cleanup, no Onboarding item, and opens Settings on Account
 saying Skylark is up to date. (The menu is the one surface no agent can
@@ -57,7 +65,7 @@ release. Blocks 5-6 are wanted, not gating, so drop them if you run short.
 
 ```sh
 cd /Users/john_romano/repos/skylark && git pull --ff-only && ./Scripts/install.sh
-defaults read /Applications/Skylark.app/Contents/Info.plist CFBundleShortVersionString   # expect 0.24.3 or later
+defaults read /Applications/Skylark.app/Contents/Info.plist CFBundleShortVersionString   # expect 0.24.7 or later
 ```
 
 Agent also: opens a scratch TextEdit window, empties
