@@ -11,34 +11,42 @@ observation — log streaming, database queries, crash-report checks, screenshot
 watch logs yourself; that is what the agent is for and it is the difference
 between this taking 25 minutes and taking two hours.
 
-## Recheck for 0.22.0 (5 min) — do this, not the full pass
+## Recheck (0.24.3 or later, ~6 min) — do this, not the full pass
 
 The full pass ran on 2026-09-08
 (`docs/qa/2026-09-08-v1-human-pass-findings.md`). Blocks 3 and 4 passed and
-stay closed. 0.22.0 fixes what failed. This recheck is the whole remaining
-gate.
+stay closed. 0.22.0 fixed what failed; later builds added cloud engines,
+merged the Cleanup menus and reworked updates, none of which reopens a
+closed block. This recheck is the whole remaining gate.
 
 **Agent first, no input from you (~5 min):** install as in Setup below and
-confirm `0.22.0`. Then, in the real room with the USB mic selected, drive five
-silent holds with `open "skylark://record/start"`, wait 3 s,
-`open "skylark://record/stop"`; expect nothing pasted, no new History row, and
+confirm `0.24.3` or later. Then, in the real room with the USB mic selected, drive five
+silent holds with `open -a /Applications/Skylark.app "skylark://record/start"`,
+wait 3 s, `open -a /Applications/Skylark.app "skylark://record/stop"` (a bare
+`open skylark://` can wake a stale build copy instead); expect nothing pasted, no new History row, and
 `No speech detected` in the log each time. Then run the live cleanup evals
 (`SKYLARK_LIVE_CLEANUP_EVAL=1` and `SKYLARK_LIVE_QWEN_EVAL=1`, see
 `CleanupCorpusTests` and `QwenCleanupEvalTests`) and report the three new
 corpus cases (`spokenAddress/spelledURL`, `spokenAddress/spelledEmail`,
 `faithful/emphasis`) by name.
 
-**You, Local cleanup set to Qwen3 4B, dictating into a VS Code scratch file:**
+**You, with the menu bar's Cleanup menu set to Qwen3 4B (under "On this Mac"),
+dictating into a VS Code scratch file:**
 
 1. **ACT.** Hold **Fn** and say nothing for three seconds. Three times.
 2. **ACT.** Say "github dot com slash j j romano slash skylark".
 3. **ACT.** Say "email j j romano at example dot com".
 4. **ACT.** Quit Skylark, relaunch it, and dictate one sentence straight away.
+5. **ACT.** Open the menu-bar dropdown, look at it, then click
+   **Check for Updates…**.
 
 **Passes if:** 1 pastes nothing all three times and the pill says
 `No speech detected`; 2 lands as `github.com/jjromano/skylark` and 3 as
 `jjromano@example.com`; 4 lands within 5 seconds (a note saying Apple
-Intelligence was used while Qwen loads is expected, not a failure).
+Intelligence was used while Qwen loads is expected, not a failure); 5 shows
+Speech Engine above Cleanup, no Onboarding item, and opens Settings on Account
+saying Skylark is up to date. (The menu is the one surface no agent can
+screenshot, so your eyes are the only check it gets.)
 
 ---
 
@@ -49,7 +57,7 @@ release. Blocks 5-6 are wanted, not gating, so drop them if you run short.
 
 ```sh
 cd /Users/john_romano/repos/skylark && git pull --ff-only && ./Scripts/install.sh
-defaults read /Applications/Skylark.app/Contents/Info.plist CFBundleShortVersionString   # expect 0.22.0
+defaults read /Applications/Skylark.app/Contents/Info.plist CFBundleShortVersionString   # expect 0.24.3 or later
 ```
 
 Agent also: opens a scratch TextEdit window, empties

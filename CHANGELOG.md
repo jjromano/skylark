@@ -6,6 +6,16 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.24.3 - 2026-09-16
+
+- The menu bar lists **Speech Engine** above **Cleanup**, the order a
+  dictation runs in and the order Settings → General uses.
+- New **Check for Updates…** at the bottom of the menu bar. It opens
+  Settings → Account and checks straight away; once an update has been found
+  it reads **Update Available…**.
+- **Onboarding…** is hidden once Microphone, Accessibility and Input
+  Monitoring are all granted, and comes back if one of them is revoked.
+
 ## 0.24.2 - 2026-09-16
 
 - **Updates finish on their own.** Check for Updates no longer asks whether to

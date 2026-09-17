@@ -698,6 +698,17 @@ final class AppController {
         }
     }
 
+    /// The menu bar's "Check for Updates…": open Settings → Account, where the
+    /// result and the Update Now button live, and start a check there unless
+    /// one is already running or has already found an update.
+    func checkForUpdatesFromMenu() {
+        showSettings(pane: "account")
+        switch updateState {
+        case .checking, .available: break
+        default: checkForUpdates()
+        }
+    }
+
     // MARK: - Diagnostics export (Settings → Account)
 
     /// Assemble a single hand-off diagnostics file — app version, settings,

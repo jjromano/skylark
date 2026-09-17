@@ -79,20 +79,35 @@ struct MenuContent: View {
 
         Divider()
 
-        CleanupMenu(controller: controller)
+        // Speech first, then Cleanup: the order a dictation runs in, and the
+        // order Settings → General lists them.
         SpeechEngineMenu(controller: controller)
+        CleanupMenu(controller: controller)
         WhisperModeToggle(controller: controller)
 
         Divider()
 
         Button("Settings…") { controller.showSettings() }
         Button("History…") { controller.showHistory() }
-        Button("Onboarding…") { controller.showOnboarding() }
+        // The walkthrough only asks for the three permissions, so once all are
+        // granted it has nothing left to do. Permission state is polled for the
+        // app's lifetime, so a revoked grant brings the item back.
+        if !controller.permissions.allGranted {
+            Button("Onboarding…") { controller.showOnboarding() }
+        }
 
         Divider()
 
+        Button(updateTitle) { controller.checkForUpdatesFromMenu() }
         Button("Quit Skylark") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
+    }
+}
+
+private extension MenuContent {
+    var updateTitle: String {
+        if case .available = controller.updateState { return "Update Available…" }
+        return "Check for Updates…"
     }
 }
 

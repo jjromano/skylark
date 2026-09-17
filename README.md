@@ -131,19 +131,13 @@ The menu-bar icon (a bird) opens a dropdown with:
 
 - **Status line** — Idle / Listening / Processing, the last dictation's
   end-to-end latency in ms, and today's dictated word count.
-- **Cleanup** — Auto / Raw / Local / Cloud, overriding the cleanup tier for
-  every dictation until changed back.
-- **Cleanup Model** — pick which cloud cleanup model quick-switches to when
-  Cloud is active, or enter a custom OpenRouter model slug.
-- **Speech Engine** — Local (Parakeet), Local (Whisper large-v3-turbo), or
-  any cloud STT model from the registry, plus a custom-slug option.
+- **Speech Engine** — the on-device engines you have downloaded, then cloud
+  engines (listed once an API key is added), plus a custom-slug option.
+- **Cleanup** — one picker with one checkmark: Off, Match app mode, your
+  on-device cleanup models, then cloud models (once an OpenRouter key is
+  added), plus a custom-slug option.
 - **Whisper Mode** — toggles quiet-speech tuning (boosted input gain, more
   sensitive VAD) for dictating at low volume in shared spaces.
-- **History…** — searchable browser for past dictations: view raw vs.
-  cleaned text, copy, delete, or edit an entry. Edits are diffed against the
-  raw transcript and offered as custom-dictionary auto-adds (or learned
-  automatically — Settings → History), so correcting a name once teaches
-  Skylark to get it right next time.
 - **Settings…** — General (dictation shortcut, recording-indicator style,
   behavior toggles, cleanup default, sounds + volume, launch at login),
   Insights (words dictated, WPM, time saved, streaks, activity heatmap),
@@ -151,14 +145,23 @@ The menu-bar icon (a bird) opens a dropdown with:
   Audio (input device picker, Whisper Mode), Dictionary, Snippets, Modes
   (per-app profiles), History (retention, audio retention, auto-learn), and
   Account (API key, version + Check for Updates).
-- **Onboarding…** — re-opens the permissions walkthrough and hotkey tutorial.
+- **History…** — searchable browser for past dictations: view raw vs.
+  cleaned text, copy, delete, or edit an entry. Edits are diffed against the
+  raw transcript and offered as custom-dictionary auto-adds (or learned
+  automatically — Settings → History), so correcting a name once teaches
+  Skylark to get it right next time.
+- **Onboarding…** — the permissions walkthrough and hotkey tutorial. Shown
+  only while a permission is still missing.
+- **Check for Updates…** — opens Settings → Account and checks GitHub for a
+  newer build.
 - **Quit Skylark**.
 
 ## Updating
 
-Settings → Account → **Check for Updates** compares your build against the
-GitHub repo and, on **Update Now**, opens Terminal to `git pull` and re-run
-`install.sh`. Or do the same by hand:
+**Check for Updates…** in the menu bar (or Settings → Account) compares your
+build against the GitHub repo and, on **Update Now**, opens Terminal to
+`git pull` and re-run `install.sh`; the window closes itself once the new
+version is running. Or do the same by hand:
 
 ```sh
 cd skylark && git pull && ./Scripts/install.sh
@@ -173,8 +176,8 @@ recognition or cloud cleanup:
 2. Open Skylark's menu bar → **Settings…** and paste the key into the
    OpenRouter API key field. It's validated immediately and stored in the
    macOS Keychain — never in a file, UserDefaults, or a log.
-3. Pick a cloud entry from **Speech Engine** and/or set **Cleanup** to
-   Cloud / pick a **Cleanup Model**.
+3. Pick a cloud entry from **Speech Engine** and/or a cloud model from
+   **Cleanup**.
 
 What leaves the machine, precisely:
 
