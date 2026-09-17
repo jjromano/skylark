@@ -6,6 +6,12 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.24.7 - 2026-09-16
+
+- Settings → General → Cleanup shows how to correct yourself mid-dictation:
+  say "I mean", "actually", "scratch that" or "correction", then the right
+  words. Pausing and repeating a phrase is not treated as a correction.
+
 ## 0.24.6 - 2026-09-16
 
 - Cloud cleanup now treats **"correction"** as a self-correction cue ("send

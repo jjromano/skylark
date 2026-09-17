@@ -447,6 +447,18 @@ private struct GeneralPane: View {
                 .pickerStyle(.segmented)
                 .disabled(controller.cleanupOverride == "raw")
                 Text(controller.cleanupIntensity.caption)
+                if controller.cleanupOverride != "raw", controller.cleanupIntensity != .light {
+                    // Cleanup resolves a self-correction only when a cue word
+                    // marks it; a pause and a restated phrase read as intended
+                    // text. Teach the cue words where cleanup is configured.
+                    Label(
+                        "To correct yourself, say “I mean”, “actually”, “scratch that” or “correction”, then the right words. "
+                            + "Pausing and repeating the phrase isn't recognized as a correction.",
+                        systemImage: "lightbulb"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
                 Picker("Cleanup timeout", selection: Binding(
                     get: { controller.cleanupTimeoutSeconds },
                     set: { controller.setCleanupTimeout(seconds: $0) }
