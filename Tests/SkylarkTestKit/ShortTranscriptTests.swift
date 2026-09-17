@@ -48,6 +48,24 @@ struct ShortTranscriptTests {
         #expect(ShortTranscript.format("done.") == "Done.")
     }
 
+    // 2026-09-16 recheck: a lone spoken URL pasted as `GitHub.com/jjromano/skylark.`
+    @Test("A dictation that is only an address gets no period and no re-casing")
+    func loneAddressUntouched() {
+        #expect(ShortTranscript.format("GitHub.com/jjromano/skylark") == "GitHub.com/jjromano/skylark")
+        #expect(ShortTranscript.format("github.com/jjromano/skylark") == "github.com/jjromano/skylark")
+        #expect(ShortTranscript.format(" jjromano@example.com ") == "jjromano@example.com")
+        #expect(ShortTranscript.format("example.com") == "example.com")
+    }
+
+    @Test("An address inside a phrase, and ordinary words, still get a sentence")
+    func addressInPhraseStillFormatted() {
+        #expect(ShortTranscript.format("Email jjromano@example.com") == "Email jjromano@example.com.")
+        #expect(ShortTranscript.format("e.g.") == "E.g.")
+        #expect(ShortTranscript.format("e.g") == "E.g.")
+        #expect(ShortTranscript.format("3.5") == "3.5.")
+        #expect(ShortTranscript.format("yes") == "Yes.")
+    }
+
     @Test("Whitespace-only input is returned untouched")
     func whitespaceUntouched() {
         #expect(ShortTranscript.format("  ") == "  ")

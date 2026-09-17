@@ -68,15 +68,34 @@ public enum ShortTranscript {
 
     /// Capitalise the first letter and terminate the sentence. Whitespace-only
     /// input is returned untouched; anything already terminated keeps its own
-    /// punctuation.
+    /// punctuation. A dictation that is nothing but a web address or email is
+    /// left exactly as recognized: a sentence period would break it when pasted
+    /// into a browser or a To field, and capitalizing it changes the address.
     public static func format(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let first = trimmed.first else { return text }
+        if isLoneAddress(trimmed) { return trimmed }
         var result = String(first).uppercased() + trimmed.dropFirst()
         if let last = result.last, !terminators.contains(last) {
             result.append(".")
         }
         return result
+    }
+
+    /// One token that reads as an address: an email ("name@host.tld"), a path
+    /// ("github.com/jjromano"), or a bare domain ("example.com"), i.e. an "@" or
+    /// "/", or a "." between letters whose last segment is at least two letters
+    /// long. A token that already ends in punctuation is not one, which keeps
+    /// abbreviations such as "e.g." on the ordinary path.
+    static func isLoneAddress(_ token: String) -> Bool {
+        guard let last = token.last, !terminators.contains(last),
+              !token.contains(where: { $0.isWhitespace }),
+              token.contains(where: { $0.isLetter }) else { return false }
+        if token.contains("@") || token.contains("/") { return true }
+        guard let dot = token.lastIndex(of: "."), dot != token.startIndex,
+              token[token.index(before: dot)].isLetter else { return false }
+        let tail = token[token.index(after: dot)...]
+        return tail.count >= 2 && tail.allSatisfy { $0.isLetter }
     }
 
     private static func wordCount(_ text: String) -> Int {

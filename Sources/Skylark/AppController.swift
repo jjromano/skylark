@@ -1391,9 +1391,17 @@ final class AppController {
         Task { [orchestrator, vadClipTrimEnabled] in await orchestrator.setVadTrimEnabled(vadClipTrimEnabled) }
         // Warm a previously-selected Qwen engine off the paste path (Apple
         // Foundation Models needs no such warm-up — its backend has no preload).
+        // Not awaited: the load takes seconds, and the speech-engine rebuild
+        // below must not wait behind it. It did, so with a cloud speech engine
+        // selected the first dictation after launch silently used Parakeet
+        // (2026-09-16 recheck). A dictation during the load gets Apple
+        // Intelligence via `isReadyNow`.
         if let qwen = localCleanupBackend as? QwenCleanupBackend {
             let instructions = CleanupPrompt.compactInstructions(context: CleanupContext(intensity: cleanupIntensity))
-            await qwen.preload(instructions: instructions)
+            Task { [weak self] in
+                await qwen.preload(instructions: instructions)
+                self?.refreshCleanupModelStates()
+            }
         }
         refreshCleanupModelStates()
         rebuildTranscriber()

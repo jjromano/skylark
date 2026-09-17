@@ -6,6 +6,17 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 1.0.1 - 2026-09-17
+
+- **Your cloud speech engine is used from the first dictation after launch.**
+  Skylark used to wait for a downloaded Qwen cleanup model to finish loading
+  (a few seconds) before switching to the selected cloud speech engine, so a
+  dictation right after launch quietly went through Parakeet instead.
+- **A dictation that is only a web address or email is pasted exactly as
+  recognized**, with no sentence period and no capital letter added.
+- A silent hold that Skylark discards is now also written to the log, so it is
+  visible in diagnostics even with the recording pill hidden.
+
 ## 1.0.0 - 2026-09-17
 
 **Skylark 1.0**, the first stable release. The code is identical to 0.24.7,

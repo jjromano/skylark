@@ -697,6 +697,9 @@ public actor DictationOrchestrator {
             ? silencePeakThreshold
             : (effectiveWhisperOn ? SilenceDetector.whisperPeakThreshold : SilenceDetector.peakThreshold)
         if !wasHandsFree, SilenceDetector.isSilent(clip, threshold: effectiveSilenceThreshold) {
+            // Logged as well as shown: with the pill style Hidden the note is
+            // invisible, and the log is then the only evidence of the discard.
+            logger.notice("no speech: clip below the silence floor; discarded")
             phase = .idle
             publish(.idle)
             // An interruption explains the silence better than "nothing heard".

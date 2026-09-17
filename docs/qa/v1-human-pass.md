@@ -37,7 +37,7 @@ USB mic selected, drive five
 silent holds with `open -a /Applications/Skylark.app "skylark://record/start"`,
 wait 3 s, `open -a /Applications/Skylark.app "skylark://record/stop"` (a bare
 `open skylark://` can wake a stale build copy instead); expect nothing pasted, no new History row, and
-`No speech detected` in the log each time. Then run the live cleanup evals
+a `no speech:` line in the log each time (logged since 1.0.1). Then run the live cleanup evals
 (`SKYLARK_LIVE_CLEANUP_EVAL=1` and `SKYLARK_LIVE_QWEN_EVAL=1`, see
 `CleanupCorpusTests` and `QwenCleanupEvalTests`) and report the three new
 corpus cases (`spokenAddress/spelledURL`, `spokenAddress/spelledEmail`,
