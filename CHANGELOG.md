@@ -6,6 +6,14 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.24.6 - 2026-09-16
+
+- Cloud cleanup now treats **"correction"** as a self-correction cue ("send
+  it to legal, correction, to finance" becomes "send it to finance"), along
+  with "I meant", "wait no", "make that" and "never mind", which on-device
+  cleanup already recognized. Used as an ordinary word ("the correction was
+  applied"), it is left alone.
+
 ## 0.24.5 - 2026-09-16
 
 - **A slow cloud speech engine now costs 2 seconds, not 11.** With a cloud
