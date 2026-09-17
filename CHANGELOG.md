@@ -6,6 +6,22 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 1.0.0 - 2026-09-17
+
+**Skylark 1.0**, the first stable release. The code is identical to 0.24.7,
+the build that passed the v1 human pass on a MacBook Air: the full pass on
+2026-09-08 and its recheck on 2026-09-16
+(`docs/qa/2026-09-16-v1-recheck-findings.md`). Silent holds paste nothing,
+spoken web addresses and emails land whole, a cold relaunch with Qwen3 4B
+pastes in about 2 seconds, and quitting with a local model loaded no longer
+crashes.
+
+Known issues, planned for 1.0.x:
+
+- With a cloud speech engine selected, the first dictation after Skylark
+  launches can use the on-device engine instead, without saying so.
+- A dictation that is only a web address or email gets a sentence period.
+
 ## 0.24.7 - 2026-09-16
 
 - Settings → General → Cleanup shows how to correct yourself mid-dictation:

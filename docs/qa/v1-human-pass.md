@@ -1,5 +1,10 @@
 # The 30-minute human pass — the v1.0 gate
 
+> **Closed.** The recheck below passed on 2026-09-16 against 0.24.7
+> (`docs/qa/2026-09-16-v1-recheck-findings.md`) and that code shipped as
+> **1.0.0** on 2026-09-17. Keep this document as the template for the next
+> release's human pass.
+
 Everything an agent can test on Skylark has been tested. This document covers
 only what a human must do, because it needs a finger on a key, a hand on a
 cable, or a real voice.
