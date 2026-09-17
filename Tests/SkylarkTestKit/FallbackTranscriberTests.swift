@@ -62,7 +62,7 @@ private final class NoticeSpy: @unchecked Sendable {
 struct FallbackTranscriberTests {
     private let clip = AudioClip(samples: [0.1, 0.2, 0.3, 0.4], sampleRate: 16_000, duration: 0.25)
 
-    @Test("Primary OK: returns primary text, no fallback, no notice")
+    @Test("Primary OK: returns primary text, no notice")
     func primaryOK() async throws {
         let spy = NoticeSpy()
         let primary = FakeTranscriber(id: .cloud("groq"), behaviour: .text("CLOUD"))
@@ -71,7 +71,7 @@ struct FallbackTranscriberTests {
 
         let result = try await transcriber.transcribe(clip, hint: .none)
         #expect(result == "CLOUD")
-        #expect(await fallback.timesTranscribed() == 0)
+        #expect(transcriber.lastRunID == .cloud("groq"))
         #expect(spy.count == 0)
         // Reports the primary's identity.
         #expect(transcriber.id == .cloud("groq"))
@@ -89,18 +89,98 @@ struct FallbackTranscriberTests {
         #expect(spy.count == 1)
     }
 
-    @Test("Primary times out: falls back before the primary would finish")
+    @Test("Cloud past the deadline: local text is used at the deadline, not after a full timeout")
     func primaryTimesOut() async throws {
         let spy = NoticeSpy()
         let primary = FakeTranscriber(id: .cloud("slow"), behaviour: .delayThenText(.seconds(5), "CLOUD"))
         let fallback = FakeTranscriber(id: .parakeet, behaviour: .text("LOCAL"))
         let transcriber = FallbackTranscriber(
-            primary: primary, fallback: fallback, primaryTimeout: .milliseconds(40)
+            primary: primary, fallback: fallback, cloudDeadline: .milliseconds(40)
+        ) { spy.record($0) }
+
+        let start = ContinuousClock.now
+        let result = try await transcriber.transcribe(clip, hint: .none)
+        #expect(result == "LOCAL")
+        #expect(start.duration(to: .now) < .seconds(1))
+        #expect(spy.count == 1)
+        #expect(transcriber.lastRunID == .parakeet)
+    }
+
+    @Test("Both engines start together, so a cloud win discards the local run")
+    func runsLocalInParallel() async throws {
+        let spy = NoticeSpy()
+        let primary = FakeTranscriber(id: .cloud("mai"), behaviour: .delayThenText(.milliseconds(60), "CLOUD"))
+        let fallback = FakeTranscriber(id: .parakeet, behaviour: .text("LOCAL"))
+        let transcriber = FallbackTranscriber(
+            primary: primary, fallback: fallback, cloudDeadline: .seconds(2)
         ) { spy.record($0) }
 
         let result = try await transcriber.transcribe(clip, hint: .none)
+        #expect(result == "CLOUD")
+        #expect(await fallback.timesTranscribed() == 1)
+        #expect(spy.count == 0)
+        #expect(transcriber.lastRunID == .cloud("mai"))
+    }
+
+    @Test("A cloud win does not wait for a slow local decode")
+    func cloudWinDoesNotWaitForLocal() async throws {
+        let primary = FakeTranscriber(id: .cloud("mai"), behaviour: .text("CLOUD"))
+        let fallback = FakeTranscriber(id: .parakeet, behaviour: .delayThenText(.seconds(5), "LOCAL"))
+        let transcriber = FallbackTranscriber(primary: primary, fallback: fallback)
+
+        let start = ContinuousClock.now
+        let result = try await transcriber.transcribe(clip, hint: .none)
+        #expect(result == "CLOUD")
+        #expect(start.duration(to: .now) < .seconds(1))
+    }
+
+    @Test("Past the deadline, the local text is used as soon as it finishes")
+    func slowLocalAfterDeadline() async throws {
+        let primary = FakeTranscriber(id: .cloud("slow"), behaviour: .delayThenText(.seconds(5), "CLOUD"))
+        let fallback = FakeTranscriber(id: .parakeet, behaviour: .delayThenText(.milliseconds(120), "LOCAL"))
+        let transcriber = FallbackTranscriber(
+            primary: primary, fallback: fallback, cloudDeadline: .milliseconds(30)
+        )
+
+        let start = ContinuousClock.now
+        let result = try await transcriber.transcribe(clip, hint: .none)
         #expect(result == "LOCAL")
-        #expect(spy.count == 1)
+        #expect(start.duration(to: .now) < .seconds(1))
+    }
+
+    @Test("Local engine fails: the cloud keeps its chance past the deadline")
+    func localFailsCloudLate() async throws {
+        let primary = FakeTranscriber(id: .cloud("slow"), behaviour: .delayThenText(.milliseconds(150), "CLOUD"))
+        let fallback = FakeTranscriber(id: .parakeet, behaviour: .fail)
+        let transcriber = FallbackTranscriber(
+            primary: primary, fallback: fallback, cloudDeadline: .milliseconds(20), primaryTimeout: .seconds(2)
+        )
+
+        let result = try await transcriber.transcribe(clip, hint: .none)
+        #expect(result == "CLOUD")
+    }
+
+    @Test("Both engines fail: the error surfaces instead of an empty paste")
+    func bothFail() async {
+        let fallback = FakeTranscriber(id: .parakeet, behaviour: .fail)
+        let transcriber = FallbackTranscriber(primary: FailingTranscriber(), fallback: fallback)
+        await #expect(throws: (any Error).self) {
+            _ = try await transcriber.transcribe(clip, hint: .none)
+        }
+    }
+
+    @Test("Local fails and the cloud hangs: gives up at the hard cap")
+    func hardCap() async {
+        let primary = FakeTranscriber(id: .cloud("hung"), behaviour: .delayThenText(.seconds(30), "CLOUD"))
+        let fallback = FakeTranscriber(id: .parakeet, behaviour: .fail)
+        let transcriber = FallbackTranscriber(
+            primary: primary, fallback: fallback, cloudDeadline: .milliseconds(20), primaryTimeout: .milliseconds(80)
+        )
+        let start = ContinuousClock.now
+        await #expect(throws: (any Error).self) {
+            _ = try await transcriber.transcribe(clip, hint: .none)
+        }
+        #expect(start.duration(to: .now) < .seconds(1))
     }
 
     @Test("warmUp warms both engines (local stays resident)")
@@ -112,5 +192,50 @@ struct FallbackTranscriberTests {
         try await transcriber.warmUp()
         #expect(await primary.wasWarmed())
         #expect(await fallback.wasWarmed())
+    }
+}
+
+/// Records overlapping `transcribe` calls, standing in for Parakeet's
+/// not-reentrant decoder.
+private actor OverlapTranscriber: Transcriber {
+    nonisolated let id: TranscriberID = .parakeet
+    private var active = 0
+    private(set) var maxActive = 0
+    func warmUp() async throws {}
+    func transcribe(_ clip: AudioClip, hint: TranscriptionHint) async throws -> String {
+        active += 1
+        maxActive = max(maxActive, active)
+        // Not cancellable, like a real CoreML decode.
+        let start = ContinuousClock.now
+        while start.duration(to: .now) < .milliseconds(150) { await Task.yield() }
+        active -= 1
+        return "LOCAL"
+    }
+    func peak() -> Int { maxActive }
+}
+
+@Suite("FallbackTranscriber local serialization")
+struct FallbackTranscriberSerializationTests {
+    @Test("Back-to-back dictations never run the local engine twice at once")
+    func localRunsNeverOverlap() async throws {
+        let clip = AudioClip(samples: [0.1, 0.2, 0.3, 0.4], sampleRate: 16_000, duration: 0.25)
+        let local = OverlapTranscriber()
+        let transcriber = FallbackTranscriber(
+            primary: FakeCloud(), fallback: local, cloudDeadline: .seconds(2)
+        )
+        // The cloud wins instantly both times, abandoning a local decode that keeps running.
+        #expect(try await transcriber.transcribe(clip, hint: .none) == "CLOUD")
+        #expect(try await transcriber.transcribe(clip, hint: .none) == "CLOUD")
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(await local.peak() == 1)
+    }
+}
+
+private struct FakeCloud: Transcriber {
+    let id: TranscriberID = .cloud("fast")
+    func warmUp() async throws {}
+    func transcribe(_ clip: AudioClip, hint: TranscriptionHint) async throws -> String {
+        try await Task.sleep(for: .milliseconds(5))
+        return "CLOUD"
     }
 }

@@ -6,6 +6,15 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 0.24.5 - 2026-09-16
+
+- **A slow cloud speech engine now costs 2 seconds, not 11.** With a cloud
+  speech model selected, your local engine (Parakeet) transcribes the same
+  clip at the same time. If the cloud hasn't answered within 2 seconds, the
+  local text is used right away. Previously Skylark waited 10 seconds before
+  even starting the local engine. The cloud result is still used whenever it
+  arrives in time.
+
 ## 0.24.4 - 2026-09-16
 
 - **Dictating mid-sentence no longer capitalizes the first word** when
