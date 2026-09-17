@@ -431,6 +431,12 @@ public actor DictationOrchestrator {
     /// recording; no effect without a wired `fieldContextReader`.
     public func setContextAwareCleanupEnabled(_ enabled: Bool) {
         contextAwareCleanupEnabled = enabled
+        if enabled, !continuationCasingWarmed {
+            // Load the name tagger when the setting turns on (app launch), long
+            // before any paste can need it: its first use costs ~80 ms.
+            continuationCasingWarmed = true
+            Task.detached(priority: .utility) { ContinuationCasing.warmUp() }
+        }
     }
 
 
@@ -566,11 +572,6 @@ public actor DictationOrchestrator {
         fieldContextTask?.cancel()
         fieldContextTask = nil
         if contextAwareCleanupEnabled, let fieldContextReader {
-            if !continuationCasingWarmed {
-                // Load the name tagger while the user speaks, never on the paste path.
-                continuationCasingWarmed = true
-                Task.detached(priority: .utility) { ContinuationCasing.warmUp() }
-            }
             let session = fieldContextSession
             fieldContextTask = Task { [weak self] in
                 let context = await fieldContextReader.readFieldContext(

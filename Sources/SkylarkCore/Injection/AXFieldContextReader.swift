@@ -1,3 +1,4 @@
+import AppKit
 import ApplicationServices
 import Foundation
 import os
@@ -48,7 +49,7 @@ public final class AXFieldContextReader: FieldContextReading, @unchecked Sendabl
         let read = { @MainActor in Self.read(bundleID: bundleID, precedingLimit: precedingLimit, followingLimit: followingLimit) }
         var result = await read()
         var enabledTree = false
-        if case .unreadable = result, await MainActor.run(body: { Self.enableManualAccessibility() }) {
+        if case .unreadable = result, await MainActor.run(body: { Self.enableManualAccessibility(bundleID: bundleID) }) {
             enabledTree = true
             for delay in Self.retryDelays {
                 try? await Task.sleep(for: delay)
@@ -72,10 +73,26 @@ public final class AXFieldContextReader: FieldContextReading, @unchecked Sendabl
 
     /// Ask the frontmost app to build its Accessibility tree (Electron's
     /// `AXManualAccessibility`). True only when the app accepted the attribute.
+    /// Only for the app the dictation started in, and never an excluded one:
+    /// the user may have switched apps (say, to a password manager) mid-utterance.
     @MainActor
-    private static func enableManualAccessibility() -> Bool {
-        guard let app = AXTextReader.focusedApplication() else { return false }
+    private static func enableManualAccessibility(bundleID: String?) -> Bool {
+        guard let app = AXTextReader.focusedApplication(), isDictationTarget(app, bundleID: bundleID) else { return false }
         return AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue) == .success
+    }
+
+    /// True when the app that owns focus RIGHT NOW is the one captured at
+    /// dictation start and is not privacy-excluded. The captured id alone is not
+    /// enough: it is stale by the time a read or retry runs, and nil passes the
+    /// exclusion check.
+    @MainActor
+    private static func isDictationTarget(_ app: AXUIElement, bundleID: String?) -> Bool {
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(app, &pid) == .success,
+              let liveID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier,
+              !CorrectionTarget.isExcludedApp(liveID)
+        else { return false }
+        return bundleID == nil || bundleID == liveID
     }
 
     @MainActor
@@ -83,6 +100,8 @@ public final class AXFieldContextReader: FieldContextReading, @unchecked Sendabl
         // Same privacy guards as the correction watcher: never read secure fields
         // or password-manager apps.
         guard !CorrectionTarget.isExcludedApp(bundleID) else { return .blocked }
+        guard let app = AXTextReader.focusedApplication() else { return .unreadable }
+        guard isDictationTarget(app, bundleID: bundleID) else { return .blocked }
         guard let element = AXTextReader.focusedElement() else { return .unreadable }
         guard !AXTextReader.isSecure(element) else { return .blocked }
         guard let caret = AXTextReader.selectedRange(element),
