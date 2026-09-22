@@ -19,6 +19,22 @@ struct FieldContextPlumbingTests {
         #expect(!FieldContext(preceding: "", following: "y").isEmpty)
     }
 
+    @Test("Control characters become spaces; tab and line breaks survive")
+    func sanitizesControlCharacters() {
+        // iTerm2's AX text: NUL for never-written cells and wide-char halves.
+        let ctx = FieldContext(preceding: "⏺\u{0}Done.\u{0}\u{0}next\u{1B}[0m\n\t> ", following: "\u{7F}│\r\n")
+        #expect(ctx.preceding == "⏺ Done.  next [0m\n\t> ")
+        #expect(ctx.following == " │\r\n")
+        #expect(FieldContext(preceding: "\u{0}", following: "").preceding == " ")
+    }
+
+    @Test("A NUL in the field context never reaches the prompt")
+    func promptHasNoNUL() {
+        let ctx = CleanupContext(fieldContext: FieldContext(preceding: "a\u{0}b", following: "c\u{0}"))
+        #expect(!CleanupPrompt.compactInstructions(context: ctx).unicodeScalars.contains("\u{0}"))
+        #expect(!CleanupPrompt.instructions(context: ctx).unicodeScalars.contains("\u{0}"))
+    }
+
     @Test("withFieldContext attaches, and clears on nil/empty")
     func withFieldContext() {
         let base = CleanupContext(targetAppBundleID: "com.app", registerHint: "email", dictionaryTerms: ["Skylark"])

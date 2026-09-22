@@ -138,6 +138,18 @@ struct LlamaLiveSmokeTests {
         print("\n===== LIVE LocalCleaner+Qwen: \(Int(seconds * 1000))ms (prewarmed) =====\nout: \(cleaned)\n")
     }
 
+    @Test("LIVE: an embedded NUL does not truncate the prompt",
+          .enabled(if: Self.enabled))
+    func liveEmbeddedNUL() async throws {
+        try await withRunner { runner in
+            // `strlen` used to end the prompt at the NUL, dropping the transcript.
+            let tail = String(repeating: " and the transcript after it", count: 20)
+            let clean = try await runner.generate(prompt: "context" + " " + tail, maxTokens: 1)
+            let withNUL = try await runner.generate(prompt: "context" + "\u{0}" + tail, maxTokens: 1)
+            #expect(withNUL.promptTokens >= clean.promptTokens)
+        }
+    }
+
     @Test("LIVE: cancellation stops generation promptly",
           .enabled(if: Self.enabled))
     func liveCancellation() async throws {

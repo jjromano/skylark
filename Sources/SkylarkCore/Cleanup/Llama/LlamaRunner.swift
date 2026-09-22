@@ -390,10 +390,11 @@ public actor LlamaRunner {
             tokenScratch = [llama_token](repeating: 0, count: utf8Count + 8)
         }
         var written: Int32 = 0
+        // The byte count, never `strlen`: an embedded NUL would end the prompt
+        // there and silently drop everything after it, transcript included.
         text.withCString { cString in
-            let length = Int32(strlen(cString))
             written = tokenScratch.withUnsafeMutableBufferPointer { buffer in
-                llama_tokenize(vocab, cString, length, buffer.baseAddress, Int32(buffer.count), addSpecial, true)
+                llama_tokenize(vocab, cString, Int32(utf8Count), buffer.baseAddress, Int32(buffer.count), addSpecial, true)
             }
         }
         guard written > 0 else { throw Failure.tokenizationFailed }

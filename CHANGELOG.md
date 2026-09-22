@@ -6,6 +6,21 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 1.0.2 - 2026-09-21
+
+- **Local cleanup works in iTerm2 again.** With context-aware cleanup on,
+  iTerm2 hands Skylark its screen text with invisible NUL characters in it
+  (blank cells and the second half of wide symbols). A NUL cut the local
+  model's instructions short, so it never saw what you said, and every
+  dictation into iTerm2 pasted raw text after a 3 second wait. Those
+  characters are now removed before cleanup, and the local model reads its
+  whole prompt even if one slips through.
+- **You can delete the downloaded cleanup model you are using.** Delete used
+  to be grayed out for it. Deleting it now switches local cleanup back to
+  Apple Intelligence.
+- Exported diagnostics now include the last 24 hours of log lines (was 2),
+  and say why Apple Intelligence failed when it was the fallback.
+
 ## 1.0.1 - 2026-09-17
 
 - **Your cloud speech engine is used from the first dictation after launch.**

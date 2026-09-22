@@ -997,8 +997,7 @@ private struct QwenCleanupModelRow: View {
             ProgressView().controlSize(.small)
         case .ready:
             Button("Delete") { controller.deleteCleanupModel(model) }
-                .disabled(controller.isCleanupModelInUse(model))
-                .help(controller.isCleanupModelInUse(model) ? "In use. Pick a different Cleanup model in General first." : "")
+                .help(controller.isCleanupModelInUse(model) ? "In use. Deleting switches local cleanup back to Apple Intelligence." : "")
         }
     }
 }

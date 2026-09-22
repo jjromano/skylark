@@ -2418,8 +2418,9 @@ final class AppController {
         }
     }
 
-    /// Whether `model` backs the currently active local cleanup engine (delete
-    /// is blocked for it, matching `isModelInUse` for the STT models).
+    /// Whether `model` backs the currently active local cleanup engine. Delete
+    /// stays allowed for it: deleting switches local cleanup back to Apple
+    /// Intelligence first (see `deleteCleanupModel`).
     func isCleanupModelInUse(_ model: LocalCleanupModel) -> Bool {
         localCleanupEngine.model?.id == model.id
     }
@@ -2443,19 +2444,23 @@ final class AppController {
         cleanupModelStates[model.id] = .notDownloaded
     }
 
-    /// Delete a downloaded Qwen GGUF (confirmed). Blocked for the in-use engine.
+    /// Delete a downloaded Qwen GGUF (confirmed). Deleting the model in use
+    /// first switches local cleanup back to the default, Apple Intelligence,
+    /// so the next dictation never reaches for a file that is gone.
     func deleteCleanupModel(_ model: LocalCleanupModel) {
-        guard !isCleanupModelInUse(model) else {
-            showNote("Can't delete the cleanup model in use")
-            return
-        }
+        let inUse = isCleanupModelInUse(model)
         let alert = NSAlert()
         alert.messageText = "Delete \(model.displayName)?"
-        alert.informativeText = "The model file will be removed from disk. It re-downloads the next time you select it."
+        alert.informativeText = inUse
+            ? "The model file will be removed from disk and local cleanup switches back to Apple Intelligence. It re-downloads the next time you select it."
+            : "The model file will be removed from disk. It re-downloads the next time you select it."
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        // The swap unloads the retiring Qwen backend off the main actor; an
+        // unlinked GGUF stays readable to a mapping still open until then.
+        if inUse { setLocalCleanupEngine(.appleFoundationModels) }
         try? ModelPaths.removeFromDisk(at: model.fileURL)
         refreshCleanupModelStates()
     }

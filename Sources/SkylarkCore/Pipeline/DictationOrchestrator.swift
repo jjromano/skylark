@@ -2077,9 +2077,17 @@ public actor DictationOrchestrator {
         let budget = cap ?? localFallbackTimeout
         if timedOutTier == .local {
             guard let fallback = cleaners.localFallbackCleaner() else { return nil }
-            guard let outcome = await cleanWithTimeout(
-                fallback, text, context: context, cap: budget
-            ) else { return nil }
+            let attempt = await cleanAttempt(fallback, text, context: context, cap: budget)
+            guard let outcome = attempt.outcome else {
+                // Without this line only the primary's reason reached the log,
+                // so an export could not say why Apple Intelligence failed too.
+                if case .failed(let reason) = attempt {
+                    logger.notice("cleanup fallback: Apple Intelligence failed (\(reason, privacy: .public))")
+                } else {
+                    logger.notice("cleanup fallback: Apple Intelligence timed out")
+                }
+                return nil
+            }
             if primaryWasCold {
                 logger.notice("cleanup degraded: selected local model still loading→Apple Intelligence")
                 noteContinuation.yield(Self.localModelLoadingNote)

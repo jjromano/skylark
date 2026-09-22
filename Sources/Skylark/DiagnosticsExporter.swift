@@ -32,7 +32,9 @@ enum DiagnosticsExporter {
         settings: DiagnosticsReport.Settings,
         historyStore: HistoryStore?,
         historyLimit: Int = 40,
-        logWindow: TimeInterval = 2 * 60 * 60
+        // A day, not two hours: users export after noticing a pattern, and
+        // the 1.0.1 report's failing dictations sat just outside a 2 h window.
+        logWindow: TimeInterval = 24 * 60 * 60
     ) async -> String {
         let dictations = (try? await historyStore?.recent(limit: historyLimit)) ?? []
         let (logs, logNote) = fetchLogs(window: logWindow)

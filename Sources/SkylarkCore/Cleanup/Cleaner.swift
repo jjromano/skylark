@@ -33,8 +33,31 @@ public struct FieldContext: Sendable, Equatable {
     public static let followingLimit = 400
 
     public init(preceding: String, following: String) {
-        self.preceding = preceding
-        self.following = following
+        self.preceding = Self.sanitized(preceding)
+        self.following = Self.sanitized(following)
+    }
+
+    /// Replace control characters (other than tab and line breaks) with a
+    /// space. iTerm2's Accessibility text fills never-written cells and the
+    /// right half of every wide character with NUL, and a NUL anywhere in the
+    /// prompt cut it short at the llama.cpp boundary: the model never saw the
+    /// transcript, echoed a few-shot example, and every cleanup in iTerm2 was
+    /// rejected (v1.0.2). A space keeps the words on either side apart.
+    static func sanitized(_ text: String) -> String {
+        guard text.unicodeScalars.contains(where: isStrayControl) else { return text }
+        var scalars = String.UnicodeScalarView()
+        for scalar in text.unicodeScalars {
+            scalars.append(isStrayControl(scalar) ? " " : scalar)
+        }
+        return String(scalars)
+    }
+
+    private static func isStrayControl(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x09, 0x0A, 0x0D: return false
+        case 0x00...0x1F, 0x7F: return true
+        default: return false
+        }
     }
 
     /// No usable context on either side (empty field / caret with nothing
