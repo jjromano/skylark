@@ -6,6 +6,10 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 1.0.3 - 2026-09-26
+
+- The selected local cleanup model starts loading as soon as Skylark launches and stays in memory until you switch models or quit. Dictations after an idle period no longer fall back to Apple Intelligence while the model reloads. A dictation in the first moments of launch may still use Apple Intelligence while the initial load finishes.
+
 ## 1.0.2 - 2026-09-21
 
 - **Local cleanup works in iTerm2 again.** With context-aware cleanup on,

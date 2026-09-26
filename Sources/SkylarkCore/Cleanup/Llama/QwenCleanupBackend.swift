@@ -16,7 +16,7 @@ import os
 public actor QwenCleanupBackend: LocalCleanupBackend {
     private let model: LocalCleanupModel
     private let runner: LlamaRunner
-    private let idleTimer: IdleTimer
+    private let idleTimer: IdleTimer?
     /// Mirrors of the runner's state, kept HERE so `isReadyNow` can answer
     /// while a load is running: the runner is an actor busy for the whole
     /// load, so asking it would wait the load out.
@@ -32,26 +32,25 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
     private var lastInstructions: String?
     private static let logger = Logger(subsystem: "com.jjromano.skylark", category: "cleanup.llama")
 
-    /// Unload the model after this long with no cleanup activity. Weights are
-    /// ~1–2.5 GB resident, too much to hold indefinitely for an occasionally-used
-    /// tier on a 16 GB machine; the next cleanup transparently reloads. Mirrors
-    /// `FluidAudioDeepVocabularyRescorer`'s idle-unload window.
+    /// An explicit idle timeout is useful for callers that choose to trade
+    /// readiness for memory. The selected cleanup model stays resident by
+    /// default until the user switches engines or quits.
     public static let idleUnloadTimeout: Duration = .seconds(300)
 
-    public init(model: LocalCleanupModel, idleTimeout: Duration = QwenCleanupBackend.idleUnloadTimeout) {
+    public init(model: LocalCleanupModel, idleTimeout: Duration? = nil) {
         self.model = model
         self.runner = LlamaRunner(
             configuration: .init(modelURL: model.fileURL, contextTokens: model.contextTokens)
         )
-        self.idleTimer = IdleTimer(timeout: idleTimeout)
+        self.idleTimer = idleTimeout.map { IdleTimer(timeout: $0) }
     }
 
     /// Seam for a non-default engine configuration (smaller context, prefix reuse
     /// off, a hand-placed GGUF — see `LocalCleanupModel.custom`).
-    public init(model: LocalCleanupModel, runner: LlamaRunner, idleTimeout: Duration = QwenCleanupBackend.idleUnloadTimeout) {
+    public init(model: LocalCleanupModel, runner: LlamaRunner, idleTimeout: Duration? = nil) {
         self.model = model
         self.runner = runner
-        self.idleTimer = IdleTimer(timeout: idleTimeout)
+        self.idleTimer = idleTimeout.map { IdleTimer(timeout: $0) }
     }
 
     public var displayName: String { model.displayName }
@@ -88,8 +87,7 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
             capped=\(result.hitTokenLimit, privacy: .public)
             """)
         if unloadEpoch == epoch { resident = true }
-        // Keep the model warm for a follow-up dictation, then unload on idle.
-        await idleTimer.touch { [weak self] in await self?.unload() }
+        if let idleTimer { await idleTimer.touch { [weak self] in await self?.unload() } }
         return Self.postprocess(result.text)
     }
 
@@ -123,17 +121,17 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
                 try await runner.warm(prompt: LlamaChatML.systemPrefix(instructions: instructions))
             }
             if unloadEpoch == epoch { resident = true }
-            await idleTimer.touch { [weak self] in await self?.unload() }
+            if let idleTimer { await idleTimer.touch { [weak self] in await self?.unload() } }
         } catch {
             Self.logger.error("qwen preload failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
     /// Free the model (~1–3 GB resident). Safe to call at any time; the next
-    /// `generate` transparently reloads. Call it from the idle-unload timer AND
-    /// on app termination — see the warning on `LlamaRunner.unload()`.
+    /// `generate` transparently reloads. Called on engine switch, quit, or by
+    /// an explicitly configured idle timer. See `LlamaRunner.unload()`.
     public func unload() async {
-        await idleTimer.cancel()
+        if let idleTimer { await idleTimer.cancel() }
         unloadEpoch += 1
         resident = false
         await runner.unload()

@@ -1106,6 +1106,10 @@ final class AppController {
         started = true
 
         permissions.refresh()
+        // The persisted cleanup choice was resolved in init. Start its load
+        // before database seeding and speech-engine preparation so a selected
+        // Qwen model has the longest possible head start on first dictation.
+        warmSelectedCleanupAtLaunch()
 
         // Restore persisted HUD appearance before the panel first shows.
         hud.style = UserDefaults.standard.string(forKey: Self.hudStyleKey)
@@ -1370,6 +1374,15 @@ final class AppController {
         }
     }
 
+    private func warmSelectedCleanupAtLaunch() {
+        guard let qwen = localCleanupBackend as? QwenCleanupBackend else { return }
+        let instructions = CleanupPrompt.compactInstructions(context: CleanupContext(intensity: cleanupIntensity))
+        Task { [weak self] in
+            await qwen.preload(instructions: instructions)
+            self?.refreshCleanupModelStates()
+        }
+    }
+
     /// Seed the DB (idempotent), load registry lists, apply persisted selections.
     private func bootstrapSelection() async {
         if let registryStore {
@@ -1389,20 +1402,6 @@ final class AppController {
         Task { [orchestrator, cleanupIntensity] in await orchestrator.setCleanupIntensity(cleanupIntensity) }
         Task { [orchestrator, cleanupTimeoutSeconds] in await orchestrator.setCleanupTimeout(Self.cleanupTimeoutDuration(cleanupTimeoutSeconds)) }
         Task { [orchestrator, vadClipTrimEnabled] in await orchestrator.setVadTrimEnabled(vadClipTrimEnabled) }
-        // Warm a previously-selected Qwen engine off the paste path (Apple
-        // Foundation Models needs no such warm-up — its backend has no preload).
-        // Not awaited: the load takes seconds, and the speech-engine rebuild
-        // below must not wait behind it. It did, so with a cloud speech engine
-        // selected the first dictation after launch silently used Parakeet
-        // (2026-09-16 recheck). A dictation during the load gets Apple
-        // Intelligence via `isReadyNow`.
-        if let qwen = localCleanupBackend as? QwenCleanupBackend {
-            let instructions = CleanupPrompt.compactInstructions(context: CleanupContext(intensity: cleanupIntensity))
-            Task { [weak self] in
-                await qwen.preload(instructions: instructions)
-                self?.refreshCleanupModelStates()
-            }
-        }
         refreshCleanupModelStates()
         rebuildTranscriber()
     }
