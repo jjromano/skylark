@@ -58,6 +58,23 @@ struct QuitUnloadTests {
         #expect(outcome == .timedOut || outcome == .nothingToUnload)
     }
 
+    @Test("LIVE: a retired cleanup backend cannot reload",
+          .enabled(if: QuitUnloadTests.gguf != nil))
+    func retiredBackendStaysUnloaded() async {
+        let model = LocalCleanupModel.custom(fileURL: Self.gguf!, suppressesThinking: true)
+        let backend = QwenCleanupBackend(model: model)
+        await backend.preload()
+        #expect(await backend.isModelLoaded())
+
+        await backend.retire()
+        #expect(!(await backend.isReadyNow()))
+        await backend.preload()
+        await #expect(throws: LlamaRunner.Failure.notLoaded) {
+            _ = try await backend.generate(instructions: "Clean punctuation.", userMessage: "hello", maximumResponseTokens: 8)
+        }
+        #expect(!(await backend.isModelLoaded()))
+    }
+
     @MainActor
     @Test("LIVE quit rig", .enabled(if: QuitUnloadTests.rig != nil && QuitUnloadTests.gguf != nil))
     func quitRig() async throws {

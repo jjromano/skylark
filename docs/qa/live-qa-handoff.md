@@ -322,7 +322,7 @@ its files, and relaunch after.
 |---|---|---|
 | Fresh install, no models | `killall Skylark; rm -rf ~/Library/Application\ Support/Skylark/Models; open -a Skylark` then immediately record and speak | Does it say the model is not ready, or silently eat the sentence? |
 | Mid-download | Same, but record repeatedly while the 483 MB Parakeet download runs | Progress accuracy; whether dictation queues, drops, or errors; whether the download survives |
-| Cold local LLM | Select Qwen3 4B cleanup, idle 6+ minutes (weights unload at 5), then dictate | Cleanup must reload 2.3 GB. Time from raw paste to cleaned swap. Type during it. |
+| Cold local LLM | Select Qwen3 4B cleanup, quit and relaunch Skylark, then dictate immediately | Cleanup may use Apple Intelligence while Qwen loads. Check when Qwen becomes ready and whether text still lands promptly. |
 | Qwen download interrupted | With Qwen installed and working, re-download and kill Wi-Fi mid-way | Whether the previously working model survives or you are left with none |
 | Empty history | Clear History, open the window | Does the empty state read like a product or a bug? |
 | Large history | 30+ dictations, then search | Correctness and responsiveness |
@@ -352,7 +352,7 @@ at `docs/reviews/2026-07-30-cross-model-audit.md` if you want the reasoning; you
 do not need it.
 
 1. **The big one: text and Return in the wrong app.** Open a scratch TextEdit
-   document. Set cleanup to Qwen3 4B and idle 6+ minutes so it unloads. Dictate a
+   document. Set cleanup to Qwen3 4B, quit and relaunch Skylark, then dictate immediately. Dictate a
    short sentence ending with the words "press enter", stop recording, then
    **immediately activate a different app** (`osascript -e 'tell application
    "TextEdit" to activate'` works, or use a second scratch window). *Decide by:*
@@ -455,7 +455,7 @@ with quiet audio and then with loud audio.
 **Recovery.** Quit and relaunch mid-download, mid-dictation, mid-cleanup. Run 50
 dictations back to back and watch `ps -o rss=`; memory must not climb. Switch
 speech and cleanup engines repeatedly; only the active ones should stay resident
-and Qwen should unload after 5 idle minutes.
+and the selected Qwen should stay resident after 5 idle minutes, then unload when switched away or on quit.
 
 **Target coverage.** Dictate into TextEdit, Safari's address bar, a web form, VS
 Code, Terminal, Notes, a Finder rename field, and Spotlight. Note anywhere

@@ -6,6 +6,10 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 1.0.4 - 2026-09-26
+
+- Switching away from a downloaded cleanup model now frees its memory before loading another one, and an in-flight dictation cannot reload the retired model. A queued preload also cannot restart during quit. Settings now describes how long the selected model stays in memory.
+
 ## 1.0.3 - 2026-09-26
 
 - The selected local cleanup model starts loading as soon as Skylark launches and stays in memory until you switch models or quit. Dictations after an idle period no longer fall back to Apple Intelligence while the model reloads. A dictation in the first moments of launch may still use Apple Intelligence while the initial load finishes.

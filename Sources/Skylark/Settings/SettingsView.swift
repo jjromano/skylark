@@ -777,7 +777,7 @@ private struct ModelsPane: View {
             } header: {
                 Text("Cleanup · on device")
             } footer: {
-                Text("Qwen models run fully offline through llama.cpp, downloaded once to Application Support/Skylark. Whichever is selected loads on first use and frees its memory again after 5 minutes idle.")
+                Text("Qwen models run fully offline. The selected model loads when Skylark opens and stays in memory until you switch models or quit. A dictation in the first moments after launch may use Apple Intelligence while it loads.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

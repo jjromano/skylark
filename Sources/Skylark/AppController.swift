@@ -401,10 +401,9 @@ final class AppController {
         swapLocalCleanupBackend(to: resolved)
     }
 
-    /// Build the backend for `engine`, wire it into the orchestrator, warm it,
-    /// and free whichever backend it replaced. Called on every engine switch and
-    /// once at launch (see `bootstrapSelection`) to warm a previously-selected
-    /// Qwen engine.
+    /// Build the backend for `engine`, wire it into the orchestrator, retire
+    /// the old backend, then warm the new one. Launch warmup happens in
+    /// `warmSelectedCleanupAtLaunch()`.
     private func swapLocalCleanupBackend(to engine: LocalCleanupEngine) {
         let previous = localCleanupBackend
         let next = engine.makeBackend()
@@ -417,13 +416,13 @@ final class AppController {
         let retiring = previous as? QwenCleanupBackend
         if let retiring { retiringQwenBackends.append(retiring) }
         Task { [weak self] in
+            if let retiring {
+                await retiring.retire()
+                self?.retiringQwenBackends.removeAll { $0 === retiring }
+            }
             if let qwen = next as? QwenCleanupBackend {
                 let instructions = CleanupPrompt.compactInstructions(context: CleanupContext(intensity: intensity))
                 await qwen.preload(instructions: instructions)
-            }
-            if let retiring {
-                await retiring.unload()
-                self?.retiringQwenBackends.removeAll { $0 === retiring }
             }
             self?.refreshCleanupModelStates()
         }

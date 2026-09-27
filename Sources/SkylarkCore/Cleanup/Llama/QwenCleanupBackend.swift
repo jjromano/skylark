@@ -22,6 +22,9 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
     /// load, so asking it would wait the load out.
     private var resident = false
     private var loading = false
+    /// A backend replaced by an engine switch must never reload itself from
+    /// an in-flight dictation that still holds its cleaner.
+    private var retired = false
     /// Bumped by every `unload`. A load or generate that was already in
     /// flight when an unload started must not mark the model resident when it
     /// finishes: the runner runs the queued unload right after it, and a stale
@@ -69,6 +72,7 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
     }
 
     public func generate(instructions: String, userMessage: String, maximumResponseTokens: Int) async throws -> String {
+        guard !retired else { throw LlamaRunner.Failure.notLoaded }
         let prompt = Self.prompt(instructions: instructions, userMessage: userMessage, model: model)
         lastInstructions = instructions
         let epoch = unloadEpoch
@@ -100,6 +104,7 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
     /// `llama_model_load_from_file` costs hundreds of milliseconds. Loading is
     /// `preload()`'s job, off the critical path.
     public func prewarm(instructions: String) async {
+        guard !retired else { return }
         guard await runner.isLoaded else { return }
         try? await runner.warm(prompt: LlamaChatML.systemPrefix(instructions: instructions))
     }
@@ -111,16 +116,19 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
     /// never from the dictation path. Best-effort: failures leave the backend
     /// cold and the next `generate` retries.
     public func preload(instructions: String? = nil) async {
+        guard !retired else { return }
         loading = true
         defer { loading = false }
         if let instructions { lastInstructions = instructions }
         let epoch = unloadEpoch
         do {
             try await runner.load()
+            guard !retired, unloadEpoch == epoch else { return }
             if let instructions {
                 try await runner.warm(prompt: LlamaChatML.systemPrefix(instructions: instructions))
             }
-            if unloadEpoch == epoch { resident = true }
+            guard !retired, unloadEpoch == epoch else { return }
+            resident = true
             if let idleTimer { await idleTimer.touch { [weak self] in await self?.unload() } }
         } catch {
             Self.logger.error("qwen preload failed: \(error.localizedDescription, privacy: .public)")
@@ -137,12 +145,20 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
         await runner.unload()
     }
 
+    /// Permanently retire a replaced backend. Ordinary `unload()` still allows
+    /// an explicitly configured idle timer to reload a selected backend.
+    public func retire() async {
+        retired = true
+        await unload()
+    }
+
     /// Ready once a load (and its prefix warm) has finished. Cold and idle, it
     /// starts that load in the background and says not ready, so the paste
     /// path uses Apple Intelligence now and this model next time, instead of
     /// spending the user's whole cleanup timeout on a 2.5 GB load (the first
     /// cleanup after a relaunch timed out in the 2026-09-08 human pass).
     public func isReadyNow() async -> Bool {
+        guard !retired else { return false }
         if resident, !loading { return true }
         if !loading, model.isInstalled {
             loading = true

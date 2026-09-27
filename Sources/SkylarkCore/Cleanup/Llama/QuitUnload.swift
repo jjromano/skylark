@@ -41,7 +41,9 @@ public enum QuitUnload {
             var anyLoaded = false
             for backend in backends {
                 if await backend.isModelLoaded() { anyLoaded = true }
-                await backend.unload()
+                // A launch preload may still be queued. Retire first so it
+                // cannot load weights after this unload and race process exit.
+                await backend.retire()
             }
             let outcome: Outcome = anyLoaded ? .unloaded : .nothingToUnload
             result.withLock { $0 = outcome }
