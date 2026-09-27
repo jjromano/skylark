@@ -55,7 +55,7 @@ public enum LocalCleanupEngine: Sendable, Equatable, Hashable {
     }
 
     /// Build the backend for this (already resolved) choice.
-    public func makeBackend() -> any LocalCleanupBackend {
+    public func makeBackend(idleTimeout: Duration? = nil) -> any LocalCleanupBackend {
         switch resolved {
         case .appleFoundationModels:
             return LocalCleaner.makeDefaultBackend()
@@ -63,7 +63,7 @@ public enum LocalCleanupEngine: Sendable, Equatable, Hashable {
             guard let model = LocalCleanupModel.model(id: modelID) else {
                 return LocalCleaner.makeDefaultBackend()
             }
-            return QwenCleanupBackend(model: model)
+            return QwenCleanupBackend(model: model, idleTimeout: idleTimeout)
         }
     }
 }

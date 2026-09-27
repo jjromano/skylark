@@ -75,6 +75,23 @@ struct QuitUnloadTests {
         #expect(!(await backend.isModelLoaded()))
     }
 
+    @Test("LIVE: idle cleanup model unloads and a warm request reloads it",
+          .enabled(if: QuitUnloadTests.gguf != nil))
+    func idleCleanupModelCanWarmAgain() async {
+        let model = LocalCleanupModel.custom(fileURL: Self.gguf!, suppressesThinking: true)
+        let backend = QwenCleanupBackend(model: model, idleTimeout: .milliseconds(100))
+        await backend.preload()
+        #expect(await backend.isModelLoaded())
+        for _ in 0..<100 {
+            if !(await backend.isModelLoaded()) { break }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!(await backend.isModelLoaded()))
+        await backend.preload()
+        #expect(await backend.isReadyNow())
+        await backend.retire()
+    }
+
     @MainActor
     @Test("LIVE quit rig", .enabled(if: QuitUnloadTests.rig != nil && QuitUnloadTests.gguf != nil))
     func quitRig() async throws {

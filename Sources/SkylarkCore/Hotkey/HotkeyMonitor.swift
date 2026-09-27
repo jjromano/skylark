@@ -94,6 +94,10 @@ public final class HotkeyMonitor: @unchecked Sendable {
     /// business seeing it — the app layer advances the cleanup selection.
     public nonisolated let cleanupCycles: AsyncStream<Void>
 
+    private let fnTapContinuation: AsyncStream<Void>.Continuation
+    /// A discarded single Fn tap can warm the selected cleanup model.
+    public nonisolated let fnTaps: AsyncStream<Void>
+
     private let noteContinuation: AsyncStream<String>.Continuation
     /// User-visible notes about the hotkey itself (the tap dying is invisible to
     /// the pipeline, so it cannot ride the orchestrator's note stream). The app
@@ -112,12 +116,16 @@ public final class HotkeyMonitor: @unchecked Sendable {
         let (cycleStream, cycleCont) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(4))
         cleanupCycles = cycleStream
         cycleContinuation = cycleCont
+        let (fnTapStream, fnTapCont) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(2))
+        fnTaps = fnTapStream
+        fnTapContinuation = fnTapCont
     }
 
     deinit {
         continuation.finish()
         noteContinuation.finish()
         cycleContinuation.finish()
+        fnTapContinuation.finish()
     }
 
     // MARK: - Configuration (main-thread confined)
@@ -415,7 +423,9 @@ public final class HotkeyMonitor: @unchecked Sendable {
             if kb.isModifier, keycode == kb.keyCode, let mask = flagMask(for: kb) {
                 let down = event.flags.contains(mask)
                 keyboardPressed = down
-                emit(processor.process(down ? .triggerDown : .triggerUp, at: now))
+                let action = processor.process(down ? .triggerDown : .triggerUp, at: now)
+                if !down, kb == .fn, action == .discard { fnTapContinuation.yield(()) }
+                emit(action)
                 return nil  // swallow the bound modifier
             }
             // Command trigger (modifier). Dictation wins any collision above.

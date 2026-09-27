@@ -773,11 +773,19 @@ private struct ModelsPane: View {
                 ForEach(LocalCleanupModel.all) { model in
                     QwenCleanupModelRow(controller: controller, model: model)
                 }
+                if controller.localCleanupEngine.model != nil {
+                    Toggle("Keep selected cleanup model ready", isOn: Binding(
+                        get: { controller.keepLocalCleanupLoaded },
+                        set: { controller.setKeepLocalCleanupLoaded($0) }
+                    ))
+                }
                 LocalCleanupComparisonGrid()
             } header: {
                 Text("Cleanup · on device")
             } footer: {
-                Text("Qwen models run fully offline. The selected model loads when Skylark opens and stays in memory until you switch models or quit. A dictation in the first moments after launch may use Apple Intelligence while it loads.")
+                Text(controller.keepLocalCleanupLoaded
+                     ? "Qwen runs fully offline. The selected model loads when Skylark opens and stays in memory until you switch models or quit."
+                     : "Qwen runs fully offline. The selected model unloads after 5 minutes idle. When cold, cleanup uses Apple Intelligence immediately while Qwen loads for next time. If Fn is your dictation key, tap it once to warm Qwen without dictating.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -2077,6 +2077,7 @@ public actor DictationOrchestrator {
         let budget = cap ?? localFallbackTimeout
         if timedOutTier == .local {
             guard let fallback = cleaners.localFallbackCleaner() else { return nil }
+            if skipColdModels, !(await fallback.isReadyNow()) { return nil }
             let attempt = await cleanAttempt(fallback, text, context: context, cap: budget)
             guard let outcome = attempt.outcome else {
                 // Without this line only the primary's reason reached the log,
@@ -2187,11 +2188,10 @@ public actor DictationOrchestrator {
         // timeout plus a fallback stacked on top: 6.4 s and 7.3 s of nothing.
         let budget = prePasteCap(cleanupTimeout)
         // A downloaded model that is not resident yet would spend the budget
-        // loading. Skip straight to a ready Apple fallback instead (the check
-        // itself starts the load, so the next dictation gets the model).
+        // loading. Skip it, try a ready Apple fallback, or keep raw text when
+        // Apple is unavailable. The check starts the load for next time.
         var primaryIsCold = false
-        if tier == .local, let fallback = cleaners.localFallbackCleaner(),
-           !(await cleaner.isReadyNow()), await fallback.isReadyNow() {
+        if tier == .local, !(await cleaner.isReadyNow()) {
             primaryIsCold = true
         }
         let first: CleanAttempt = primaryIsCold

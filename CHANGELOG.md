@@ -6,6 +6,10 @@ PATCH for fixes/polish. Every release bumps `CFBundleShortVersionString` in
 `Resources/Info.plist` — the version users see in Settings → Account, where
 **Check for Updates** tells them a newer build is on GitHub.
 
+## 1.1.0 - 2026-09-26
+
+- Added a setting for downloaded Qwen cleanup models: keep the selected model ready, or unload it after five minutes idle to save memory. Cold cleanup immediately uses Apple Intelligence when available, otherwise keeps the raw transcript. A single tap of the bound Fn dictation key starts loading Qwen again without pasting text.
+
 ## 1.0.4 - 2026-09-26
 
 - Switching away from a downloaded cleanup model now frees its memory before loading another one, and an in-flight dictation cannot reload the retired model. A queued preload also cannot restart during quit. Settings now describes how long the selected model stays in memory.

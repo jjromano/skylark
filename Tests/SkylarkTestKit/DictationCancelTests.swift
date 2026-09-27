@@ -734,8 +734,8 @@ struct PrePasteBoundTests {
         #expect(seen.contains("Local cleanup model is still loading. Used Apple Intelligence this time."))
     }
 
-    @Test("A loading Qwen model is still waited for when no fallback is ready")
-    func coldQwenWithoutReadyFallbackStillRuns() async {
+    @Test("A loading Qwen never delays paste when Apple is unavailable")
+    func coldQwenWithoutReadyFallbackKeepsRaw() async {
         for fallback in [nil, NotReadyCleaner()] as [(any Cleaner)?] {
             let spy = SpyInjector()
             let orchestrator = DictationOrchestrator(
@@ -751,7 +751,7 @@ struct PrePasteBoundTests {
             await orchestrator.handle(.startRecording)
             await orchestrator.handle(.stopRecording)
 
-            await #expect(spy.first() == "QWEN")
+            await #expect(spy.first() == StubTranscriber.output)
         }
     }
 

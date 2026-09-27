@@ -116,9 +116,14 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
     /// never from the dictation path. Best-effort: failures leave the backend
     /// cold and the next `generate` retries.
     public func preload(instructions: String? = nil) async {
-        guard !retired else { return }
+        guard !retired, !loading else { return }
         loading = true
+        await loadAndWarm(instructions: instructions)
+    }
+
+    private func loadAndWarm(instructions: String?) async {
         defer { loading = false }
+        guard !retired else { return }
         if let instructions { lastInstructions = instructions }
         let epoch = unloadEpoch
         do {
@@ -163,7 +168,7 @@ public actor QwenCleanupBackend: LocalCleanupBackend {
         if !loading, model.isInstalled {
             loading = true
             let instructions = lastInstructions
-            Task { await self.preload(instructions: instructions) }
+            Task { await self.loadAndWarm(instructions: instructions) }
         }
         return false
     }

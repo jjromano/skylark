@@ -323,6 +323,7 @@ its files, and relaunch after.
 | Fresh install, no models | `killall Skylark; rm -rf ~/Library/Application\ Support/Skylark/Models; open -a Skylark` then immediately record and speak | Does it say the model is not ready, or silently eat the sentence? |
 | Mid-download | Same, but record repeatedly while the 483 MB Parakeet download runs | Progress accuracy; whether dictation queues, drops, or errors; whether the download survives |
 | Cold local LLM | Select Qwen3 4B cleanup, quit and relaunch Skylark, then dictate immediately | Cleanup may use Apple Intelligence while Qwen loads. Check when Qwen becomes ready and whether text still lands promptly. |
+| Idle Qwen policy | With Qwen selected, turn off "Keep selected cleanup model ready," wait five minutes, then dictate and single-tap Fn | Cold dictation uses Apple Intelligence promptly, or raw text if Apple is unavailable. A single Fn tap starts warming Qwen without pasting; the next dictation uses Qwen once ready. Double-tap Fn still enters hands-free mode. |
 | Qwen download interrupted | With Qwen installed and working, re-download and kill Wi-Fi mid-way | Whether the previously working model survives or you are left with none |
 | Empty history | Clear History, open the window | Does the empty state read like a product or a bug? |
 | Large history | 30+ dictations, then search | Correctness and responsiveness |
@@ -455,7 +456,7 @@ with quiet audio and then with loud audio.
 **Recovery.** Quit and relaunch mid-download, mid-dictation, mid-cleanup. Run 50
 dictations back to back and watch `ps -o rss=`; memory must not climb. Switch
 speech and cleanup engines repeatedly; only the active ones should stay resident
-and the selected Qwen should stay resident after 5 idle minutes, then unload when switched away or on quit.
+and the selected Qwen should stay resident after 5 idle minutes with "Keep selected cleanup model ready" on. With it off, Qwen should unload after 5 idle minutes. It should always unload when switched away or on quit.
 
 **Target coverage.** Dictate into TextEdit, Safari's address bar, a web form, VS
 Code, Terminal, Notes, a Finder rename field, and Spotlight. Note anywhere

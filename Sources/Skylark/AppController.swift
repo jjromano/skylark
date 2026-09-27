@@ -376,6 +376,21 @@ final class AppController {
     /// half-downloaded GGUF never shows as selected at launch.
     private(set) var localCleanupEngine: LocalCleanupEngine
 
+    static let keepLocalCleanupLoadedKey = "cleanup.keepLocalModelLoaded"
+    /// Applies only when a downloaded Qwen model is the selected local engine.
+    private(set) var keepLocalCleanupLoaded: Bool
+
+    func setKeepLocalCleanupLoaded(_ keepLoaded: Bool) {
+        guard keepLocalCleanupLoaded != keepLoaded else { return }
+        keepLocalCleanupLoaded = keepLoaded
+        UserDefaults.standard.set(keepLoaded, forKey: Self.keepLocalCleanupLoadedKey)
+        if localCleanupEngine.model != nil { swapLocalCleanupBackend(to: localCleanupEngine) }
+    }
+
+    private var cleanupIdleTimeout: Duration? {
+        keepLocalCleanupLoaded ? nil : QwenCleanupBackend.idleUnloadTimeout
+    }
+
     /// Per-model download/on-disk state for the Qwen GGUF models (Settings →
     /// Models, "Cleanup · on device"), keyed by `LocalCleanupModel.id`. Apple
     /// Intelligence isn't in here — it's never downloaded.
@@ -406,7 +421,7 @@ final class AppController {
     /// `warmSelectedCleanupAtLaunch()`.
     private func swapLocalCleanupBackend(to engine: LocalCleanupEngine) {
         let previous = localCleanupBackend
-        let next = engine.makeBackend()
+        let next = engine.makeBackend(idleTimeout: cleanupIdleTimeout)
         localCleanupBackend = next
         let fallback: (any Cleaner)? = engine.model == nil ? nil : LocalCleaner()
         Task { [orchestrator, next, fallback] in
@@ -944,6 +959,8 @@ final class AppController {
         translateTargetLanguage = UserDefaults.standard.string(forKey: Self.translateLanguageKey)
             ?? Self.translateDefaultLanguage
         cleanupOverride = UserDefaults.standard.string(forKey: Self.cleanupOverrideKey) ?? "auto"
+        let keepLoaded = (UserDefaults.standard.object(forKey: Self.keepLocalCleanupLoadedKey) as? Bool) ?? true
+        keepLocalCleanupLoaded = keepLoaded
         cleanupIntensity = CleanupIntensity.persisted()
         cleanupTimeoutSeconds = (UserDefaults.standard.object(forKey: Self.cleanupTimeoutKey) as? Int)
             ?? Self.defaultCleanupTimeoutSeconds
@@ -1052,7 +1069,9 @@ final class AppController {
         // later, off the paste path.
         let resolvedLocalEngine = LocalCleanupEngine.resolvedFromDefaults()
         localCleanupEngine = resolvedLocalEngine
-        let localBackend = resolvedLocalEngine.makeBackend()
+        let localBackend = resolvedLocalEngine.makeBackend(
+            idleTimeout: keepLoaded ? nil : QwenCleanupBackend.idleUnloadTimeout
+        )
         localCleanupBackend = localBackend
 
         orchestrator = DictationOrchestrator(
@@ -1199,6 +1218,17 @@ final class AppController {
         Task { [monitor, weak self] in
             for await _ in monitor.cleanupCycles {
                 self?.cycleCleanupSelection()
+            }
+        }
+        // A discarded single Fn tap is a no-paste warm request for Qwen.
+        Task { [monitor, weak self] in
+            for await _ in monitor.fnTaps {
+                guard let self, let qwen = self.localCleanupBackend as? QwenCleanupBackend else { continue }
+                let instructions = CleanupPrompt.compactInstructions(
+                    context: CleanupContext(intensity: self.cleanupIntensity)
+                )
+                await qwen.preload(instructions: instructions)
+                self.refreshCleanupModelStates()
             }
         }
         // A refused start (session still processing) may have left the hotkey
